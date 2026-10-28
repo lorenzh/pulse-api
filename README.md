@@ -104,3 +104,5 @@ A result is classified by its own `timestamp`. A down result inside a window is 
 - `GET /maintenance?checkId=` — windows (`MaintenanceWindow[]`, epoch ms, `[start, end)`) with `end > now`, sorted by `start` then `checkId`; `checkId` is an optional filter. A window is current when `start <= now`, upcoming otherwise.
 
 Other methods on these paths return 405, unknown paths 404, and request bodies over 1,000,000 bytes 413. Errors are `{"error": "..."}`. Types come from `@lorenzh/pulse-contract` (Git dependency pinned to a commit).
+
+Licensed under the MIT licence, see [LICENSE](LICENSE).
