@@ -8,6 +8,8 @@ It depends on [pulse-contract](https://github.com/lorenzh/pulse-contract) for th
 
 pulse is built by Paragon Factory agents from the issues in [pulse-meta](https://github.com/lorenzh/pulse-meta).
 
+Contributing: see [AGENTS.md](AGENTS.md).
+
 ## Install, test, run
 
 Requires Node >= 24.
