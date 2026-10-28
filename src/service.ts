@@ -4,10 +4,16 @@ import type {
   CheckState,
   CheckWithState,
   Incident,
+  LocationResult,
   MaintenanceWindow,
   Result,
 } from "@lorenzh/pulse-contract";
-import { applyResult } from "./state.ts";
+import { applyResult, quorumStatus } from "./state.ts";
+
+export const DEFAULT_LOCATION = "default";
+export const MAX_LOCATION_LENGTH = 64;
+/** The quorum window spans this many check intervals before a result. */
+const WINDOW_INTERVALS = 2;
 
 export class UnknownCheckError extends Error {}
 
@@ -47,8 +53,19 @@ export function createService(
       interval_ms = excluded.interval_ms, timeout_ms = excluded.timeout_ms`);
   const getCheck = db.prepare("SELECT * FROM checks WHERE id = ?");
   const insertResult = db.prepare(
-    `INSERT INTO results (check_id, timestamp, status, status_code, latency_ms, reason)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO results (check_id, timestamp, status, status_code, latency_ms, reason, location)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const windowResults = db.prepare(
+    `SELECT * FROM results WHERE check_id = ? AND timestamp >= ? AND timestamp <= ?
+     ORDER BY timestamp DESC, id DESC`,
+  );
+  const latestPerLocation = db.prepare(
+    `SELECT * FROM (
+       SELECT *, ROW_NUMBER() OVER (
+         PARTITION BY location ORDER BY timestamp DESC, id DESC) AS rn
+       FROM results WHERE check_id = ?
+     ) WHERE rn = 1 ORDER BY location`,
   );
   const updateState = db.prepare(
     `UPDATE checks SET state = ?, consecutive_down = ?, last_result_at = ?, last_reason = ? WHERE id = ?`,
@@ -63,6 +80,18 @@ export function createService(
     "SELECT 1 AS x FROM incidents WHERE check_id = ? AND resolved_at IS NULL LIMIT 1",
   );
 
+  function toResult(r: Row): Result {
+    return {
+      checkId: r.check_id,
+      timestamp: r.timestamp,
+      status: r.status,
+      statusCode: r.status_code,
+      latencyMs: r.latency_ms,
+      reason: r.reason,
+      location: r.location,
+    };
+  }
+
   function toCheck(r: Row): CheckWithState {
     const c: CheckWithState = {
       id: r.id,
@@ -73,6 +102,7 @@ export function createService(
       consecutiveDown: r.consecutive_down,
       lastResultAt: r.last_result_at,
       lastReason: r.last_reason,
+      locations: [],
     };
     if (r.timeout_ms !== null) c.timeoutMs = r.timeout_ms;
     return c;
@@ -107,20 +137,32 @@ export function createService(
           result.statusCode,
           result.latencyMs,
           result.reason,
+          result.location,
         );
         if (result.status === "down" && inWindow(result.checkId, result.timestamp)) {
           updateLast.run(result.timestamp, result.reason, result.checkId);
           return;
         }
+        // Window [T - 2*interval, T]; rows are newest first, so the first row per location is its latest.
+        const rows = windowResults.all(
+          result.checkId,
+          result.timestamp - WINDOW_INTERVALS * row.interval_ms,
+          result.timestamp,
+        ) as Row[];
+        const latest = new Map<string, Row>();
+        for (const r of rows) if (!latest.has(r.location)) latest.set(r.location, r);
+        const combined = quorumStatus([...latest.values()].map((r) => r.status));
+        const latestDown = rows.find((r) => r.status === "down");
         const { next, action } = applyResult(
           {
             state: row.state,
             consecutiveDown: row.consecutive_down,
             incidentOpen: hasOpen.get(result.checkId) !== undefined,
           },
-          result.status,
+          combined,
         );
-        if (action === "open") openIncident.run(result.checkId, result.timestamp, result.reason);
+        if (action === "open")
+          openIncident.run(result.checkId, result.timestamp, latestDown?.reason ?? result.reason);
         if (action === "resolve") resolveIncident.run(result.timestamp, result.checkId);
         updateState.run(
           next.state,
@@ -136,6 +178,15 @@ export function createService(
       const t = now();
       return (db.prepare("SELECT * FROM checks ORDER BY rowid").all() as Row[]).map((r) => {
         const c = toCheck(r);
+        const latest = (latestPerLocation.all(c.id) as Row[]).map(toResult);
+        const newest = Math.max(...latest.map((l) => l.timestamp));
+        c.locations = latest.map(
+          (result): LocationResult => ({
+            location: result.location,
+            result,
+            stale: result.timestamp < newest - WINDOW_INTERVALS * c.intervalMs,
+          }),
+        );
         const active = windows.find((w) => w.checkId === c.id && w.start <= t && t < w.end);
         if (active) {
           c.state = "maintenance";
@@ -162,14 +213,7 @@ export function createService(
           "SELECT * FROM results WHERE check_id = ? ORDER BY timestamp DESC, id DESC LIMIT ?",
         )
         .all(checkId, limit) as Row[];
-      return rows.map((r) => ({
-        checkId: r.check_id,
-        timestamp: r.timestamp,
-        status: r.status,
-        statusCode: r.status_code,
-        latencyMs: r.latency_ms,
-        reason: r.reason,
-      }));
+      return rows.map(toResult);
     },
 
     listIncidents(status) {

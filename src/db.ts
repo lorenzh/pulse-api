@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS results (
   status TEXT NOT NULL,
   status_code INTEGER,
   latency_ms REAL NOT NULL,
-  reason TEXT
+  reason TEXT,
+  location TEXT NOT NULL DEFAULT 'default'
 );
 CREATE INDEX IF NOT EXISTS results_by_check ON results (check_id, timestamp DESC, id DESC);
 CREATE TABLE IF NOT EXISTS incidents (
@@ -36,5 +37,17 @@ export function openDb(path: string): DatabaseSync {
   const db = new DatabaseSync(path);
   db.exec("PRAGMA foreign_keys = ON");
   db.exec(SCHEMA);
+  migrate(db);
   return db;
+}
+
+/** Bring databases created by older versions up to the current schema. */
+function migrate(db: DatabaseSync): void {
+  const columns = db.prepare("PRAGMA table_info(results)").all() as { name: string }[];
+  if (!columns.some((c) => c.name === "location")) {
+    db.exec("ALTER TABLE results ADD COLUMN location TEXT NOT NULL DEFAULT 'default'");
+  }
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS results_by_location ON results (check_id, location, timestamp)",
+  );
 }

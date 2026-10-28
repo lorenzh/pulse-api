@@ -1,6 +1,11 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { ErrorResponse, Result } from "@lorenzh/pulse-contract";
-import { type Service, UnknownCheckError } from "./service.ts";
+import {
+  DEFAULT_LOCATION,
+  MAX_LOCATION_LENGTH,
+  type Service,
+  UnknownCheckError,
+} from "./service.ts";
 
 const MAX_BODY = 1_000_000;
 export const DEFAULT_LIMIT = 100;
@@ -62,6 +67,14 @@ export function validateResult(body: unknown): Result | string {
   if (!isFiniteNumber(b.latencyMs) || b.latencyMs < 0)
     return "latencyMs must be a non-negative number";
   if (b.reason !== null && typeof b.reason !== "string") return "reason must be a string or null";
+  let location = DEFAULT_LOCATION;
+  if (b.location !== undefined) {
+    if (typeof b.location !== "string") return "location must be a string";
+    const trimmed = b.location.trim();
+    if (trimmed.length > MAX_LOCATION_LENGTH)
+      return `location must be at most ${MAX_LOCATION_LENGTH} characters`;
+    if (trimmed !== "") location = trimmed;
+  }
   return {
     checkId: b.checkId,
     timestamp: b.timestamp,
@@ -69,6 +82,7 @@ export function validateResult(body: unknown): Result | string {
     statusCode: b.statusCode,
     latencyMs: b.latencyMs,
     reason: b.reason,
+    location,
   };
 }
 

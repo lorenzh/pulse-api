@@ -62,7 +62,11 @@ Windows are read at startup only; restart the API to change them. Invalid window
 
 ## State rules
 
-A check with no results is `unknown`. `down` from the first down result, `up` from an up result. The third consecutive down result opens an incident (if none is open); the first up result resolves it. `openedAt`/`resolvedAt` are the timestamps of those results. The counter is stored and survives restarts.
+Every result carries a `location` (the probe's name). A missing or empty `location` is stored as `default`; a non-string value or one longer than 64 characters (after trimming) gives 400. Names are trimmed, case-sensitive exact strings. Results stored before locations existed count as `default`; existing database files are migrated at startup.
+
+Each accepted result triggers one evaluation. The window is `[T - 2 * intervalMs, T]` for the result's timestamp `T`; results newer than `T` are ignored. Each location counts by its latest result in the window. With one location in the window it decides alone; with two or more, the combined status is `down` only if at least two locations are down, otherwise `up`. The combined status feeds the counter: a check with no results is `unknown`, the third consecutive down evaluation opens an incident (if none is open), and an up evaluation resets the counter and resolves it. `openedAt`/`resolvedAt` are the timestamps of the triggering results; the incident `reason` is the reason of the latest down result in the window. Incidents can therefore open sooner than 3 intervals. `lastReason` is the reason of the latest ingested result. The counter is stored and survives restarts.
+
+`GET /checks` adds `locations`: every location ever seen for the check, sorted by name, as `{ location, result, stale }` with the location's latest result; `stale` is true when that result is older than 2 intervals before the check's newest result. A check without results has `locations: []`.
 
 ## Maintenance semantics
 
