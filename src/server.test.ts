@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import { test } from "node:test";
 import type { Result } from "@lorenzh/pulse-contract";
 import { openDb } from "./db.ts";
-import { createApiServer } from "./server.ts";
+import { createApiServer, validateResult } from "./server.ts";
 import { createService } from "./service.ts";
 
 async function start() {
@@ -34,6 +34,7 @@ function result(checkId: string, timestamp: number, status: "up" | "down"): Resu
     latencyMs: 3,
     reason: status === "up" ? null : "HTTP 500",
     location: "default",
+    attempts: 1,
   };
 }
 
@@ -171,6 +172,44 @@ test("server: unknown routes 404 and wrong methods 405", async () => {
     assert.equal((await fetch(`${base}/checks`, { method: "POST" })).status, 405);
     const r = await fetch(`${base}/nope`);
     assert.equal(typeof ((await r.json()) as { error: string }).error, "string");
+  } finally {
+    await close();
+  }
+});
+
+test("validateResult: attempts defaults to 1 and must be an integer >= 1", () => {
+  const base = result("c1", 1, "up");
+  const { attempts: _a, ...noAttempts } = base;
+  assert.equal((validateResult(noAttempts) as Result).attempts, 1);
+  assert.equal((validateResult({ ...base, attempts: 3 }) as Result).attempts, 3);
+  for (const v of [0, -1, 1.5, "2", null]) {
+    assert.equal(typeof validateResult({ ...base, attempts: v }), "string", String(v));
+  }
+});
+
+test("server: attempts is stored, served, and defaults to 1; checks serve retry settings", async () => {
+  const { base, close } = await start();
+  try {
+    const { attempts: _a, ...legacy } = result("c1", 1, "up");
+    assert.equal((await post(base, legacy)).status, 204);
+    assert.equal((await post(base, { ...result("c1", 2, "down"), attempts: 3 })).status, 204);
+    assert.equal((await post(base, { ...result("c1", 3, "up"), attempts: 0 })).status, 400);
+    const rows = (await (await fetch(`${base}/checks/c1/results`)).json()) as Result[];
+    assert.deepEqual(
+      rows.map((r) => r.attempts),
+      [3, 1],
+    );
+    const checks = (await (await fetch(`${base}/checks`)).json()) as {
+      retries: number;
+      retryDelayMs: number;
+    }[];
+    assert.deepEqual(
+      checks.map((c) => [c.retries, c.retryDelayMs]),
+      [
+        [0, 1000],
+        [0, 1000],
+      ],
+    );
   } finally {
     await close();
   }

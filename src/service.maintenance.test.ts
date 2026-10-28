@@ -18,6 +18,7 @@ function res(t: number, status: "up" | "down", checkId = "c1"): Result {
     latencyMs: 5,
     reason: status === "down" ? `down@${t}` : null,
     location: "default",
+    attempts: 1,
   };
 }
 

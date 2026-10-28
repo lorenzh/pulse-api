@@ -21,6 +21,7 @@ function r(t: number, location: string, status: "up" | "down", reason?: string):
     latencyMs: 1,
     reason: status === "down" ? (reason ?? `${location}@${t}`) : null,
     location,
+    attempts: 1,
   };
 }
 

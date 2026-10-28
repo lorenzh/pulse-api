@@ -48,15 +48,16 @@ export function createService(
     "UPDATE checks SET last_result_at = ?, last_reason = ? WHERE id = ?",
   );
   const upsert = db.prepare(`
-    INSERT INTO checks (id, name, url, type, host, port, warn_days, interval_ms, timeout_ms)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO checks (id, name, url, type, host, port, warn_days, interval_ms, timeout_ms, retries, retry_delay_ms)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET name = excluded.name, url = excluded.url, type = excluded.type,
       host = excluded.host, port = excluded.port, warn_days = excluded.warn_days,
-      interval_ms = excluded.interval_ms, timeout_ms = excluded.timeout_ms`);
+      interval_ms = excluded.interval_ms, timeout_ms = excluded.timeout_ms,
+      retries = excluded.retries, retry_delay_ms = excluded.retry_delay_ms`);
   const getCheck = db.prepare("SELECT * FROM checks WHERE id = ?");
   const insertResult = db.prepare(
-    `INSERT INTO results (check_id, timestamp, status, status_code, latency_ms, reason, location, cert_days_left)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO results (check_id, timestamp, status, status_code, latency_ms, reason, location, cert_days_left, attempts)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const windowResults = db.prepare(
     `SELECT * FROM results WHERE check_id = ? AND timestamp >= ? AND timestamp <= ?
@@ -92,6 +93,7 @@ export function createService(
       latencyMs: r.latency_ms,
       reason: r.reason,
       location: r.location,
+      attempts: r.attempts ?? 1,
     };
     if (tls || r.cert_days_left !== null) result.certDaysLeft = r.cert_days_left;
     return result;
@@ -117,7 +119,15 @@ export function createService(
             intervalMs: r.interval_ms,
             ...state,
           }
-        : { id: r.id, name: r.name, url: r.url, intervalMs: r.interval_ms, ...state };
+        : {
+            id: r.id,
+            name: r.name,
+            url: r.url,
+            intervalMs: r.interval_ms,
+            retries: r.retries ?? 0,
+            retryDelayMs: r.retry_delay_ms ?? 1000,
+            ...state,
+          };
     if (r.timeout_ms !== null) c.timeoutMs = r.timeout_ms;
     return c;
   }
@@ -139,9 +149,33 @@ export function createService(
         for (const c of checks) {
           const timeout = c.timeoutMs ?? null;
           if (c.type === "tls") {
-            upsert.run(c.id, c.name, "", "tls", c.host, c.port, c.warnDays, c.intervalMs, timeout);
+            upsert.run(
+              c.id,
+              c.name,
+              "",
+              "tls",
+              c.host,
+              c.port,
+              c.warnDays,
+              c.intervalMs,
+              timeout,
+              null,
+              null,
+            );
           } else {
-            upsert.run(c.id, c.name, c.url, "http", null, null, null, c.intervalMs, timeout);
+            upsert.run(
+              c.id,
+              c.name,
+              c.url,
+              "http",
+              null,
+              null,
+              null,
+              c.intervalMs,
+              timeout,
+              c.retries ?? 0,
+              c.retryDelayMs ?? 1000,
+            );
           }
         }
       });
@@ -160,6 +194,7 @@ export function createService(
           result.reason,
           result.location,
           result.certDaysLeft ?? null,
+          result.attempts ?? 1,
         );
         if (result.status === "down" && inWindow(result.checkId, result.timestamp)) {
           updateLast.run(result.timestamp, result.reason, result.checkId);
