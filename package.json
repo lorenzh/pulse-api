@@ -8,6 +8,7 @@
     "node": ">=24"
   },
   "scripts": {
+    "start": "node src/main.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --test",
     "check": "npm run typecheck && npm run test"
@@ -15,5 +16,8 @@
   "devDependencies": {
     "@types/node": "^26.6.5",
     "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@lorenzh/pulse-contract": "github:lorenzh/pulse-contract#23f8830112abb15a2be77a6f7979a0c986297379"
   }
 }

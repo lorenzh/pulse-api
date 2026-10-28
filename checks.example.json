@@ -1,0 +1,11 @@
+{
+  "checks": [
+    {
+      "id": "example",
+      "name": "Example endpoint",
+      "url": "http://localhost:9000/",
+      "intervalMs": 1000,
+      "timeoutMs": 1000
+    }
+  ]
+}
