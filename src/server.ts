@@ -171,8 +171,12 @@ async function handle(service: Service, req: IncomingMessage, res: ServerRespons
 
   let id: string;
   try {
-    id = decodeURIComponent(RESULTS_PATH.exec(path)![1]!);
-  } catch {
+    const encoded = RESULTS_PATH.exec(path)?.[1];
+    if (encoded === undefined) throw new HttpError(400, "bad check id");
+    id = decodeURIComponent(encoded);
+  } catch (err) {
+    if (err instanceof HttpError) throw err;
+    // decodeURIComponent throws URIError on malformed escapes: report it as a bad id
     throw new HttpError(400, "bad check id");
   }
   let limit = DEFAULT_LIMIT;

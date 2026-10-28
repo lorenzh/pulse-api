@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -171,8 +171,10 @@ test("validateResult: location normalisation", () => {
   assert.equal((validateResult(noLoc) as Result).location, "default");
 });
 
-test("migration: old database without location column", () => {
-  const path = join(mkdtempSync(join(tmpdir(), "pulse-migrate-")), "old.db");
+test("migration: old database without location column", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "pulse-migrate-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "old.db");
   const old = new DatabaseSync(path);
   old.exec(`
     CREATE TABLE checks (id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL,

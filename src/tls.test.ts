@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -158,8 +158,10 @@ test("server: validateResult accepts and checks certDaysLeft", () => {
   assert.equal("certDaysLeft" in (validateResult(legacy) as object), false);
 });
 
-test("migration: old database without cert_days_left or tls columns", () => {
-  const path = join(mkdtempSync(join(tmpdir(), "pulse-migrate-tls-")), "old.db");
+test("migration: old database without cert_days_left or tls columns", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "pulse-migrate-tls-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "old.db");
   const old = new DatabaseSync(path);
   old.exec(`
     CREATE TABLE checks (id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL,

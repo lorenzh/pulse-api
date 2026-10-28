@@ -41,7 +41,8 @@ export function applyResult(
  * Otherwise it is degraded if any location is degraded, else up.
  */
 export function quorumStatus(latest: CheckStatus[]): CheckStatus {
-  if (latest.length === 1) return latest[0]!;
+  const only = latest[0];
+  if (latest.length === 1 && only !== undefined) return only;
   if (latest.filter((s) => s === "down").length >= 2) return "down";
   return latest.some((s) => s === "degraded") ? "degraded" : "up";
 }
