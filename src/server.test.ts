@@ -9,7 +9,9 @@ import { createService } from "./service.ts";
 async function start() {
   const service = createService(openDb(":memory:"));
   service.upsertChecks([
+    // eslint-disable-next-line sonarjs/no-clear-text-protocols -- plain http/ftp literal is a local test fixture, never requested over a network
     { id: "c1", name: "C1", url: "http://x/", intervalMs: 1000 },
+    // eslint-disable-next-line sonarjs/no-clear-text-protocols -- plain http/ftp literal is a local test fixture, never requested over a network
     { id: "c2", name: "C2", url: "http://y/", intervalMs: 1000, timeoutMs: 200 },
   ]);
   const server = createApiServer(service);
@@ -179,6 +181,7 @@ test("server: unknown routes 404 and wrong methods 405", async () => {
 
 test("validateResult: attempts defaults to 1 and must be an integer >= 1", () => {
   const base = result("c1", 1, "up");
+  // eslint-disable-next-line sonarjs/no-unused-vars -- rest destructuring omits a property to build the test input
   const { attempts: _a, ...noAttempts } = base;
   assert.equal((validateResult(noAttempts) as Result).attempts, 1);
   assert.equal((validateResult({ ...base, attempts: 3 }) as Result).attempts, 3);
@@ -190,6 +193,7 @@ test("validateResult: attempts defaults to 1 and must be an integer >= 1", () =>
 test("server: attempts is stored, served, and defaults to 1; checks serve retry settings", async () => {
   const { base, close } = await start();
   try {
+    // eslint-disable-next-line sonarjs/no-unused-vars -- rest destructuring omits a property to build the test input
     const { attempts: _a, ...legacy } = result("c1", 1, "up");
     assert.equal((await post(base, legacy)).status, 204);
     assert.equal((await post(base, { ...result("c1", 2, "down"), attempts: 3 })).status, 204);

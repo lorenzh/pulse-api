@@ -6,7 +6,9 @@ import { openDb } from "./db.ts";
 import { createApiServer } from "./server.ts";
 import { createService } from "./service.ts";
 
+// eslint-disable-next-line sonarjs/no-clear-text-protocols -- plain http/ftp literal is a local test fixture, never requested over a network
 const c1: Check = { id: "c1", name: "C1", url: "http://x/", intervalMs: 1000 };
+// eslint-disable-next-line sonarjs/no-clear-text-protocols -- plain http/ftp literal is a local test fixture, never requested over a network
 const c2: Check = { id: "c2", name: "C2", url: "http://y/", intervalMs: 1000 };
 
 function res(t: number, status: "up" | "down", checkId = "c1"): Result {

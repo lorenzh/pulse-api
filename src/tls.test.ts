@@ -23,6 +23,7 @@ test("config: tls defaults and explicit values", () => {
           id: "h",
           name: "H",
           type: "http",
+          // eslint-disable-next-line sonarjs/no-clear-text-protocols -- plain http/ftp literal is a local test fixture, never requested over a network
           url: "http://x/",
           intervalMs: 5,
         },
@@ -33,6 +34,7 @@ test("config: tls defaults and explicit values", () => {
         id: "h",
         name: "H",
         type: "http",
+        // eslint-disable-next-line sonarjs/no-clear-text-protocols -- plain http/ftp literal is a local test fixture, never requested over a network
         url: "http://x/",
         intervalMs: 5,
         retries: 0,
@@ -151,6 +153,7 @@ test("server: validateResult accepts and checks certDaysLeft", () => {
   });
   assert.equal(typeof validateResult({ ...body, certDaysLeft: "5" }), "string");
   assert.equal(typeof validateResult({ ...body, certDaysLeft: 1.5 }), "string");
+  // eslint-disable-next-line sonarjs/no-unused-vars -- rest destructuring omits a property to build the test input
   const { certDaysLeft: _omit, ...legacy } = body;
   assert.equal("certDaysLeft" in (validateResult(legacy) as object), false);
 });

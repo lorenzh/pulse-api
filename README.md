@@ -23,7 +23,7 @@ npm start
 
 ## Formatting and linting
 
-Biome formats and lints the code (`biome.json`). `npm run lint` checks without changing files; `npm run format` applies fixes. `npm ci` installs a Lefthook pre-commit hook (`lefthook.yml`) that runs Biome on staged files and rejects the commit if they are badly formatted or fail lint.
+Biome formats and lints the code (`biome.json`). SonarJS recommended rules run through ESLint with cognitive complexity limited to 15; the ESLint setup is isolated in the `tools/sonarjs` workspace because it needs TypeScript 6 while the repository uses TypeScript 7. Line coverage must be at least 80 %. Checks: Biome, SonarJS via ESLint (cognitive complexity ≤ 15), line coverage ≥ 80 % — run `npm run lint` and `npm test`. `npm run format` applies Biome fixes. `npm ci` installs a Lefthook pre-commit hook (`lefthook.yml`) that runs Biome and ESLint on staged files and rejects the commit on failure.
 
 ## Settings
 

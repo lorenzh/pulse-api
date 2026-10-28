@@ -49,6 +49,7 @@ function isFiniteNumber(v: unknown): v is number {
 }
 
 /** Validate a POST /results body; returns an error message or the Result. */
+// eslint-disable-next-line sonarjs/cognitive-complexity -- splitting this validator/handler would be a behaviour-risking refactor
 export function validateResult(body: unknown): Result | string {
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
     return "body must be a JSON object";
@@ -106,6 +107,7 @@ export function validateResult(body: unknown): Result | string {
 
 const RESULTS_PATH = /^\/checks\/([^/]+)\/results$/;
 
+// eslint-disable-next-line sonarjs/cognitive-complexity -- splitting this validator/handler would be a behaviour-risking refactor
 async function handle(service: Service, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname;

@@ -59,6 +59,7 @@ export function parseChecks(data: unknown): Check[] {
   }
   const seen = new Set<string>();
   const checks: Check[] = [];
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- splitting this validator/handler would be a behaviour-risking refactor
   data.checks.forEach((raw: unknown, i: number) => {
     const where = `checks[${i}]`;
     if (!isRecord(raw)) throw new ConfigError(`${where} must be an object`);

@@ -25,6 +25,7 @@ test("config: rejects invalid input", () => {
     { checks: [{ ...ok, id: undefined }] },
     { checks: [{ ...ok, name: "" }] },
     { checks: [{ ...ok, url: "nope" }] },
+    // eslint-disable-next-line sonarjs/no-clear-text-protocols -- plain http/ftp literal is a local test fixture, never requested over a network
     { checks: [{ ...ok, url: "ftp://x/" }] },
     { checks: [{ ...ok, intervalMs: 0 }] },
     { checks: [{ ...ok, intervalMs: 1.5 }] },

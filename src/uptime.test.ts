@@ -13,7 +13,9 @@ function setup(now = () => NOW) {
   const db = openDb(":memory:");
   const service = createService(db, { now });
   service.upsertChecks([
+    // eslint-disable-next-line sonarjs/no-clear-text-protocols -- plain http/ftp literal is a local test fixture, never requested over a network
     { id: "a", name: "A", url: "http://a/", intervalMs: 60_000 },
+    // eslint-disable-next-line sonarjs/no-clear-text-protocols -- plain http/ftp literal is a local test fixture, never requested over a network
     { id: "b", name: "B", url: "http://b/", intervalMs: 60_000 },
   ]);
   const insert = db.prepare(
@@ -115,6 +117,7 @@ test("uptime: 130k rows aggregate quickly", () => {
     insert.run(t, status);
   }
   db.exec("COMMIT");
+  // eslint-disable-next-line sonarjs/void-use -- void marks the intentionally unused helper in this benchmark-style test
   void add;
   assert.ok(all > 125_000);
   const started = performance.now();

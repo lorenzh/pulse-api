@@ -9,6 +9,7 @@ import { createService } from "./service.ts";
 
 test("service: retry settings are stored, served and updated by upsert", () => {
   const s = createService(openDb(":memory:"));
+  // eslint-disable-next-line sonarjs/no-clear-text-protocols -- plain http/ftp literal is a local test fixture, never requested over a network
   const c = { id: "c", name: "C", url: "http://x/", intervalMs: 60000 };
   s.upsertChecks([{ ...c, retries: 2, retryDelayMs: 250 }]);
   let got = s.listChecks()[0]!;
@@ -38,6 +39,7 @@ test("db: an old database migrates and reads attempts as 1, retries as 0", () =>
   assert.deepEqual([got.retries, got.retryDelayMs], [0, 1000]);
   assert.equal(s.listResults("c", 10)[0]!.attempts, 1);
   s.upsertChecks([
+    // eslint-disable-next-line sonarjs/no-clear-text-protocols -- plain http/ftp literal is a local test fixture, never requested over a network
     { id: "c", name: "C", url: "http://x/", intervalMs: 1000, retries: 1, retryDelayMs: 5 },
   ]);
   assert.equal((s.listChecks()[0] as any).retries, 1);
