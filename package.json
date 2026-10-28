@@ -1,6 +1,7 @@
 {
   "name": "@lorenzh/pulse-api",
   "version": "0.0.0",
+  "license": "MIT",
   "description": "Receives probe results, stores them (SQLite later), computes up/down state and incidents, and serves REST.",
   "type": "module",
   "private": true,
