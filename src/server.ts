@@ -79,7 +79,11 @@ async function handle(service: Service, req: IncomingMessage, res: ServerRespons
   const path = url.pathname;
   const method = req.method ?? "GET";
   const known =
-    path === "/results" || path === "/checks" || path === "/incidents" || RESULTS_PATH.test(path);
+    path === "/results" ||
+    path === "/checks" ||
+    path === "/incidents" ||
+    path === "/maintenance" ||
+    RESULTS_PATH.test(path);
   if (!known) throw new HttpError(404, "not found");
 
   if (path === "/results") {
@@ -117,6 +121,11 @@ async function handle(service: Service, req: IncomingMessage, res: ServerRespons
       throw new HttpError(400, 'status must be "open" or "resolved"');
     }
     sendJson(res, 200, service.listIncidents(status ?? undefined));
+    return;
+  }
+
+  if (path === "/maintenance") {
+    sendJson(res, 200, service.listMaintenance(url.searchParams.get("checkId") ?? undefined));
     return;
   }
 

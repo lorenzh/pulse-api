@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import type { Check } from "@lorenzh/pulse-contract";
+import type { Check, MaintenanceWindow } from "@lorenzh/pulse-contract";
 
 export class ConfigError extends Error {}
 
@@ -55,18 +55,66 @@ export function parseChecks(data: unknown): Check[] {
   return checks;
 }
 
-export function loadChecks(path: string): Check[] {
+const ISO_WITH_OFFSET = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+function parseInstant(v: unknown, where: string): number {
+  if (typeof v !== "string" || !ISO_WITH_OFFSET.test(v)) {
+    throw new ConfigError(
+      `${where} must be an ISO 8601 string with an explicit offset (Z or ±hh:mm)`,
+    );
+  }
+  const ms = Date.parse(v);
+  if (Number.isNaN(ms)) throw new ConfigError(`${where} is not a valid date`);
+  return ms;
+}
+
+export interface Config {
+  checks: Check[];
+  maintenance: MaintenanceWindow[];
+}
+
+/** Validate a parsed config (checks plus optional maintenance windows); throws ConfigError. */
+export function parseConfig(data: unknown): Config {
+  const checks = parseChecks(data);
+  const raw = (data as Record<string, unknown>).maintenance;
+  if (raw === undefined) return { checks, maintenance: [] };
+  if (!Array.isArray(raw)) throw new ConfigError('"maintenance" must be an array');
+  const ids = new Set(checks.map((c) => c.id));
+  const maintenance = raw.map((w: unknown, i: number): MaintenanceWindow => {
+    const where = `maintenance[${i}]`;
+    if (!isRecord(w)) throw new ConfigError(`${where} must be an object`);
+    if (!nonEmptyString(w.checkId) || !ids.has(w.checkId)) {
+      throw new ConfigError(`${where}.checkId must reference a configured check`);
+    }
+    const start = parseInstant(w.start, `${where}.start`);
+    const end = parseInstant(w.end, `${where}.end`);
+    if (end <= start) throw new ConfigError(`${where}.end must be after start`);
+    if (!nonEmptyString(w.note)) {
+      throw new ConfigError(`${where}.note is required and must be a non-empty string`);
+    }
+    return { checkId: w.checkId, start, end, note: w.note };
+  });
+  return { checks, maintenance };
+}
+
+function readJson(path: string): unknown {
   let text: string;
   try {
     text = readFileSync(path, "utf8");
   } catch (err) {
     throw new ConfigError(`cannot read checks file ${path}: ${(err as Error).message}`);
   }
-  let data: unknown;
   try {
-    data = JSON.parse(text);
+    return JSON.parse(text);
   } catch (err) {
     throw new ConfigError(`checks file ${path} is not valid JSON: ${(err as Error).message}`);
   }
-  return parseChecks(data);
+}
+
+export function loadConfig(path: string): Config {
+  return parseConfig(readJson(path));
+}
+
+export function loadChecks(path: string): Check[] {
+  return parseChecks(readJson(path));
 }
