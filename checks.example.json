@@ -6,6 +6,15 @@
       "url": "http://localhost:9000/",
       "intervalMs": 1000,
       "timeoutMs": 1000
+    },
+    {
+      "id": "example-cert",
+      "name": "Example certificate",
+      "type": "tls",
+      "host": "example.com",
+      "port": 443,
+      "warnDays": 14,
+      "intervalMs": 3600000
     }
   ],
   "maintenance": [

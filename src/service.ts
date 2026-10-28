@@ -48,13 +48,15 @@ export function createService(
     "UPDATE checks SET last_result_at = ?, last_reason = ? WHERE id = ?",
   );
   const upsert = db.prepare(`
-    INSERT INTO checks (id, name, url, interval_ms, timeout_ms) VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET name = excluded.name, url = excluded.url,
+    INSERT INTO checks (id, name, url, type, host, port, warn_days, interval_ms, timeout_ms)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET name = excluded.name, url = excluded.url, type = excluded.type,
+      host = excluded.host, port = excluded.port, warn_days = excluded.warn_days,
       interval_ms = excluded.interval_ms, timeout_ms = excluded.timeout_ms`);
   const getCheck = db.prepare("SELECT * FROM checks WHERE id = ?");
   const insertResult = db.prepare(
-    `INSERT INTO results (check_id, timestamp, status, status_code, latency_ms, reason, location)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO results (check_id, timestamp, status, status_code, latency_ms, reason, location, cert_days_left)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const windowResults = db.prepare(
     `SELECT * FROM results WHERE check_id = ? AND timestamp >= ? AND timestamp <= ?
@@ -80,8 +82,9 @@ export function createService(
     "SELECT 1 AS x FROM incidents WHERE check_id = ? AND resolved_at IS NULL LIMIT 1",
   );
 
-  function toResult(r: Row): Result {
-    return {
+  /** certDaysLeft is emitted for TLS checks (null when unread) and for any stored value. */
+  function toResult(r: Row, tls = false): Result {
+    const result: Result = {
       checkId: r.check_id,
       timestamp: r.timestamp,
       status: r.status,
@@ -90,20 +93,31 @@ export function createService(
       reason: r.reason,
       location: r.location,
     };
+    if (tls || r.cert_days_left !== null) result.certDaysLeft = r.cert_days_left;
+    return result;
   }
 
   function toCheck(r: Row): CheckWithState {
-    const c: CheckWithState = {
-      id: r.id,
-      name: r.name,
-      url: r.url,
-      intervalMs: r.interval_ms,
+    const state = {
       state: r.state as CheckState,
       consecutiveDown: r.consecutive_down,
       lastResultAt: r.last_result_at,
       lastReason: r.last_reason,
-      locations: [],
+      locations: [] as LocationResult[],
     };
+    const c: CheckWithState =
+      r.type === "tls"
+        ? {
+            id: r.id,
+            name: r.name,
+            type: "tls",
+            host: r.host,
+            port: r.port,
+            warnDays: r.warn_days,
+            intervalMs: r.interval_ms,
+            ...state,
+          }
+        : { id: r.id, name: r.name, url: r.url, intervalMs: r.interval_ms, ...state };
     if (r.timeout_ms !== null) c.timeoutMs = r.timeout_ms;
     return c;
   }
@@ -122,7 +136,14 @@ export function createService(
   return {
     upsertChecks(checks) {
       transaction(() => {
-        for (const c of checks) upsert.run(c.id, c.name, c.url, c.intervalMs, c.timeoutMs ?? null);
+        for (const c of checks) {
+          const timeout = c.timeoutMs ?? null;
+          if (c.type === "tls") {
+            upsert.run(c.id, c.name, "", "tls", c.host, c.port, c.warnDays, c.intervalMs, timeout);
+          } else {
+            upsert.run(c.id, c.name, c.url, "http", null, null, null, c.intervalMs, timeout);
+          }
+        }
       });
     },
 
@@ -138,6 +159,7 @@ export function createService(
           result.latencyMs,
           result.reason,
           result.location,
+          result.certDaysLeft ?? null,
         );
         if (result.status === "down" && inWindow(result.checkId, result.timestamp)) {
           updateLast.run(result.timestamp, result.reason, result.checkId);
@@ -178,8 +200,13 @@ export function createService(
       const t = now();
       return (db.prepare("SELECT * FROM checks ORDER BY rowid").all() as Row[]).map((r) => {
         const c = toCheck(r);
-        const latest = (latestPerLocation.all(c.id) as Row[]).map(toResult);
+        const tls = c.type === "tls";
+        const latest = (latestPerLocation.all(c.id) as Row[]).map((l) => toResult(l, tls));
         const newest = Math.max(...latest.map((l) => l.timestamp));
+        if (tls) {
+          const newestResult = latest.find((l) => l.timestamp === newest);
+          c.certDaysLeft = newestResult?.certDaysLeft ?? null;
+        }
         c.locations = latest.map(
           (result): LocationResult => ({
             location: result.location,
@@ -213,7 +240,8 @@ export function createService(
           "SELECT * FROM results WHERE check_id = ? ORDER BY timestamp DESC, id DESC LIMIT ?",
         )
         .all(checkId, limit) as Row[];
-      return rows.map(toResult);
+      const tls = (getCheck.get(checkId) as Row | undefined)?.type === "tls";
+      return rows.map((r) => toResult(r, tls));
     },
 
     listIncidents(status) {

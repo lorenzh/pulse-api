@@ -15,6 +15,35 @@ function positiveInt(v: unknown): v is number {
   return typeof v === "number" && Number.isInteger(v) && v > 0;
 }
 
+const DEFAULT_TLS_PORT = 443;
+const DEFAULT_WARN_DAYS = 14;
+
+function parseTls(raw: Record<string, unknown>, where: string, id: string, name: string): Check {
+  const host = raw.host;
+  if (
+    !nonEmptyString(host) ||
+    host !== host.trim() ||
+    /[\s/\\?#@]/.test(host) ||
+    host.includes("://") ||
+    // a colon is only valid in a bracketless IPv6 literal, which has at least two
+    (host.includes(":") && host.split(":").length < 3)
+  ) {
+    throw new ConfigError(`${where}.host must be a host name without scheme, port or path`);
+  }
+  const port = raw.port ?? DEFAULT_TLS_PORT;
+  if (!(typeof port === "number" && Number.isInteger(port) && port >= 1 && port <= 65535)) {
+    throw new ConfigError(`${where}.port must be an integer from 1 to 65535`);
+  }
+  const warnDays = raw.warnDays ?? DEFAULT_WARN_DAYS;
+  if (!positiveInt(warnDays)) {
+    throw new ConfigError(`${where}.warnDays must be a positive integer (days)`);
+  }
+  if (!positiveInt(raw.intervalMs)) {
+    throw new ConfigError(`${where}.intervalMs must be a positive integer (milliseconds)`);
+  }
+  return { id, name, type: "tls", host, port, warnDays, intervalMs: raw.intervalMs };
+}
+
 /** Validate a parsed checks file; throws ConfigError. */
 export function parseChecks(data: unknown): Check[] {
   if (!isRecord(data) || !Array.isArray(data.checks)) {
@@ -25,30 +54,44 @@ export function parseChecks(data: unknown): Check[] {
   data.checks.forEach((raw: unknown, i: number) => {
     const where = `checks[${i}]`;
     if (!isRecord(raw)) throw new ConfigError(`${where} must be an object`);
-    for (const field of ["id", "name", "url"]) {
+    for (const field of ["id", "name"]) {
       if (!nonEmptyString(raw[field])) {
         throw new ConfigError(`${where}.${field} is required and must be a non-empty string`);
       }
     }
-    const { id, name, url } = raw as { id: string; name: string; url: string };
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      throw new ConfigError(`${where}.url is not a valid URL`);
+    const { id, name } = raw as { id: string; name: string };
+    const type = raw.type ?? "http";
+    if (type !== "http" && type !== "tls") {
+      throw new ConfigError(`${where}.type must be "http" or "tls"`);
     }
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      throw new ConfigError(`${where}.url must be http or https`);
-    }
-    if (!positiveInt(raw.intervalMs)) {
-      throw new ConfigError(`${where}.intervalMs must be a positive integer (milliseconds)`);
+    let check: Check;
+    if (type === "tls") {
+      check = parseTls(raw, where, id, name);
+    } else {
+      if (!nonEmptyString(raw.url)) {
+        throw new ConfigError(`${where}.url is required and must be a non-empty string`);
+      }
+      const url = raw.url;
+      let parsed: URL;
+      try {
+        parsed = new URL(url);
+      } catch {
+        throw new ConfigError(`${where}.url is not a valid URL`);
+      }
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new ConfigError(`${where}.url must be http or https`);
+      }
+      if (!positiveInt(raw.intervalMs)) {
+        throw new ConfigError(`${where}.intervalMs must be a positive integer (milliseconds)`);
+      }
+      check = { id, name, url, intervalMs: raw.intervalMs };
+      if (raw.type === "http") check.type = "http";
     }
     if (raw.timeoutMs !== undefined && !positiveInt(raw.timeoutMs)) {
       throw new ConfigError(`${where}.timeoutMs must be a positive integer (milliseconds)`);
     }
     if (seen.has(id)) throw new ConfigError(`duplicate check id "${id}"`);
     seen.add(id);
-    const check: Check = { id, name, url, intervalMs: raw.intervalMs };
     if (raw.timeoutMs !== undefined) check.timeoutMs = raw.timeoutMs as number;
     checks.push(check);
   });
