@@ -1,0 +1,19 @@
+{
+  "name": "@lorenzh/pulse-api",
+  "version": "0.0.0",
+  "description": "Receives probe results, stores them (SQLite later), computes up/down state and incidents, and serves REST.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test",
+    "check": "npm run typecheck && npm run test"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
+  }
+}
