@@ -23,6 +23,6 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
-    "@lorenzh/pulse-contract": "github:lorenzh/pulse-contract#7b1c48cb0705fa173b91c8ae0ca80117740b2b72"
+    "@lorenzh/pulse-contract": "github:lorenzh/pulse-contract#ed19aca355a2e04edccb6d4f9517d8051264fb85"
   }
 }

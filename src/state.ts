@@ -34,3 +34,12 @@ export function applyResult(
     action: open ? "open" : "none",
   };
 }
+
+/**
+ * Pure quorum rule over the latest status of each reporting location.
+ * One location decides alone; with two or more, the check is down iff at least two are down.
+ */
+export function quorumStatus(latest: CheckStatus[]): CheckStatus {
+  if (latest.length === 1) return latest[0]!;
+  return latest.filter((s) => s === "down").length >= 2 ? "down" : "up";
+}

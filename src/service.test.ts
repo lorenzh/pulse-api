@@ -17,6 +17,7 @@ export function res(t: number, status: "up" | "down", reason: string | null = nu
     statusCode: status === "up" ? 200 : 503,
     latencyMs: 5,
     reason: status === "down" ? (reason ?? "HTTP 503") : null,
+    location: "default",
   };
 }
 
@@ -24,7 +25,14 @@ test("service: unknown state before any result", () => {
   const s = createService(openDb(":memory:"));
   s.upsertChecks([check]);
   assert.deepEqual(s.listChecks(), [
-    { ...check, state: "unknown", consecutiveDown: 0, lastResultAt: null, lastReason: null },
+    {
+      ...check,
+      state: "unknown",
+      consecutiveDown: 0,
+      lastResultAt: null,
+      lastReason: null,
+      locations: [],
+    },
   ]);
 });
 

@@ -33,6 +33,7 @@ function result(checkId: string, timestamp: number, status: "up" | "down"): Resu
     statusCode: status === "up" ? 200 : 500,
     latencyMs: 3,
     reason: status === "up" ? null : "HTTP 500",
+    location: "default",
   };
 }
 
@@ -57,6 +58,9 @@ test("server: POST /results 204, 400 and 404 cases", async () => {
       { ...result("c1", 1, "up"), statusCode: "200" },
       { ...result("c1", 1, "up"), reason: 5 },
       { ...result("c1", 1, "up"), checkId: "" },
+      { ...result("c1", 1, "up"), location: 5 },
+      { ...result("c1", 1, "up"), location: null },
+      { ...result("c1", 1, "up"), location: "x".repeat(65) },
       { checkId: "c1" },
     ];
     for (const b of invalid) {
