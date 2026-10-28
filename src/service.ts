@@ -2,11 +2,13 @@ import type { DatabaseSync } from "node:sqlite";
 import type {
   Check,
   CheckState,
+  CheckUptime,
   CheckWithState,
   Incident,
   LocationResult,
   MaintenanceWindow,
   Result,
+  UptimeDay,
 } from "@lorenzh/pulse-contract";
 import { applyResult, quorumStatus } from "./state.ts";
 
@@ -14,6 +16,9 @@ export const DEFAULT_LOCATION = "default";
 export const MAX_LOCATION_LENGTH = 64;
 /** The quorum window spans this many check intervals before a result. */
 const WINDOW_INTERVALS = 2;
+
+const DAY_MS = 86_400_000;
+export const UPTIME_DAYS = 90;
 
 export class UnknownCheckError extends Error {}
 
@@ -25,6 +30,7 @@ export interface Service {
   listResults(checkId: string, limit: number): Result[];
   listIncidents(status?: "open" | "resolved"): Incident[];
   listMaintenance(checkId?: string): MaintenanceWindow[];
+  getUptime(): CheckUptime[];
 }
 
 type Row = Record<string, any>;
@@ -70,6 +76,12 @@ export function createService(
          PARTITION BY location ORDER BY timestamp DESC, id DESC) AS rn
        FROM results WHERE check_id = ?
      ) WHERE rn = 1 ORDER BY location`,
+  );
+  const dailyUptime = db.prepare(
+    `SELECT CAST(timestamp / ${DAY_MS} AS INTEGER) AS day,
+            SUM(status != 'down') AS good, COUNT(*) AS total
+     FROM results WHERE check_id = ? AND timestamp >= ? AND timestamp <= ?
+     GROUP BY day`,
   );
   const updateState = db.prepare(
     `UPDATE checks SET state = ?, consecutive_down = ?, last_result_at = ?, last_reason = ? WHERE id = ?`,
@@ -269,6 +281,33 @@ export function createService(
       return windows
         .filter((w) => w.end > t && (checkId === undefined || w.checkId === checkId))
         .map((w) => ({ ...w }));
+    },
+
+    getUptime() {
+      const t = now();
+      const today = Math.floor(t / DAY_MS);
+      const firstDay = today - (UPTIME_DAYS - 1);
+      const ids = db.prepare("SELECT id FROM checks ORDER BY rowid").all() as Row[];
+      return ids.map(({ id }): CheckUptime => {
+        const byDay = new Map<number, { good: number; total: number }>();
+        for (const r of dailyUptime.all(id, firstDay * DAY_MS, t) as Row[]) {
+          byDay.set(Number(r.day), { good: Number(r.good), total: Number(r.total) });
+        }
+        let good = 0;
+        let total = 0;
+        const days: UptimeDay[] = [];
+        for (let d = firstDay; d <= today; d++) {
+          const agg = byDay.get(d);
+          good += agg?.good ?? 0;
+          total += agg?.total ?? 0;
+          days.push({
+            date: new Date(d * DAY_MS).toISOString().slice(0, 10),
+            uptime: agg ? (agg.good / agg.total) * 100 : null,
+            results: agg?.total ?? 0,
+          });
+        }
+        return { checkId: id, days, uptime: total === 0 ? null : (good / total) * 100 };
+      });
     },
 
     hasCheck(id) {

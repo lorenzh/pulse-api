@@ -113,6 +113,7 @@ async function handle(service: Service, req: IncomingMessage, res: ServerRespons
   const known =
     path === "/results" ||
     path === "/checks" ||
+    path === "/uptime" ||
     path === "/incidents" ||
     path === "/maintenance" ||
     RESULTS_PATH.test(path);
@@ -144,6 +145,11 @@ async function handle(service: Service, req: IncomingMessage, res: ServerRespons
 
   if (path === "/checks") {
     sendJson(res, 200, service.listChecks());
+    return;
+  }
+
+  if (path === "/uptime") {
+    sendJson(res, 200, service.getUptime());
     return;
   }
 
