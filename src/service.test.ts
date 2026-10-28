@@ -18,6 +18,7 @@ export function res(t: number, status: "up" | "down", reason: string | null = nu
     latencyMs: 5,
     reason: status === "down" ? (reason ?? "HTTP 503") : null,
     location: "default",
+    attempts: 1,
   };
 }
 
@@ -27,6 +28,8 @@ test("service: unknown state before any result", () => {
   assert.deepEqual(s.listChecks(), [
     {
       ...check,
+      retries: 0,
+      retryDelayMs: 1000,
       state: "unknown",
       consecutiveDown: 0,
       lastResultAt: null,

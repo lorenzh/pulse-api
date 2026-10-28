@@ -15,6 +15,14 @@ function positiveInt(v: unknown): v is number {
   return typeof v === "number" && Number.isInteger(v) && v > 0;
 }
 
+function intIn(v: unknown, min: number, max: number): v is number {
+  return typeof v === "number" && Number.isInteger(v) && v >= min && v <= max;
+}
+
+const MAX_RETRIES = 10;
+const MAX_RETRY_DELAY_MS = 60000;
+const DEFAULT_RETRY_DELAY_MS = 1000;
+const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_TLS_PORT = 443;
 const DEFAULT_WARN_DAYS = 14;
 
@@ -84,7 +92,29 @@ export function parseChecks(data: unknown): Check[] {
       if (!positiveInt(raw.intervalMs)) {
         throw new ConfigError(`${where}.intervalMs must be a positive integer (milliseconds)`);
       }
-      check = { id, name, url, intervalMs: raw.intervalMs };
+      const retries = raw.retries ?? 0;
+      if (!intIn(retries, 0, MAX_RETRIES)) {
+        throw new ConfigError(`${where}.retries must be an integer from 0 to ${MAX_RETRIES}`);
+      }
+      const retryDelayMs = raw.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
+      if (!intIn(retryDelayMs, 0, MAX_RETRY_DELAY_MS)) {
+        throw new ConfigError(
+          `${where}.retryDelayMs must be an integer from 0 to ${MAX_RETRY_DELAY_MS} (milliseconds)`,
+        );
+      }
+      if (raw.timeoutMs !== undefined && !positiveInt(raw.timeoutMs)) {
+        throw new ConfigError(`${where}.timeoutMs must be a positive integer (milliseconds)`);
+      }
+      if (retries > 0) {
+        const timeout = (raw.timeoutMs as number | undefined) ?? DEFAULT_TIMEOUT_MS;
+        const worst = (retries + 1) * timeout + retries * retryDelayMs;
+        if (worst > raw.intervalMs) {
+          throw new ConfigError(
+            `${where}: worst case ${worst} ms ((retries + 1) * timeoutMs + retries * retryDelayMs) exceeds intervalMs ${raw.intervalMs}`,
+          );
+        }
+      }
+      check = { id, name, url, intervalMs: raw.intervalMs, retries, retryDelayMs };
       if (raw.type === "http") check.type = "http";
     }
     if (raw.timeoutMs !== undefined && !positiveInt(raw.timeoutMs)) {

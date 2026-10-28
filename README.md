@@ -45,7 +45,14 @@ Biome formats and lints the code (`biome.json`). `npm run lint` checks without c
 | `intervalMs` | yes      | Positive integer, milliseconds between probes                                      |
 | `timeoutMs`  | no       | Positive integer, milliseconds; when omitted the probe uses its own default (5000) |
 
-`url` is required for HTTP checks (`type` absent or `"http"`).
+`url` is required for HTTP checks (`type` absent or `"http"`). HTTP checks also take:
+
+| Field          | Required | Meaning                                                                                          |
+| -------------- | -------- | ------------------------------------------------------------------------------------------------ |
+| `retries`      | no       | Integer 0–10, default 0: extra attempts the probe makes after a failed one before reporting down |
+| `retryDelayMs` | no       | Integer 0–60000, default 1000: wait between attempts                                             |
+
+`GET /checks` always serves the resolved `retries` and `retryDelayMs` for HTTP checks. When `retries` is above 0, the file is rejected unless the worst case `(retries + 1) * timeoutMs + retries * retryDelayMs` (`timeoutMs` defaulting to 5000) fits within `intervalMs`. Results carry `attempts` (integer ≥ 1, the attempts made); a missing value on `POST /results` is stored as 1, and results stored before retries existed read as 1. State and incident computation are unchanged. Existing database files are migrated at startup.
 
 A TLS check (`"type": "tls"`) watches the expiry of a server's leaf certificate. It takes no `url`:
 

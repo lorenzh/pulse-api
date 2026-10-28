@@ -74,6 +74,12 @@ export function validateResult(body: unknown): Result | string {
   ) {
     return "certDaysLeft must be an integer or null";
   }
+  if (
+    b.attempts !== undefined &&
+    !(typeof b.attempts === "number" && Number.isInteger(b.attempts) && b.attempts >= 1)
+  ) {
+    return "attempts must be an integer >= 1";
+  }
   let location = DEFAULT_LOCATION;
   if (b.location !== undefined) {
     if (typeof b.location !== "string") return "location must be a string";
@@ -90,6 +96,7 @@ export function validateResult(body: unknown): Result | string {
     latencyMs: b.latencyMs,
     reason: b.reason,
     location,
+    attempts: b.attempts ?? 1,
   };
   if (b.certDaysLeft !== undefined) result.certDaysLeft = b.certDaysLeft;
   return result;

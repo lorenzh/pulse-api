@@ -18,9 +18,27 @@ test("config: tls defaults and explicit values", () => {
   assert.deepEqual(parseChecks({ checks: [full] }), [full]);
   assert.deepEqual(
     parseChecks({
-      checks: [{ id: "h", name: "H", type: "http", url: "http://x/", intervalMs: 5 }],
+      checks: [
+        {
+          id: "h",
+          name: "H",
+          type: "http",
+          url: "http://x/",
+          intervalMs: 5,
+        },
+      ],
     }),
-    [{ id: "h", name: "H", type: "http", url: "http://x/", intervalMs: 5 }],
+    [
+      {
+        id: "h",
+        name: "H",
+        type: "http",
+        url: "http://x/",
+        intervalMs: 5,
+        retries: 0,
+        retryDelayMs: 1000,
+      },
+    ],
   );
 });
 
@@ -55,6 +73,7 @@ function res(t: number, status: "up" | "down", location = "default", days: numbe
     latencyMs: 3,
     reason: status === "down" ? "certificate expires in 5 days" : null,
     location,
+    attempts: 1,
     certDaysLeft: days,
   } as const;
 }

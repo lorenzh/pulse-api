@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS checks (
   warn_days INTEGER,
   interval_ms INTEGER NOT NULL,
   timeout_ms INTEGER,
+  retries INTEGER,
+  retry_delay_ms INTEGER,
   state TEXT NOT NULL DEFAULT 'unknown',
   consecutive_down INTEGER NOT NULL DEFAULT 0,
   last_result_at INTEGER,
@@ -25,7 +27,8 @@ CREATE TABLE IF NOT EXISTS results (
   latency_ms REAL NOT NULL,
   reason TEXT,
   location TEXT NOT NULL DEFAULT 'default',
-  cert_days_left INTEGER
+  cert_days_left INTEGER,
+  attempts INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS results_by_check ON results (check_id, timestamp DESC, id DESC);
 CREATE TABLE IF NOT EXISTS incidents (
@@ -55,6 +58,9 @@ function migrate(db: DatabaseSync): void {
   if (!columns.some((c) => c.name === "cert_days_left")) {
     db.exec("ALTER TABLE results ADD COLUMN cert_days_left INTEGER");
   }
+  if (!columns.some((c) => c.name === "attempts")) {
+    db.exec("ALTER TABLE results ADD COLUMN attempts INTEGER NOT NULL DEFAULT 1");
+  }
   const checkColumns = db.prepare("PRAGMA table_info(checks)").all() as { name: string }[];
   const addCheckColumn = (name: string, ddl: string): void => {
     if (!checkColumns.some((c) => c.name === name)) db.exec(`ALTER TABLE checks ADD COLUMN ${ddl}`);
@@ -63,6 +69,8 @@ function migrate(db: DatabaseSync): void {
   addCheckColumn("host", "host TEXT");
   addCheckColumn("port", "port INTEGER");
   addCheckColumn("warn_days", "warn_days INTEGER");
+  addCheckColumn("retries", "retries INTEGER");
+  addCheckColumn("retry_delay_ms", "retry_delay_ms INTEGER");
   db.exec(
     "CREATE INDEX IF NOT EXISTS results_by_location ON results (check_id, location, timestamp)",
   );

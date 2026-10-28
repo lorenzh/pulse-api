@@ -14,7 +14,10 @@ const win = {
 };
 
 test("config: missing maintenance key means no windows", () => {
-  assert.deepEqual(parseConfig({ checks: [check] }), { checks: [check], maintenance: [] });
+  assert.deepEqual(parseConfig({ checks: [check] }), {
+    checks: [{ ...check, retries: 0, retryDelayMs: 1000 }],
+    maintenance: [],
+  });
 });
 
 test("config: parses windows to epoch ms", () => {

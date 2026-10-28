@@ -4,8 +4,10 @@
       "id": "example",
       "name": "Example endpoint",
       "url": "http://localhost:9000/",
-      "intervalMs": 1000,
-      "timeoutMs": 1000
+      "intervalMs": 10000,
+      "timeoutMs": 1000,
+      "retries": 2,
+      "retryDelayMs": 500
     },
     {
       "id": "example-cert",
