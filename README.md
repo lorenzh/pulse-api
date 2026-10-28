@@ -12,32 +12,36 @@ Requires Node >= 24.
 
 ```sh
 npm ci
-npm run check   # typecheck and tests
+npm run check   # lint, typecheck and tests
 cp checks.example.json checks.json
 npm start
 ```
 
 `node:sqlite` prints an experimental warning on start; this is expected.
 
+## Formatting and linting
+
+Biome formats and lints the code (`biome.json`). `npm run lint` checks without changing files; `npm run format` applies fixes. `npm ci` installs a Lefthook pre-commit hook (`lefthook.yml`) that runs Biome on staged files and rejects the commit if they are badly formatted or fail lint.
+
 ## Settings
 
-| Env | Default | Meaning |
-| --- | --- | --- |
-| `PORT` | `3000` | HTTP port |
-| `PULSE_DB` | `./pulse.db` | SQLite file |
+| Env                 | Default         | Meaning           |
+| ------------------- | --------------- | ----------------- |
+| `PORT`              | `3000`          | HTTP port         |
+| `PULSE_DB`          | `./pulse.db`    | SQLite file       |
 | `PULSE_CHECKS_FILE` | `./checks.json` | Checks definition |
 
 ## Checks file
 
 `checks.json` is `{"checks": [...]}`. Each check has:
 
-| Field | Required | Meaning |
-| --- | --- | --- |
-| `id` | yes | Non-empty string, unique in the file |
-| `name` | yes | Non-empty string |
-| `url` | yes | `http` or `https` URL to probe |
-| `intervalMs` | yes | Positive integer, milliseconds between probes |
-| `timeoutMs` | no | Positive integer, milliseconds; when omitted the probe uses its own default (5000) |
+| Field        | Required | Meaning                                                                            |
+| ------------ | -------- | ---------------------------------------------------------------------------------- |
+| `id`         | yes      | Non-empty string, unique in the file                                               |
+| `name`       | yes      | Non-empty string                                                                   |
+| `url`        | yes      | `http` or `https` URL to probe                                                     |
+| `intervalMs` | yes      | Positive integer, milliseconds between probes                                      |
+| `timeoutMs`  | no       | Positive integer, milliseconds; when omitted the probe uses its own default (5000) |
 
 See `checks.example.json`. The file is validated and upserted into the database at startup; existing state and results are kept. An invalid or unreadable file stops startup with an error.
 

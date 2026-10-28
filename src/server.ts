@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { ErrorResponse, Result } from "@lorenzh/pulse-contract";
-import { UnknownCheckError, type Service } from "./service.ts";
+import { type Service, UnknownCheckError } from "./service.ts";
 
 const MAX_BODY = 1_000_000;
 export const DEFAULT_LIMIT = 100;
@@ -49,13 +49,18 @@ export function validateResult(body: unknown): Result | string {
     return "body must be a JSON object";
   }
   const b = body as Record<string, unknown>;
-  if (typeof b.checkId !== "string" || b.checkId === "") return "checkId must be a non-empty string";
+  if (typeof b.checkId !== "string" || b.checkId === "")
+    return "checkId must be a non-empty string";
   if (!isFiniteNumber(b.timestamp)) return "timestamp must be a number";
   if (b.status !== "up" && b.status !== "down") return 'status must be "up" or "down"';
-  if (b.statusCode !== null && !(typeof b.statusCode === "number" && Number.isInteger(b.statusCode))) {
+  if (
+    b.statusCode !== null &&
+    !(typeof b.statusCode === "number" && Number.isInteger(b.statusCode))
+  ) {
     return "statusCode must be an integer or null";
   }
-  if (!isFiniteNumber(b.latencyMs) || b.latencyMs < 0) return "latencyMs must be a non-negative number";
+  if (!isFiniteNumber(b.latencyMs) || b.latencyMs < 0)
+    return "latencyMs must be a non-negative number";
   if (b.reason !== null && typeof b.reason !== "string") return "reason must be a string or null";
   return {
     checkId: b.checkId,
@@ -73,7 +78,8 @@ async function handle(service: Service, req: IncomingMessage, res: ServerRespons
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname;
   const method = req.method ?? "GET";
-  const known = path === "/results" || path === "/checks" || path === "/incidents" || RESULTS_PATH.test(path);
+  const known =
+    path === "/results" || path === "/checks" || path === "/incidents" || RESULTS_PATH.test(path);
   if (!known) throw new HttpError(404, "not found");
 
   if (path === "/results") {
@@ -90,7 +96,8 @@ async function handle(service: Service, req: IncomingMessage, res: ServerRespons
     try {
       service.ingest(result);
     } catch (err) {
-      if (err instanceof UnknownCheckError) throw new HttpError(404, `unknown check "${result.checkId}"`);
+      if (err instanceof UnknownCheckError)
+        throw new HttpError(404, `unknown check "${result.checkId}"`);
       throw err;
     }
     res.writeHead(204).end();
@@ -122,7 +129,8 @@ async function handle(service: Service, req: IncomingMessage, res: ServerRespons
   let limit = DEFAULT_LIMIT;
   const raw = url.searchParams.get("limit");
   if (raw !== null) {
-    if (!/^\d+$/.test(raw) || Number(raw) < 1) throw new HttpError(400, "limit must be a positive integer");
+    if (!/^\d+$/.test(raw) || Number(raw) < 1)
+      throw new HttpError(400, "limit must be a positive integer");
     limit = Math.min(Number(raw), MAX_LIMIT);
   }
   if (!service.hasCheck(id)) throw new HttpError(404, `unknown check "${id}"`);

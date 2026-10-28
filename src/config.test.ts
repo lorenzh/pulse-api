@@ -1,8 +1,8 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { test } from "node:test";
 import { ConfigError, loadChecks, parseChecks } from "./config.ts";
 
 const ok = { id: "a", name: "A", url: "http://localhost:1/", intervalMs: 1000 };

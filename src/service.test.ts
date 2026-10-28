@@ -1,8 +1,8 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { test } from "node:test";
 import type { Check, Result } from "@lorenzh/pulse-contract";
 import { openDb } from "./db.ts";
 import { createService, UnknownCheckError } from "./service.ts";
@@ -53,14 +53,23 @@ test("service: incident opens on 3rd down with that result's timestamp and reaso
 test("service: up-down-down-up opens nothing; second incident after recovery", () => {
   const s = createService(openDb(":memory:"));
   s.upsertChecks([check]);
-  for (const [t, st] of [[1, "up"], [2, "down"], [3, "down"], [4, "up"]] as const) s.ingest(res(t, st));
+  for (const [t, st] of [
+    [1, "up"],
+    [2, "down"],
+    [3, "down"],
+    [4, "up"],
+  ] as const)
+    s.ingest(res(t, st));
   assert.deepEqual(s.listIncidents(), []);
   for (const t of [5, 6, 7]) s.ingest(res(t, "down"));
   s.ingest(res(8, "up"));
   for (const t of [9, 10, 11]) s.ingest(res(t, "down"));
   const all = s.listIncidents();
   assert.equal(all.length, 2);
-  assert.deepEqual(all.map((i) => i.id), [2, 1]); // open first
+  assert.deepEqual(
+    all.map((i) => i.id),
+    [2, 1],
+  ); // open first
   assert.equal(all[0]!.resolvedAt, null);
 });
 
@@ -73,7 +82,10 @@ test("service: results newest first with limit", () => {
   const s = createService(openDb(":memory:"));
   s.upsertChecks([check]);
   for (const t of [1, 2, 3]) s.ingest(res(t, "up"));
-  assert.deepEqual(s.listResults("c1", 2).map((r) => r.timestamp), [3, 2]);
+  assert.deepEqual(
+    s.listResults("c1", 2).map((r) => r.timestamp),
+    [3, 2],
+  );
 });
 
 test("service: state and counter persist across reopening a file DB", () => {
@@ -94,7 +106,10 @@ test("service: state and counter persist across reopening a file DB", () => {
   assert.equal(c.consecutiveDown, 2);
   assert.deepEqual(s2.listIncidents(), []);
   s2.ingest(res(3, "down")); // the 3rd down across the restart opens the incident
-  assert.deepEqual(s2.listIncidents("open").map((i) => i.openedAt), [3]);
+  assert.deepEqual(
+    s2.listIncidents("open").map((i) => i.openedAt),
+    [3],
+  );
   assert.equal(s2.listResults("c1", 10).length, 3);
   db2.close();
 });
