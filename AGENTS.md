@@ -100,3 +100,7 @@ repository. Node 24+ with native type stripping, ESM, npm, strict TypeScript (`t
 - Storage is `node:sqlite`. The schema and migrations are in `src/db.ts`; SQL queries stay in `src/service.ts`, where rows are mapped to contract types.
 - Tests use a database in a `mkdtemp` directory, never `./pulse.db`.
 - `npm start` runs `src/main.ts`. It reads the database path from `PULSE_DB` (default `./pulse.db`) and the checks from `PULSE_CHECKS_FILE` (default `./checks.json`); copy `checks.example.json` to `checks.json`. Node warns that `node:sqlite` is experimental; that is expected.
+
+## Shared tooling configuration
+
+The shared tooling configuration lives in `lorenzh/pulse-config`. The other pulse repositories use it through `extends` (Biome, TypeScript, Lefthook), a one-line ESLint config and `uses:` (CI). A rule change is made in `pulse-config` and reaches a target when its pin is updated. "Never weaken `biome.json`, `tsconfig.json` or CI" refers to the shared config.
