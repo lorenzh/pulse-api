@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -57,8 +57,10 @@ test("config: rejects invalid windows", () => {
   }
 });
 
-test("config: loadConfig reads a file", () => {
-  const path = join(mkdtempSync(join(tmpdir(), "pulse-cfg-")), "checks.json");
+test("config: loadConfig reads a file", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "pulse-cfg-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "checks.json");
   writeFileSync(path, JSON.stringify({ checks: [check], maintenance: [win] }));
   assert.equal(loadConfig(path).maintenance.length, 1);
   assert.throws(() => loadConfig(`${path}.missing`), ConfigError);

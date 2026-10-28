@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import { test } from "node:test";
-import type { Result } from "@lorenzh/pulse-contract";
+import type { ChecksResponse, IncidentsResponse, Result } from "@lorenzh/pulse-contract";
 import { openDb } from "./db.ts";
 import { createApiServer, validateResult } from "./server.ts";
 import { createService } from "./service.ts";
@@ -84,7 +84,7 @@ test("server: POST /results 204, 400 and 404 cases", async () => {
 test("server: GET /checks reflects state", async () => {
   const { base, close } = await start();
   try {
-    let checks = (await (await fetch(`${base}/checks`)).json()) as any[];
+    let checks = (await (await fetch(`${base}/checks`)).json()) as ChecksResponse;
     assert.deepEqual(
       checks.map((c) => [c.id, c.state]),
       [
@@ -94,7 +94,7 @@ test("server: GET /checks reflects state", async () => {
     );
     assert.equal(checks[1].timeoutMs, 200);
     await post(base, result("c1", 10, "down"));
-    checks = (await (await fetch(`${base}/checks`)).json()) as any[];
+    checks = (await (await fetch(`${base}/checks`)).json()) as ChecksResponse;
     assert.deepEqual(
       {
         s: checks[0].state,
@@ -143,7 +143,8 @@ test("server: GET /incidents status filter and ordering", async () => {
     for (const t of [4, 5, 6]) await post(base, result("c2", t, "down"));
     await post(base, result("c1", 7, "up"));
 
-    const get = async (q: string) => (await (await fetch(`${base}/incidents${q}`)).json()) as any[];
+    const get = async (q: string) =>
+      (await (await fetch(`${base}/incidents${q}`)).json()) as IncidentsResponse;
     assert.deepEqual(
       (await get("?status=open")).map((i) => i.checkId),
       ["c2"],

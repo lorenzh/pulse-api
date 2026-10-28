@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -100,8 +100,10 @@ test("service: results newest first with limit", () => {
   );
 });
 
-test("service: state and counter persist across reopening a file DB", () => {
-  const path = join(mkdtempSync(join(tmpdir(), "pulse-db-")), "p.db");
+test("service: state and counter persist across reopening a file DB", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "pulse-db-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "p.db");
   const db1 = openDb(path);
   const s1 = createService(db1);
   s1.upsertChecks([check]);

@@ -2,6 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type {
   Check,
   CheckState,
+  CheckStatus,
   CheckUptime,
   CheckWithState,
   Incident,
@@ -33,7 +34,54 @@ export interface Service {
   getUptime(): CheckUptime[];
 }
 
-type Row = Record<string, any>;
+/** A row of `checks` as returned by node:sqlite; nullable columns are typed as such. */
+interface CheckRow {
+  id: string;
+  name: string;
+  type: string | null;
+  url: string;
+  host: string;
+  port: number;
+  warn_days: number;
+  interval_ms: number;
+  timeout_ms: number | null;
+  latency_objective_ms: number | null;
+  retries: number | null;
+  retry_delay_ms: number | null;
+  state: CheckState;
+  consecutive_down: number;
+  last_result_at: number | null;
+  last_reason: string | null;
+}
+
+/** A row of `results`. */
+interface ResultRow {
+  check_id: string;
+  timestamp: number;
+  status: CheckStatus;
+  status_code: number | null;
+  latency_ms: number;
+  reason: string | null;
+  location: string;
+  attempts: number | null;
+  cert_days_left: number | null;
+}
+
+/** A row of `incidents`. */
+interface IncidentRow {
+  id: number;
+  check_id: string;
+  opened_at: number;
+  resolved_at: number | null;
+  reason: string | null;
+}
+
+/** A row of the daily uptime query. */
+interface DayRow {
+  day: number;
+  good: number;
+  total: number;
+}
 
 export interface ServiceOptions {
   maintenance?: MaintenanceWindow[];
@@ -98,7 +146,7 @@ export function createService(
   );
 
   /** certDaysLeft is emitted for TLS checks (null when unread) and for any stored value. */
-  function toResult(r: Row, tls = false): Result {
+  function toResult(r: ResultRow, tls = false): Result {
     const result: Result = {
       checkId: r.check_id,
       timestamp: r.timestamp,
@@ -113,7 +161,7 @@ export function createService(
     return result;
   }
 
-  function toCheck(r: Row): CheckWithState {
+  function toCheck(r: CheckRow): CheckWithState {
     const state = {
       state: r.state as CheckState,
       consecutiveDown: r.consecutive_down,
@@ -202,7 +250,7 @@ export function createService(
 
     ingest(result) {
       transaction(() => {
-        const row = getCheck.get(result.checkId) as Row | undefined;
+        const row = getCheck.get(result.checkId) as CheckRow | undefined;
         if (!row) throw new UnknownCheckError(result.checkId);
         insertResult.run(
           result.checkId,
@@ -224,8 +272,8 @@ export function createService(
           result.checkId,
           result.timestamp - WINDOW_INTERVALS * row.interval_ms,
           result.timestamp,
-        ) as Row[];
-        const latest = new Map<string, Row>();
+        ) as unknown as ResultRow[];
+        const latest = new Map<string, ResultRow>();
         for (const r of rows) if (!latest.has(r.location)) latest.set(r.location, r);
         const combined = quorumStatus([...latest.values()].map((r) => r.status));
         const latestDown = rows.find((r) => r.status === "down");
@@ -252,29 +300,33 @@ export function createService(
 
     listChecks() {
       const t = now();
-      return (db.prepare("SELECT * FROM checks ORDER BY rowid").all() as Row[]).map((r) => {
-        const c = toCheck(r);
-        const tls = c.type === "tls";
-        const latest = (latestPerLocation.all(c.id) as Row[]).map((l) => toResult(l, tls));
-        const newest = Math.max(...latest.map((l) => l.timestamp));
-        if (tls) {
-          const newestResult = latest.find((l) => l.timestamp === newest);
-          c.certDaysLeft = newestResult?.certDaysLeft ?? null;
-        }
-        c.locations = latest.map(
-          (result): LocationResult => ({
-            location: result.location,
-            result,
-            stale: result.timestamp < newest - WINDOW_INTERVALS * c.intervalMs,
-          }),
-        );
-        const active = windows.find((w) => w.checkId === c.id && w.start <= t && t < w.end);
-        if (active) {
-          c.state = "maintenance";
-          c.maintenance = { ...active };
-        }
-        return c;
-      });
+      return (db.prepare("SELECT * FROM checks ORDER BY rowid").all() as unknown as CheckRow[]).map(
+        (r) => {
+          const c = toCheck(r);
+          const tls = c.type === "tls";
+          const latest = (latestPerLocation.all(c.id) as unknown as ResultRow[]).map((l) =>
+            toResult(l, tls),
+          );
+          const newest = Math.max(...latest.map((l) => l.timestamp));
+          if (tls) {
+            const newestResult = latest.find((l) => l.timestamp === newest);
+            c.certDaysLeft = newestResult?.certDaysLeft ?? null;
+          }
+          c.locations = latest.map(
+            (result): LocationResult => ({
+              location: result.location,
+              result,
+              stale: result.timestamp < newest - WINDOW_INTERVALS * c.intervalMs,
+            }),
+          );
+          const active = windows.find((w) => w.checkId === c.id && w.start <= t && t < w.end);
+          if (active) {
+            c.state = "maintenance";
+            c.maintenance = { ...active };
+          }
+          return c;
+        },
+      );
     },
 
     listMaintenance(checkId) {
@@ -288,10 +340,13 @@ export function createService(
       const t = now();
       const today = Math.floor(t / DAY_MS);
       const firstDay = today - (UPTIME_DAYS - 1);
-      const ids = db.prepare("SELECT id FROM checks ORDER BY rowid").all() as Row[];
+      const ids = db.prepare("SELECT id FROM checks ORDER BY rowid").all() as unknown as Pick<
+        CheckRow,
+        "id"
+      >[];
       return ids.map(({ id }): CheckUptime => {
         const byDay = new Map<number, { good: number; total: number }>();
-        for (const r of dailyUptime.all(id, firstDay * DAY_MS, t) as Row[]) {
+        for (const r of dailyUptime.all(id, firstDay * DAY_MS, t) as unknown as DayRow[]) {
           byDay.set(Number(r.day), { good: Number(r.good), total: Number(r.total) });
         }
         let good = 0;
@@ -320,8 +375,8 @@ export function createService(
         .prepare(
           "SELECT * FROM results WHERE check_id = ? ORDER BY timestamp DESC, id DESC LIMIT ?",
         )
-        .all(checkId, limit) as Row[];
-      const tls = (getCheck.get(checkId) as Row | undefined)?.type === "tls";
+        .all(checkId, limit) as unknown as ResultRow[];
+      const tls = (getCheck.get(checkId) as CheckRow | undefined)?.type === "tls";
       return rows.map((r) => toResult(r, tls));
     },
 
@@ -334,7 +389,7 @@ export function createService(
           `SELECT * FROM incidents ${where}
            ORDER BY (resolved_at IS NOT NULL), opened_at DESC, id DESC`,
         )
-        .all() as Row[];
+        .all() as unknown as IncidentRow[];
       return rows.map((r) => ({
         id: r.id,
         checkId: r.check_id,

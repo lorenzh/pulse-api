@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import type { HttpCheck } from "@lorenzh/pulse-contract";
 import { openDb } from "./db.ts";
 import { createService } from "./service.ts";
 
@@ -12,15 +13,16 @@ test("service: retry settings are stored, served and updated by upsert", () => {
   // eslint-disable-next-line sonarjs/no-clear-text-protocols -- plain http/ftp literal is a local test fixture, never requested over a network
   const c = { id: "c", name: "C", url: "http://x/", intervalMs: 60000 };
   s.upsertChecks([{ ...c, retries: 2, retryDelayMs: 250 }]);
-  let got = s.listChecks()[0]!;
-  assert.deepEqual([(got as any).retries, (got as any).retryDelayMs], [2, 250]);
+  let got = s.listChecks()[0] as HttpCheck;
+  assert.deepEqual([(got as HttpCheck).retries, (got as HttpCheck).retryDelayMs], [2, 250]);
   s.upsertChecks([{ ...c, retries: 0, retryDelayMs: 1000 }]);
-  got = s.listChecks()[0]!;
-  assert.deepEqual([(got as any).retries, (got as any).retryDelayMs], [0, 1000]);
+  got = s.listChecks()[0] as HttpCheck;
+  assert.deepEqual([(got as HttpCheck).retries, (got as HttpCheck).retryDelayMs], [0, 1000]);
 });
 
-test("db: an old database migrates and reads attempts as 1, retries as 0", () => {
+test("db: an old database migrates and reads attempts as 1, retries as 0", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "pulse-api-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "old.db");
   const old = new DatabaseSync(path);
   old.exec(`
@@ -35,12 +37,12 @@ test("db: an old database migrates and reads attempts as 1, retries as 0", () =>
       VALUES ('c', 1, 'up', 200, 5, NULL);`);
   old.close();
   const s = createService(openDb(path));
-  const got = s.listChecks()[0] as any;
+  const got = s.listChecks()[0] as HttpCheck;
   assert.deepEqual([got.retries, got.retryDelayMs], [0, 1000]);
   assert.equal(s.listResults("c", 10)[0]!.attempts, 1);
   s.upsertChecks([
     // eslint-disable-next-line sonarjs/no-clear-text-protocols -- plain http/ftp literal is a local test fixture, never requested over a network
     { id: "c", name: "C", url: "http://x/", intervalMs: 1000, retries: 1, retryDelayMs: 5 },
   ]);
-  assert.equal((s.listChecks()[0] as any).retries, 1);
+  assert.equal((s.listChecks()[0] as HttpCheck).retries, 1);
 });

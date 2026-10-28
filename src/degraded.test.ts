@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import type { Check, CheckStatus, MaintenanceWindow, Result } from "@lorenzh/pulse-contract";
+import type {
+  Check,
+  CheckStatus,
+  HttpCheck,
+  MaintenanceWindow,
+  Result,
+} from "@lorenzh/pulse-contract";
 import { ConfigError, parseChecks } from "./config.ts";
 import { openDb } from "./db.ts";
 import { createApiServer, validateResult } from "./server.ts";
@@ -31,7 +37,7 @@ function res(t: number, status: CheckStatus, location = "default"): Result {
 
 test("config: latencyObjectiveMs accepted, copied and validated", () => {
   const [c] = parseChecks({ checks: [{ ...base, latencyObjectiveMs: 500, extra: 1 }] });
-  assert.equal((c as any).latencyObjectiveMs, 500);
+  assert.equal((c as HttpCheck).latencyObjectiveMs, 500);
   assert.equal("extra" in c!, false);
   assert.equal("latencyObjectiveMs" in parseChecks({ checks: [base] })[0]!, false);
   for (const v of [0, -1, 1.5, "5", null]) {
@@ -43,8 +49,9 @@ test("config: latencyObjectiveMs accepted, copied and validated", () => {
   }
 });
 
-test("db: old database migrates; objective is served and can be cleared", () => {
+test("db: old database migrates; objective is served and can be cleared", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "pulse-api-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "old.db");
   const old = new DatabaseSync(path);
   old.exec(`
@@ -56,7 +63,7 @@ test("db: old database migrates; objective is served and can be cleared", () => 
   const s = createService(openDb(path));
   assert.equal("latencyObjectiveMs" in s.listChecks()[0]!, false);
   s.upsertChecks([{ ...check, latencyObjectiveMs: 500 }]);
-  assert.equal((s.listChecks()[0] as any).latencyObjectiveMs, 500);
+  assert.equal((s.listChecks()[0] as HttpCheck).latencyObjectiveMs, 500);
   s.upsertChecks([check]);
   assert.equal("latencyObjectiveMs" in s.listChecks()[0]!, false);
 });
@@ -84,7 +91,9 @@ test("server: POST degraded is 204, unknown is 400, GET /checks serves the objec
       });
     assert.equal((await post(res(1, "degraded"))).status, 204);
     assert.equal((await post({ ...res(2, "up"), status: "slow" })).status, 400);
-    const checks = (await (await fetch(`${url}/checks`)).json()) as any[];
+    const checks = (await (await fetch(`${url}/checks`)).json()) as (HttpCheck & {
+      state: string;
+    })[];
     assert.equal(checks[0].latencyObjectiveMs, 500);
     assert.equal(checks[0].state, "degraded");
   } finally {
