@@ -57,7 +57,9 @@ export function validateResult(body: unknown): Result | string {
   if (typeof b.checkId !== "string" || b.checkId === "")
     return "checkId must be a non-empty string";
   if (!isFiniteNumber(b.timestamp)) return "timestamp must be a number";
-  if (b.status !== "up" && b.status !== "down") return 'status must be "up" or "down"';
+  if (b.status !== "up" && b.status !== "degraded" && b.status !== "down") {
+    return 'status must be "up", "degraded" or "down"';
+  }
   if (
     b.statusCode !== null &&
     !(typeof b.statusCode === "number" && Number.isInteger(b.statusCode))

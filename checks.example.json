@@ -6,6 +6,7 @@
       "url": "http://localhost:9000/",
       "intervalMs": 10000,
       "timeoutMs": 1000,
+      "latencyObjectiveMs": 500,
       "retries": 2,
       "retryDelayMs": 500
     },

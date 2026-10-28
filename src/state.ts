@@ -21,9 +21,9 @@ export function applyResult(
   prev: CheckStateSnapshot,
   status: CheckStatus,
 ): { next: CheckStateSnapshot; action: IncidentAction } {
-  if (status === "up") {
+  if (status === "up" || status === "degraded") {
     return {
-      next: { state: "up", consecutiveDown: 0, incidentOpen: false },
+      next: { state: status, consecutiveDown: 0, incidentOpen: false },
       action: prev.incidentOpen ? "resolve" : "none",
     };
   }
@@ -38,8 +38,10 @@ export function applyResult(
 /**
  * Pure quorum rule over the latest status of each reporting location.
  * One location decides alone; with two or more, the check is down iff at least two are down.
+ * Otherwise it is degraded if any location is degraded, else up.
  */
 export function quorumStatus(latest: CheckStatus[]): CheckStatus {
   if (latest.length === 1) return latest[0]!;
-  return latest.filter((s) => s === "down").length >= 2 ? "down" : "up";
+  if (latest.filter((s) => s === "down").length >= 2) return "down";
+  return latest.some((s) => s === "degraded") ? "degraded" : "up";
 }

@@ -114,7 +114,13 @@ export function parseChecks(data: unknown): Check[] {
           );
         }
       }
+      if (raw.latencyObjectiveMs !== undefined && !positiveInt(raw.latencyObjectiveMs)) {
+        throw new ConfigError(
+          `${where}.latencyObjectiveMs must be a positive integer (milliseconds)`,
+        );
+      }
       check = { id, name, url, intervalMs: raw.intervalMs, retries, retryDelayMs };
+      if (raw.latencyObjectiveMs !== undefined) check.latencyObjectiveMs = raw.latencyObjectiveMs;
       if (raw.type === "http") check.type = "http";
     }
     if (raw.timeoutMs !== undefined && !positiveInt(raw.timeoutMs)) {
