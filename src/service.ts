@@ -48,11 +48,12 @@ export function createService(
     "UPDATE checks SET last_result_at = ?, last_reason = ? WHERE id = ?",
   );
   const upsert = db.prepare(`
-    INSERT INTO checks (id, name, url, type, host, port, warn_days, interval_ms, timeout_ms, retries, retry_delay_ms)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO checks (id, name, url, type, host, port, warn_days, interval_ms, timeout_ms, latency_objective_ms, retries, retry_delay_ms)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET name = excluded.name, url = excluded.url, type = excluded.type,
       host = excluded.host, port = excluded.port, warn_days = excluded.warn_days,
       interval_ms = excluded.interval_ms, timeout_ms = excluded.timeout_ms,
+      latency_objective_ms = excluded.latency_objective_ms,
       retries = excluded.retries, retry_delay_ms = excluded.retry_delay_ms`);
   const getCheck = db.prepare("SELECT * FROM checks WHERE id = ?");
   const insertResult = db.prepare(
@@ -129,6 +130,9 @@ export function createService(
             ...state,
           };
     if (r.timeout_ms !== null) c.timeoutMs = r.timeout_ms;
+    if (r.latency_objective_ms !== null && c.type !== "tls") {
+      c.latencyObjectiveMs = r.latency_objective_ms;
+    }
     return c;
   }
 
@@ -161,6 +165,7 @@ export function createService(
               timeout,
               null,
               null,
+              null,
             );
           } else {
             upsert.run(
@@ -173,6 +178,7 @@ export function createService(
               null,
               c.intervalMs,
               timeout,
+              c.latencyObjectiveMs ?? null,
               c.retries ?? 0,
               c.retryDelayMs ?? 1000,
             );

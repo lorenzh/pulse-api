@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS checks (
   warn_days INTEGER,
   interval_ms INTEGER NOT NULL,
   timeout_ms INTEGER,
+  latency_objective_ms INTEGER,
   retries INTEGER,
   retry_delay_ms INTEGER,
   state TEXT NOT NULL DEFAULT 'unknown',
@@ -69,6 +70,7 @@ function migrate(db: DatabaseSync): void {
   addCheckColumn("host", "host TEXT");
   addCheckColumn("port", "port INTEGER");
   addCheckColumn("warn_days", "warn_days INTEGER");
+  addCheckColumn("latency_objective_ms", "latency_objective_ms INTEGER");
   addCheckColumn("retries", "retries INTEGER");
   addCheckColumn("retry_delay_ms", "retry_delay_ms INTEGER");
   db.exec(
