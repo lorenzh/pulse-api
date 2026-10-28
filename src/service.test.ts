@@ -7,6 +7,7 @@ import type { Check, Result } from "@lorenzh/pulse-contract";
 import { openDb } from "./db.ts";
 import { createService, UnknownCheckError } from "./service.ts";
 
+// eslint-disable-next-line sonarjs/no-clear-text-protocols -- plain http/ftp literal is a local test fixture, never requested over a network
 const check: Check = { id: "c1", name: "C1", url: "http://x/", intervalMs: 1000, timeoutMs: 500 };
 
 export function res(t: number, status: "up" | "down", reason: string | null = null): Result {

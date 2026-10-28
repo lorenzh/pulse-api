@@ -10,6 +10,7 @@ import { validateResult } from "./server.ts";
 import { createService } from "./service.ts";
 import { quorumStatus } from "./state.ts";
 
+// eslint-disable-next-line sonarjs/no-clear-text-protocols -- plain http/ftp literal is a local test fixture, never requested over a network
 const check: Check = { id: "c1", name: "C1", url: "http://x/", intervalMs: 1000 };
 
 function r(t: number, location: string, status: "up" | "down", reason?: string): Result {
@@ -165,6 +166,7 @@ test("validateResult: location normalisation", () => {
   assert.match(String(loc("x".repeat(65))), /location/);
   assert.match(String(loc(5)), /location/);
   assert.match(String(loc(null)), /location/);
+  // eslint-disable-next-line sonarjs/no-unused-vars -- rest destructuring omits a property to build the test input
   const { location: _l, ...noLoc } = base;
   assert.equal((validateResult(noLoc) as Result).location, "default");
 });

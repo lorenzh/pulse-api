@@ -46,6 +46,7 @@ export function createService(
   { maintenance = [], now = Date.now }: ServiceOptions = {},
 ): Service {
   const windows = [...maintenance].sort(
+    // eslint-disable-next-line sonarjs/no-nested-conditional -- tie-break comparator reads clearest as one expression; refactor out of scope
     (a, b) => a.start - b.start || (a.checkId < b.checkId ? -1 : a.checkId > b.checkId ? 1 : 0),
   );
   const inWindow = (checkId: string, t: number): boolean =>
@@ -325,12 +326,9 @@ export function createService(
     },
 
     listIncidents(status) {
-      const where =
-        status === "open"
-          ? "WHERE resolved_at IS NULL"
-          : status === "resolved"
-            ? "WHERE resolved_at IS NOT NULL"
-            : "";
+      let where = "";
+      if (status === "open") where = "WHERE resolved_at IS NULL";
+      else if (status === "resolved") where = "WHERE resolved_at IS NOT NULL";
       const rows = db
         .prepare(
           `SELECT * FROM incidents ${where}

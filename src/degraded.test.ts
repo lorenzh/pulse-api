@@ -13,6 +13,7 @@ import { createService } from "./service.ts";
 import { applyResult, INITIAL_STATE, quorumStatus } from "./state.ts";
 
 const base = { id: "a", name: "A", url: "http://localhost:1/", intervalMs: 1000 };
+// eslint-disable-next-line sonarjs/no-clear-text-protocols -- plain http/ftp literal is a local test fixture, never requested over a network
 const check: Check = { id: "c1", name: "C1", url: "http://x/", intervalMs: 1000 };
 
 function res(t: number, status: CheckStatus, location = "default"): Result {

@@ -11,8 +11,8 @@
   "scripts": {
     "start": "node src/main.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --test",
-    "lint": "biome check .",
+    "test": "node --test --experimental-test-coverage --test-coverage-lines=80 --test-coverage-exclude=\"**/*.test.ts\" --test-coverage-exclude=\"test/**\" --test-coverage-exclude=\"**/test/**\" --test-coverage-exclude=\"dist/**\"",
+    "lint": "biome check . && eslint --config tools/sonarjs/eslint.config.js .",
     "format": "biome check --write .",
     "prepare": "lefthook install || true",
     "check": "npm run lint && npm run typecheck && npm run test"
@@ -25,5 +25,13 @@
   },
   "dependencies": {
     "@lorenzh/pulse-contract": "github:lorenzh/pulse-contract#78c86dcc3761dabcd57988da81b3270c75df12f0"
+  },
+  "workspaces": [
+    "tools/sonarjs"
+  ],
+  "overrides": {
+    "ts-api-utils": {
+      "typescript": "6.0.3"
+    }
   }
 }

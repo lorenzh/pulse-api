@@ -3,3 +3,6 @@ pre-commit:
     biome:
       glob: "*.{js,ts,json,jsonc}"
       run: npx --no-install biome check --no-errors-on-unmatched --files-ignore-unknown=true {staged_files}
+    eslint:
+      glob: "*.{js,ts}"
+      run: npx --no-install eslint --config tools/sonarjs/eslint.config.js --no-error-on-unmatched-pattern {staged_files}
