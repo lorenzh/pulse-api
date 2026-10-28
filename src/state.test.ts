@@ -1,7 +1,12 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
+import { test } from "node:test";
 import type { CheckStatus } from "@lorenzh/pulse-contract";
-import { applyResult, INITIAL_STATE, type CheckStateSnapshot, type IncidentAction } from "./state.ts";
+import {
+  applyResult,
+  type CheckStateSnapshot,
+  INITIAL_STATE,
+  type IncidentAction,
+} from "./state.ts";
 
 function run(statuses: CheckStatus[]) {
   let s: CheckStateSnapshot = INITIAL_STATE;
@@ -17,9 +22,21 @@ function run(statuses: CheckStatus[]) {
 const table: Array<[string, CheckStatus[], IncidentAction[], string, number]> = [
   ["2 downs: no incident", ["down", "down"], ["none", "none"], "down", 2],
   ["3 downs: one opens", ["down", "down", "down"], ["none", "none", "open"], "down", 3],
-  ["4th down: still one", ["down", "down", "down", "down"], ["none", "none", "open", "none"], "down", 4],
+  [
+    "4th down: still one",
+    ["down", "down", "down", "down"],
+    ["none", "none", "open", "none"],
+    "down",
+    4,
+  ],
   ["up resolves", ["down", "down", "down", "up"], ["none", "none", "open", "resolve"], "up", 0],
-  ["up-down-down-up: none", ["up", "down", "down", "up"], ["none", "none", "none", "none"], "up", 0],
+  [
+    "up-down-down-up: none",
+    ["up", "down", "down", "up"],
+    ["none", "none", "none", "none"],
+    "up",
+    0,
+  ],
   [
     "second incident after recovery",
     ["down", "down", "down", "up", "down", "down", "down"],

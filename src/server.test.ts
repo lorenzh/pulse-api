@@ -1,10 +1,10 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
+import { test } from "node:test";
 import type { Result } from "@lorenzh/pulse-contract";
 import { openDb } from "./db.ts";
-import { createService } from "./service.ts";
 import { createApiServer } from "./server.ts";
+import { createService } from "./service.ts";
 
 async function start() {
   const service = createService(openDb(":memory:"));
@@ -15,7 +15,14 @@ async function start() {
   const server = createApiServer(service);
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  return { base, close: () => new Promise<void>((r) => { server.close(() => r()); server.closeAllConnections(); }) };
+  return {
+    base,
+    close: () =>
+      new Promise<void>((r) => {
+        server.close(() => r());
+        server.closeAllConnections();
+      }),
+  };
 }
 
 function result(checkId: string, timestamp: number, status: "up" | "down"): Result {
@@ -71,12 +78,23 @@ test("server: GET /checks reflects state", async () => {
   const { base, close } = await start();
   try {
     let checks = (await (await fetch(`${base}/checks`)).json()) as any[];
-    assert.deepEqual(checks.map((c) => [c.id, c.state]), [["c1", "unknown"], ["c2", "unknown"]]);
+    assert.deepEqual(
+      checks.map((c) => [c.id, c.state]),
+      [
+        ["c1", "unknown"],
+        ["c2", "unknown"],
+      ],
+    );
     assert.equal(checks[1].timeoutMs, 200);
     await post(base, result("c1", 10, "down"));
     checks = (await (await fetch(`${base}/checks`)).json()) as any[];
     assert.deepEqual(
-      { s: checks[0].state, n: checks[0].consecutiveDown, t: checks[0].lastResultAt, r: checks[0].lastReason },
+      {
+        s: checks[0].state,
+        n: checks[0].consecutiveDown,
+        t: checks[0].lastResultAt,
+        r: checks[0].lastReason,
+      },
       { s: "down", n: 1, t: 10, r: "HTTP 500" },
     );
   } finally {
@@ -89,9 +107,15 @@ test("server: GET /checks/:id/results ordering, limit, 404", async () => {
   try {
     for (let t = 1; t <= 5; t++) await post(base, result("c1", t, "up"));
     const all = (await (await fetch(`${base}/checks/c1/results`)).json()) as Result[];
-    assert.deepEqual(all.map((r) => r.timestamp), [5, 4, 3, 2, 1]);
+    assert.deepEqual(
+      all.map((r) => r.timestamp),
+      [5, 4, 3, 2, 1],
+    );
     const two = (await (await fetch(`${base}/checks/c1/results?limit=2`)).json()) as Result[];
-    assert.deepEqual(two.map((r) => r.timestamp), [5, 4]);
+    assert.deepEqual(
+      two.map((r) => r.timestamp),
+      [5, 4],
+    );
     const huge = await fetch(`${base}/checks/c1/results?limit=999999`);
     assert.equal(huge.status, 200);
     assert.equal(((await huge.json()) as Result[]).length, 5);
@@ -113,11 +137,20 @@ test("server: GET /incidents status filter and ordering", async () => {
     await post(base, result("c1", 7, "up"));
 
     const get = async (q: string) => (await (await fetch(`${base}/incidents${q}`)).json()) as any[];
-    assert.deepEqual((await get("?status=open")).map((i) => i.checkId), ["c2"]);
+    assert.deepEqual(
+      (await get("?status=open")).map((i) => i.checkId),
+      ["c2"],
+    );
     const resolved = await get("?status=resolved");
-    assert.deepEqual(resolved.map((i) => [i.checkId, i.openedAt, i.resolvedAt]), [["c1", 3, 7]]);
+    assert.deepEqual(
+      resolved.map((i) => [i.checkId, i.openedAt, i.resolvedAt]),
+      [["c1", 3, 7]],
+    );
     const both = await get("");
-    assert.deepEqual(both.map((i) => i.checkId), ["c2", "c1"]); // open first
+    assert.deepEqual(
+      both.map((i) => i.checkId),
+      ["c2", "c1"],
+    ); // open first
     const bad = await fetch(`${base}/incidents?status=bogus`);
     assert.equal(bad.status, 400);
     assert.equal(typeof ((await bad.json()) as { error: string }).error, "string");

@@ -1,11 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import type {
-  Check,
-  CheckState,
-  CheckWithState,
-  Incident,
-  Result,
-} from "@lorenzh/pulse-contract";
+import type { Check, CheckState, CheckWithState, Incident, Result } from "@lorenzh/pulse-contract";
 import { applyResult } from "./state.ts";
 
 export class UnknownCheckError extends Error {}
