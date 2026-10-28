@@ -10,6 +10,10 @@ pulse is built by Paragon Factory agents from the issues in [pulse-meta](https:/
 
 Contributing: see [AGENTS.md](AGENTS.md).
 
+## Shared tooling configuration
+
+The shared tooling configuration lives in `lorenzh/pulse-config`. The other pulse repositories use it through `extends` (Biome, TypeScript, Lefthook), a one-line ESLint config and `uses:` (CI). A rule change is made in `pulse-config` and reaches a target when its pin is updated. "Never weaken `biome.json`, `tsconfig.json` or CI" refers to the shared config.
+
 ## Install, test, run
 
 Requires Node >= 24.
@@ -25,7 +29,7 @@ npm start
 
 ## Formatting and linting
 
-Biome formats and lints the code (`biome.json`). SonarJS recommended rules run through ESLint with cognitive complexity limited to 15; the ESLint setup is isolated in the `tools/sonarjs` workspace because it needs TypeScript 6 while the repository uses TypeScript 7. Line coverage must be at least 80 %. Checks: Biome, SonarJS via ESLint (cognitive complexity ≤ 15), line coverage ≥ 80 % — run `npm run lint` and `npm test`. `npm run format` applies Biome fixes. `npm ci` installs a Lefthook pre-commit hook (`lefthook.yml`) that runs Biome and ESLint on staged files and rejects the commit on failure.
+Biome formats and lints the code (`biome.json`). SonarJS recommended rules run through ESLint with cognitive complexity limited to 15; the ESLint setup comes from `@lorenzh/pulse-config`, which installs it nested with TypeScript 6 while the repository uses TypeScript 7 (`.npmrc` sets `install-strategy=nested`; `eslint.config.js` also ignores `.repos/`). Line coverage must be at least 80 %. Checks: Biome, SonarJS via ESLint (cognitive complexity ≤ 15), line coverage ≥ 80 % — run `npm run lint` and `npm test`. `npm run format` applies Biome fixes. `npm ci` installs a Lefthook pre-commit hook (`lefthook.yml`) that runs Biome and ESLint on staged files and rejects the commit on failure.
 
 ## Settings
 
