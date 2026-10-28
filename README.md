@@ -97,6 +97,7 @@ A result is classified by its own `timestamp`. A down result inside a window is 
 
 - `POST /results` — body `Result`; 204 on success, 400 invalid body, 404 unknown `checkId`.
 - `GET /checks` — checks with state.
+- `GET /uptime` — `CheckUptime[]`, one entry per check in `GET /checks` order: 90 UTC calendar days (oldest first, the last is today per the service clock) with `date`, `uptime` (percent, unrounded; `degraded` counts as up, all locations count, maintenance is not subtracted; `null` without results) and `results`, plus the result-weighted 90-day `uptime` (`null` without results). Results before the window or after now are ignored. Computed with one aggregate query per check.
 - `GET /checks/:id/results?limit=N` — results newest first; `limit` defaults to 100 and is capped at 1000; 400 if `limit` is not a positive integer; 404 unknown check.
 - `GET /incidents?status=open|resolved` — both when omitted, open ones first, then newest first; 400 on a bad status.
 
