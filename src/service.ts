@@ -1,5 +1,12 @@
 import type { DatabaseSync } from "node:sqlite";
-import type { Check, CheckState, CheckWithState, Incident, Result } from "@lorenzh/pulse-contract";
+import type {
+  Check,
+  CheckState,
+  CheckWithState,
+  Incident,
+  MaintenanceWindow,
+  Result,
+} from "@lorenzh/pulse-contract";
 import { applyResult } from "./state.ts";
 
 export class UnknownCheckError extends Error {}
@@ -11,12 +18,29 @@ export interface Service {
   hasCheck(id: string): boolean;
   listResults(checkId: string, limit: number): Result[];
   listIncidents(status?: "open" | "resolved"): Incident[];
+  listMaintenance(checkId?: string): MaintenanceWindow[];
 }
 
 type Row = Record<string, any>;
 
-// Incident openedAt/resolvedAt come from result timestamps, so the service needs no clock.
-export function createService(db: DatabaseSync): Service {
+export interface ServiceOptions {
+  maintenance?: MaintenanceWindow[];
+  /** Clock for displayed state and window listings; results are classified by their own timestamp. */
+  now?: () => number;
+}
+
+export function createService(
+  db: DatabaseSync,
+  { maintenance = [], now = Date.now }: ServiceOptions = {},
+): Service {
+  const windows = [...maintenance].sort(
+    (a, b) => a.start - b.start || (a.checkId < b.checkId ? -1 : a.checkId > b.checkId ? 1 : 0),
+  );
+  const inWindow = (checkId: string, t: number): boolean =>
+    windows.some((w) => w.checkId === checkId && w.start <= t && t < w.end);
+  const updateLast = db.prepare(
+    "UPDATE checks SET last_result_at = ?, last_reason = ? WHERE id = ?",
+  );
   const upsert = db.prepare(`
     INSERT INTO checks (id, name, url, interval_ms, timeout_ms) VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET name = excluded.name, url = excluded.url,
@@ -84,6 +108,10 @@ export function createService(db: DatabaseSync): Service {
           result.latencyMs,
           result.reason,
         );
+        if (result.status === "down" && inWindow(result.checkId, result.timestamp)) {
+          updateLast.run(result.timestamp, result.reason, result.checkId);
+          return;
+        }
         const { next, action } = applyResult(
           {
             state: row.state,
@@ -105,7 +133,23 @@ export function createService(db: DatabaseSync): Service {
     },
 
     listChecks() {
-      return (db.prepare("SELECT * FROM checks ORDER BY rowid").all() as Row[]).map(toCheck);
+      const t = now();
+      return (db.prepare("SELECT * FROM checks ORDER BY rowid").all() as Row[]).map((r) => {
+        const c = toCheck(r);
+        const active = windows.find((w) => w.checkId === c.id && w.start <= t && t < w.end);
+        if (active) {
+          c.state = "maintenance";
+          c.maintenance = { ...active };
+        }
+        return c;
+      });
+    },
+
+    listMaintenance(checkId) {
+      const t = now();
+      return windows
+        .filter((w) => w.end > t && (checkId === undefined || w.checkId === checkId))
+        .map((w) => ({ ...w }));
     },
 
     hasCheck(id) {
