@@ -5,6 +5,10 @@ CREATE TABLE IF NOT EXISTS checks (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   url TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'http',
+  host TEXT,
+  port INTEGER,
+  warn_days INTEGER,
   interval_ms INTEGER NOT NULL,
   timeout_ms INTEGER,
   state TEXT NOT NULL DEFAULT 'unknown',
@@ -20,7 +24,8 @@ CREATE TABLE IF NOT EXISTS results (
   status_code INTEGER,
   latency_ms REAL NOT NULL,
   reason TEXT,
-  location TEXT NOT NULL DEFAULT 'default'
+  location TEXT NOT NULL DEFAULT 'default',
+  cert_days_left INTEGER
 );
 CREATE INDEX IF NOT EXISTS results_by_check ON results (check_id, timestamp DESC, id DESC);
 CREATE TABLE IF NOT EXISTS incidents (
@@ -47,6 +52,17 @@ function migrate(db: DatabaseSync): void {
   if (!columns.some((c) => c.name === "location")) {
     db.exec("ALTER TABLE results ADD COLUMN location TEXT NOT NULL DEFAULT 'default'");
   }
+  if (!columns.some((c) => c.name === "cert_days_left")) {
+    db.exec("ALTER TABLE results ADD COLUMN cert_days_left INTEGER");
+  }
+  const checkColumns = db.prepare("PRAGMA table_info(checks)").all() as { name: string }[];
+  const addCheckColumn = (name: string, ddl: string): void => {
+    if (!checkColumns.some((c) => c.name === name)) db.exec(`ALTER TABLE checks ADD COLUMN ${ddl}`);
+  };
+  addCheckColumn("type", "type TEXT NOT NULL DEFAULT 'http'");
+  addCheckColumn("host", "host TEXT");
+  addCheckColumn("port", "port INTEGER");
+  addCheckColumn("warn_days", "warn_days INTEGER");
   db.exec(
     "CREATE INDEX IF NOT EXISTS results_by_location ON results (check_id, location, timestamp)",
   );

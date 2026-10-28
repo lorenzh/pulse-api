@@ -45,6 +45,19 @@ Biome formats and lints the code (`biome.json`). `npm run lint` checks without c
 | `intervalMs` | yes      | Positive integer, milliseconds between probes                                      |
 | `timeoutMs`  | no       | Positive integer, milliseconds; when omitted the probe uses its own default (5000) |
 
+`url` is required for HTTP checks (`type` absent or `"http"`).
+
+A TLS check (`"type": "tls"`) watches the expiry of a server's leaf certificate. It takes no `url`:
+
+| Field      | Required | Meaning                                                                  |
+| ---------- | -------- | ------------------------------------------------------------------------ |
+| `type`     | yes      | `"tls"`; any other value than `http` or `tls` is rejected                |
+| `host`     | yes      | Host name or IP without scheme, port or path                             |
+| `port`     | no       | Integer 1–65535, default 443                                             |
+| `warnDays` | no       | Positive integer, default 14; down when this many days or fewer are left |
+
+`intervalMs` is required and `timeoutMs` optional as above. Only the leaf certificate's expiry is judged; the chain and host name are not verified. Results carry `certDaysLeft` (stored in `results.cert_days_left`, null for old rows); `GET /checks` shows the latest one and `GET /checks/:id/results` includes it.
+
 See `checks.example.json`. The file is validated and upserted into the database at startup; existing state and results are kept. An invalid or unreadable file stops startup with an error.
 
 ### Maintenance windows

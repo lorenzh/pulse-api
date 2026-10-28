@@ -67,6 +67,13 @@ export function validateResult(body: unknown): Result | string {
   if (!isFiniteNumber(b.latencyMs) || b.latencyMs < 0)
     return "latencyMs must be a non-negative number";
   if (b.reason !== null && typeof b.reason !== "string") return "reason must be a string or null";
+  if (
+    b.certDaysLeft !== undefined &&
+    b.certDaysLeft !== null &&
+    !(typeof b.certDaysLeft === "number" && Number.isInteger(b.certDaysLeft))
+  ) {
+    return "certDaysLeft must be an integer or null";
+  }
   let location = DEFAULT_LOCATION;
   if (b.location !== undefined) {
     if (typeof b.location !== "string") return "location must be a string";
@@ -75,7 +82,7 @@ export function validateResult(body: unknown): Result | string {
       return `location must be at most ${MAX_LOCATION_LENGTH} characters`;
     if (trimmed !== "") location = trimmed;
   }
-  return {
+  const result: Result = {
     checkId: b.checkId,
     timestamp: b.timestamp,
     status: b.status,
@@ -84,6 +91,8 @@ export function validateResult(body: unknown): Result | string {
     reason: b.reason,
     location,
   };
+  if (b.certDaysLeft !== undefined) result.certDaysLeft = b.certDaysLeft;
+  return result;
 }
 
 const RESULTS_PATH = /^\/checks\/([^/]+)\/results$/;
