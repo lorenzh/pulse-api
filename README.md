@@ -38,6 +38,30 @@ Biome formats and lints the code (`biome.json`). SonarJS recommended rules run t
 | `PORT`              | `3000`          | HTTP port         |
 | `PULSE_DB`          | `./pulse.db`    | SQLite file       |
 | `PULSE_CHECKS_FILE` | `./checks.json` | Checks definition |
+| `PULSE_TOKENS_FILE` | `./tokens.json` | Probe tokens      |
+
+## Probe tokens
+
+`POST /results` needs a probe token: `Authorization: Bearer <token>`. The token fixes the probe's location. Read routes stay public.
+
+`tokens.json` (path in `PULSE_TOKENS_FILE`, kept out of git; copy `tokens.example.json`) is `{"tokens": [{"location": "east", "token": "<secret>"}]}`. Rules:
+
+- At least one entry. The API exits at startup with a message if the file is missing, not valid JSON or invalid. Messages never print token values; the startup log only counts tokens and locations.
+- `location`: non-empty, at most 64 characters after trim.
+- `token`: at least 16 characters, unique across the file. The placeholder values from `tokens.example.json` are rejected.
+- A location may have several tokens (for rotation).
+
+Create a token with `openssl rand -hex 32`.
+
+Responses on `POST /results`, checked in this order: 405 wrong method; 401 `{"error":"unauthorized"}` with `WWW-Authenticate: Bearer` for a missing, malformed or unknown token (the header is `Bearer`, case-insensitive, one space, a non-empty token); then body size (413), JSON (400), validation (400); 403 `{"error":"location does not match token"}` if the body `location` differs from the token's (after trim); 404 unknown check. 401 comes before 400 and 404, so callers without a token learn nothing about checks. Nothing is stored on a rejection.
+
+Location rule: a result without `location` (or a blank one) is stored under the token's location, not `default`. The probe's `PULSE_LOCATION` must equal its token's location, otherwise every result gets 403.
+
+Rotation: add the new token to `tokens.json`, restart the API (tokens load at startup only), switch the probe to the new token, remove the old token, restart the API.
+
+Rollout: give probes their tokens first (an old API ignores the header), then enable tokens on the API. Otherwise ingestion stops.
+
+Tokens travel in clear over plain HTTP: run the API behind TLS or on a private network.
 
 ## Checks file
 
@@ -101,7 +125,7 @@ A result is classified by its own `timestamp`. A down result inside a window is 
 
 ## Routes
 
-- `POST /results` — body `Result`; 204 on success, 400 invalid body, 404 unknown `checkId`.
+- `POST /results` — body `Result`, bearer token required; 204 on success, 401 no valid token, 400 invalid body, 403 location does not match the token, 404 unknown `checkId`.
 - `GET /checks` — checks with state.
 - `GET /uptime` — `CheckUptime[]`, one entry per check in `GET /checks` order: 90 UTC calendar days (oldest first, the last is today per the service clock) with `date`, `uptime` (percent, unrounded; `degraded` counts as up, all locations count, maintenance is not subtracted; `null` without results) and `results`, plus the result-weighted 90-day `uptime` (`null` without results). Results before the window or after now are ignored. Computed with one aggregate query per check.
 - `GET /checks/:id/results?limit=N` — results newest first; `limit` defaults to 100 and is capped at 1000; 400 if `limit` is not a positive integer; 404 unknown check.

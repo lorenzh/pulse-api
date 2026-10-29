@@ -6,6 +6,7 @@ import {
   type Service,
   UnknownCheckError,
 } from "./service.ts";
+import { authenticate, type ProbeToken } from "./tokens.ts";
 
 const MAX_BODY = 1_000_000;
 export const DEFAULT_LIMIT = 100;
@@ -13,24 +14,37 @@ export const MAX_LIMIT = 1000;
 
 class HttpError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  headers: Record<string, string>;
+  constructor(status: number, message: string, headers: Record<string, string> = {}) {
     super(message);
     this.status = status;
+    this.headers = headers;
   }
 }
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
+function sendJson(
+  res: ServerResponse,
+  status: number,
+  body: unknown,
+  headers: Record<string, string> = {},
+): void {
   const text = JSON.stringify(body);
   res.writeHead(status, {
+    ...headers,
     "content-type": "application/json",
     "content-length": Buffer.byteLength(text),
   });
   res.end(text);
 }
 
-function sendError(res: ServerResponse, status: number, error: string): void {
+function sendError(
+  res: ServerResponse,
+  status: number,
+  error: string,
+  headers: Record<string, string> = {},
+): void {
   const body: ErrorResponse = { error };
-  sendJson(res, status, body);
+  sendJson(res, status, body, headers);
 }
 
 async function readBody(req: IncomingMessage): Promise<string> {
@@ -108,7 +122,12 @@ export function validateResult(body: unknown): Result | string {
 const RESULTS_PATH = /^\/checks\/([^/]+)\/results$/;
 
 // eslint-disable-next-line sonarjs/cognitive-complexity -- splitting this validator/handler would be a behaviour-risking refactor
-async function handle(service: Service, req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handle(
+  service: Service,
+  tokens: readonly ProbeToken[],
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname;
   const method = req.method ?? "GET";
@@ -123,6 +142,10 @@ async function handle(service: Service, req: IncomingMessage, res: ServerRespons
 
   if (path === "/results") {
     if (method !== "POST") throw new HttpError(405, "method not allowed");
+    const tokenLocation = authenticate(tokens, req.headers.authorization);
+    if (tokenLocation === undefined) {
+      throw new HttpError(401, "unauthorized", { "www-authenticate": "Bearer" });
+    }
     let parsed: unknown;
     try {
       parsed = JSON.parse(await readBody(req));
@@ -132,6 +155,12 @@ async function handle(service: Service, req: IncomingMessage, res: ServerRespons
     }
     const result = validateResult(parsed);
     if (typeof result === "string") throw new HttpError(400, result);
+    // validateResult maps an omitted or blank location to the default: the token decides then.
+    const sent = (parsed as { location?: unknown }).location;
+    if (typeof sent === "string" && sent.trim() !== "" && result.location !== tokenLocation) {
+      throw new HttpError(403, "location does not match token");
+    }
+    result.location = tokenLocation;
     try {
       service.ingest(result);
     } catch (err) {
@@ -190,15 +219,17 @@ async function handle(service: Service, req: IncomingMessage, res: ServerRespons
   sendJson(res, 200, service.listResults(id, limit));
 }
 
-export function createApiServer(service: Service): Server {
+export type ApiServerOptions = { tokens: readonly ProbeToken[] };
+
+export function createApiServer(service: Service, options: ApiServerOptions): Server {
   return createServer((req, res) => {
-    handle(service, req, res).catch((err: unknown) => {
+    handle(service, options.tokens, req, res).catch((err: unknown) => {
       if (res.headersSent) {
         res.destroy();
         return;
       }
       if (err instanceof HttpError) {
-        sendError(res, err.status, err.message);
+        sendError(res, err.status, err.message, err.headers);
       } else {
         console.error(err);
         sendError(res, 500, "internal error");

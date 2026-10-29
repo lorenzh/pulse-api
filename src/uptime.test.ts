@@ -133,7 +133,7 @@ test("uptime: 130k rows aggregate quickly", () => {
 test("uptime: GET /uptime serves JSON", async () => {
   const { service, add } = setup();
   add(TODAY + 1000, "up");
-  const server = createApiServer(service);
+  const server = createApiServer(service, { tokens: [] });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   try {
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;

@@ -1,3 +1,4 @@
 node_modules/
 pulse.db*
 checks.json
+tokens.json
