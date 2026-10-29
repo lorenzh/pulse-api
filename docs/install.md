@@ -50,7 +50,7 @@ Stop the stack with `docker compose down`. The `api-data` and `notify-data` volu
 | `status` | `pulse-status:local` | `8080` (the status page)      | `GET /`       |
 | `notify` | `pulse-notify:local` | none                          | none          |
 
-The API stays non-public (`127.0.0.1:3000`). Port 8080 of `pulse-status` exposes a filtered, read-only subset of it: `GET /uptime`, `/checks`, `/maintenance` and `/incidents?status=open|resolved`. No other path is served. Check targets, reasons and keywords are hidden by default (`PULSE_STATUS_HIDE_DETAILS`, see the pulse-status docs). If you show details, reasons can still reveal hosts or IPs.
+The API stays non-public (`127.0.0.1:3000`). Port 8080 of `pulse-status` exposes a filtered, read-only subset of it: `GET /api/uptime`, `/api/checks`, `/api/maintenance` and `/api/incidents?status=open|resolved`. No other API path is proxied. The status page `/` and its static assets are served as well. Check targets, reasons and keywords are hidden by default (`PULSE_STATUS_HIDE_DETAILS`, see the pulse-status docs). If you show details, reasons can still reveal hosts or IPs.
 
 All images run as the non-root `node` user. `status` and `notify` wait for `api` to be healthy. `probe` waits for `api` and `status` to be healthy.
 
