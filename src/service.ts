@@ -117,8 +117,8 @@ export function createService(
   const clearKeywords = db.prepare("UPDATE checks SET keyword = NULL WHERE keyword IS NOT NULL");
   const getCheck = db.prepare("SELECT * FROM checks WHERE id = ?");
   const insertResult = db.prepare(
-    `INSERT INTO results (check_id, timestamp, status, status_code, latency_ms, reason, location, cert_days_left, attempts)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO results (check_id, timestamp, status, status_code, latency_ms, reason, location, cert_days_left, attempts, late)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const newestStored = db.prepare(
     "SELECT MAX(timestamp) AS t FROM results WHERE check_id = ? AND location = ?",
@@ -126,8 +126,9 @@ export function createService(
   const openedAtOf = db.prepare(
     "SELECT opened_at FROM incidents WHERE check_id = ? AND resolved_at IS NULL LIMIT 1",
   );
+  // Late rows are excluded: they are history only and never take part in live evaluation.
   const windowResults = db.prepare(
-    `SELECT * FROM results WHERE check_id = ? AND timestamp >= ? AND timestamp <= ?
+    `SELECT * FROM results WHERE check_id = ? AND timestamp >= ? AND timestamp <= ? AND late = 0
      ORDER BY timestamp DESC, id DESC`,
   );
   const latestPerLocation = db.prepare(
@@ -292,6 +293,7 @@ export function createService(
           result.location,
           result.certDaysLeft ?? null,
           result.attempts ?? 1,
+          isLate ? 1 : 0,
         );
         // A late result is history only: it must not rewrite live state or incidents.
         if (isLate) return;

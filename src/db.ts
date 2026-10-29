@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS results (
   reason TEXT,
   location TEXT NOT NULL DEFAULT 'default',
   cert_days_left INTEGER,
-  attempts INTEGER NOT NULL DEFAULT 1
+  attempts INTEGER NOT NULL DEFAULT 1,
+  late INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS results_by_check ON results (check_id, timestamp DESC, id DESC);
 CREATE TABLE IF NOT EXISTS incidents (
@@ -63,6 +64,10 @@ function migrate(db: DatabaseSync): void {
   if (!columns.some((c) => c.name === "attempts")) {
     db.exec("ALTER TABLE results ADD COLUMN attempts INTEGER NOT NULL DEFAULT 1");
   }
+  const isLateMissing = !columns.some((c) => c.name === "late");
+  if (isLateMissing) {
+    db.exec("ALTER TABLE results ADD COLUMN late INTEGER NOT NULL DEFAULT 0");
+  }
   const checkColumns = db.prepare("PRAGMA table_info(checks)").all() as { name: string }[];
   const addCheckColumn = (name: string, ddl: string): void => {
     if (!checkColumns.some((c) => c.name === name)) db.exec(`ALTER TABLE checks ADD COLUMN ${ddl}`);
@@ -79,4 +84,11 @@ function migrate(db: DatabaseSync): void {
     "CREATE INDEX IF NOT EXISTS results_by_location ON results (check_id, location, timestamp)",
   );
   db.exec("CREATE INDEX IF NOT EXISTS results_by_time ON results (timestamp)");
+  if (isLateMissing) {
+    // Once: a row inserted after a row of the same check and location with a larger timestamp was late.
+    db.exec(`UPDATE results SET late = 1 WHERE EXISTS (
+      SELECT 1 FROM results o
+      WHERE o.check_id = results.check_id AND o.location = results.location
+        AND o.id < results.id AND o.timestamp > results.timestamp)`);
+  }
 }
