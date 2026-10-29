@@ -23,7 +23,11 @@ startRetention({
   retentionDays,
   sleep: (ms) => sleep(ms),
   // Unref'd so a pending hourly run does not block shutdown.
-  setTimeout: (fn, ms) => setTimeout(fn, ms).unref(),
+  // The run catches and logs its own errors, so the returned promise never rejects.
+  setTimeout: (fn, ms) =>
+    setTimeout(() => {
+      void fn();
+    }, ms).unref(),
   clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout),
   log: console.log,
 });

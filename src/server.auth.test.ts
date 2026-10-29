@@ -105,7 +105,10 @@ test("auth: matching or omitted location is 204 and stored under the token locat
   assert.equal((await post(`bearer ${B}`, body({ timestamp: 2 }))).status, 204);
   assert.equal((await post(`Bearer ${A}`, body({ timestamp: 3, location: " " }))).status, 204);
   const locations = stored().map((r) => `${r.timestamp}:${r.location}`);
-  assert.deepEqual(locations.sort(), ["1:east", "2:west", "3:east"]);
+  assert.deepEqual(
+    locations.toSorted((a, b) => a.localeCompare(b)),
+    ["1:east", "2:west", "3:east"],
+  );
 });
 
 test("auth: validation and unknown checks still answer 400 and 404 with a valid token", async () => {
