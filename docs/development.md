@@ -48,10 +48,13 @@ The Lefthook pre-commit hook (`lefthook.yml`) runs Biome and ESLint on staged fi
 
 ## CI
 
-`.github/workflows/ci.yml` has two jobs:
+`.github/workflows/ci.yml` has three jobs:
 
 - `check` uses the shared `check.yml` workflow of pulse-config (lint, typecheck, tests).
 - `docker` builds the image, validates `compose.yaml` with `.env.example`, checks that the image holds no test files, and checks that `PULSE_STATUS_PORT=8090` is published.
+- `compose-e2e` runs `scripts/compose-e2e.sh` against the real Compose stack. It proves that the four services start and stay up, that a check gets a state, that the status page answers, that a stopped service opens an incident which resolves and reaches the notify ledger, that a changed `compose/checks.json` is picked up after `restart api` and `restart probe`, that the volumes survive `down` and `up`, and that the demo profile starts and its cleanup keeps `api-data` and `notify-data`. It builds probe, status and notify from `main` of their repositories, so a break there fails this job.
+
+Run the same test locally with `bash scripts/compose-e2e.sh`. It needs Docker Compose 2.23 or newer, network access, `curl` and `jq`, and takes a few minutes. It uses the project name `pulse-e2e`, so it does not touch your `pulse_*` volumes, and it publishes the ports 3000, 8080 and 8081. It creates `.env` from `.env.example` only if missing, restores `compose/checks.json`, and removes its containers and volumes at the end. Timeouts can be set with `E2E_TIMEOUT_*` variables (see the top of the script).
 
 ## Documentation
 
