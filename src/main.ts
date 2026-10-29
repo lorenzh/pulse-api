@@ -1,49 +1,58 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { loadConfig, loadTokens } from "./config.ts";
 import { openDb } from "./db.ts";
-import { parseRetentionDays, startRetention } from "./retention.ts";
-import { createApiServer } from "./server.ts";
-import { createService } from "./service.ts";
-import { type ProbeToken, TokensError } from "./tokens.ts";
+import { createLogger, type LogLevel } from "./log.ts";
+import { type RunningApi, StartupError, startApi } from "./start.ts";
 
-const port = Number(process.env.PORT ?? 3000);
-const dbPath = process.env.PULSE_DB ?? "./pulse.db";
-const checksFile = process.env.PULSE_CHECKS_FILE ?? "./checks.json";
-const retentionDays = parseRetentionDays(process.env.PULSE_RETENTION_DAYS);
+// Exit codes: 0 clean stop, 2 configuration or startup error, 1 unexpected failure.
+const EXIT_STARTUP_ERROR = 2;
+const EXIT_FAILURE = 1;
 
-const tokensFile = process.env.PULSE_TOKENS_FILE ?? "./tokens.json";
-
-const { checks, maintenance } = loadConfig(checksFile);
-const service = createService(openDb(dbPath), { maintenance, log: console.log });
-service.upsertChecks(checks);
-
-startRetention({
-  service,
-  now: Date.now,
-  retentionDays,
-  sleep: (ms) => sleep(ms),
-  // Unref'd so a pending hourly run does not block shutdown.
-  // The run catches and logs its own errors, so the returned promise never rejects.
-  setTimeout: (fn, ms) =>
-    setTimeout(() => {
-      void fn();
-    }, ms).unref(),
-  clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout),
-  log: console.log,
-});
-
-let tokens: ProbeToken[];
-try {
-  tokens = loadTokens(tokensFile);
-} catch (err) {
-  if (!(err instanceof TokensError)) throw err;
-  console.error(`pulse-api: ${err.message}`);
-  process.exit(1);
+function write(line: string, level: LogLevel): void {
+  if (level === "warn" || level === "error") process.stderr.write(`${line}\n`);
+  else process.stdout.write(`${line}\n`);
 }
-const locations = new Set(tokens.map((t) => t.location)).size;
 
-createApiServer(service, { tokens }).listen(port, () => {
-  console.log(
-    `pulse-api listening on :${port} (${checks.length} checks, ${maintenance.length} maintenance windows from ${checksFile}, db ${dbPath}, retention ${retentionDays} days; ${tokens.length} probe tokens for ${locations} locations from ${tokensFile})`,
-  );
+// Registered before any config loading, so a signal during startup is not lost.
+let running: RunningApi | undefined;
+let isStopRequested = false;
+
+async function stop(): Promise<void> {
+  isStopRequested = true;
+  // Without a running API there is nothing to drain: the startup in main() finishes the stop.
+  if (running === undefined) return;
+  await running.close();
+  process.exit(0);
+}
+process.on("SIGINT", () => void stop());
+process.on("SIGTERM", () => void stop());
+
+async function main(): Promise<void> {
+  try {
+    running = await startApi({
+      env: process.env,
+      now: Date.now,
+      sleep: (ms) => sleep(ms),
+      // Unref'd so a pending hourly run does not block shutdown.
+      // The run catches and logs its own errors, so the returned promise never rejects.
+      setTimeout: (fn, ms) => setTimeout(fn, ms).unref(),
+      clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout),
+      write,
+      openDb: (path) => openDb(path),
+    });
+  } catch (err) {
+    if (err instanceof StartupError) {
+      process.stderr.write(`pulse-api: ${err.message}\n`);
+      process.exit(EXIT_STARTUP_ERROR);
+    }
+    throw err;
+  }
+  if (isStopRequested) await stop();
+}
+
+main().catch((err: unknown) => {
+  const logger = createLogger({ level: "error", now: Date.now, write });
+  logger.error("unexpected failure", {
+    error: err instanceof Error ? (err.stack ?? err.message) : String(err),
+  });
+  process.exit(EXIT_FAILURE);
 });

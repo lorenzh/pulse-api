@@ -27,6 +27,8 @@ export interface Service {
   upsertChecks(checks: Check[]): void;
   ingest(result: Result): void;
   listChecks(): CheckWithState[];
+  /** The id and displayed state of every active check, without results. */
+  listCheckStates(): { id: string; state: CheckState }[];
   hasCheck(id: string): boolean;
   listResults(checkId: string, limit: number): Result[];
   listIncidents(status?: "open" | "resolved"): Incident[];
@@ -92,11 +94,18 @@ export interface ServiceOptions {
   now?: () => number;
   /** Receives one line per incident resolved because its check left the checks file. */
   log?: (line: string) => void;
+  /** Called after a transaction commits, once per incident opened or resolved. */
+  onIncident?: (event: "opened" | "resolved") => void;
 }
 
 export function createService(
   db: DatabaseSync,
-  { maintenance = [], now = Date.now, log = () => undefined }: ServiceOptions = {},
+  {
+    maintenance = [],
+    now = Date.now,
+    log = () => undefined,
+    onIncident = () => undefined,
+  }: ServiceOptions = {},
 ): Service {
   const windows = [...maintenance].sort(
     // eslint-disable-next-line sonarjs/no-nested-conditional -- tie-break comparator reads clearest as one expression; refactor out of scope
@@ -247,6 +256,7 @@ export function createService(
 
   return {
     upsertChecks(checks) {
+      let resolved = 0;
       transaction(() => {
         // Clear first, then upsert: checks removed from the file lose their keyword without a long NOT IN list.
         clearKeywords.run();
@@ -291,12 +301,16 @@ export function createService(
         const closing = openInactive.all() as unknown as { id: string }[];
         resolveInactiveIncidents.run(now());
         resetInactiveState.run();
-        for (const { id } of closing)
+        for (const { id } of closing) {
           log(`check "${id}" removed from the checks file: incident resolved`);
+          resolved += 1;
+        }
       });
+      for (let i = 0; i < resolved; i++) onIncident("resolved");
     },
 
     ingest(result) {
+      let incidentEvent: "opened" | "resolved" | undefined;
       transaction(() => {
         const row = getActiveCheck.get(result.checkId) as CheckRow | undefined;
         if (!row) throw new UnknownCheckError(result.checkId);
@@ -341,9 +355,12 @@ export function createService(
           },
           combined,
         );
-        if (action === "open")
+        if (action === "open") {
           openIncident.run(result.checkId, result.timestamp, latestDown?.reason ?? result.reason);
+          incidentEvent = "opened";
+        }
         if (action === "resolve") {
+          incidentEvent = "resolved";
           // Another location may report an older timestamp: never resolve before the open.
           const opened = openedAtOf.get(result.checkId) as { opened_at: number } | undefined;
           resolveIncident.run(Math.max(result.timestamp, opened?.opened_at ?? 0), result.checkId);
@@ -356,6 +373,24 @@ export function createService(
           result.checkId,
         );
       });
+      if (incidentEvent !== undefined) onIncident(incidentEvent);
+    },
+
+    listCheckStates() {
+      const t = now();
+      return (
+        db
+          .prepare("SELECT id, state FROM checks WHERE active = 1 ORDER BY rowid")
+          .all() as unknown as {
+          id: string;
+          state: CheckState;
+        }[]
+      ).map(({ id, state }) => ({
+        id,
+        state: windows.some((w) => w.checkId === id && w.start <= t && t < w.end)
+          ? "maintenance"
+          : state,
+      }));
     },
 
     listChecks() {

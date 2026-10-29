@@ -122,6 +122,26 @@ page_has_title() {
     curl -fsS --max-time 5 "http://127.0.0.1:${status_port}/api/checks" | grep -qF 'Status page'
 }
 
+is_healthy() { # is_healthy <service>
+  local id
+  id=$(docker compose ps -q "$1")
+  [[ -n "$id" && "$(docker inspect -f '{{.State.Health.Status}}' "$id")" == "healthy" ]]
+}
+
+api_healthz_ok() { [[ "$(api /healthz)" == "ok" ]]; }
+
+api_metrics_ok() {
+  local text
+  text=$(api /metrics)
+  grep -qx 'pulse_up 1' <<<"$text" &&
+    grep -q '^pulse_api_check_state{check="status-page"' <<<"$text" &&
+    grep -q '^pulse_api_http_requests_total{' <<<"$text"
+}
+
+exit_code_of() { # exit_code_of <service>
+  docker inspect -f '{{.State.ExitCode}}' "$(docker compose ps -a -q "$1")"
+}
+
 has_check() {
   api /checks | jq -e --arg id "$1" '.[] | select((.id | tostring) == $id)'
 }
@@ -175,6 +195,13 @@ while ((SECONDS < window_end)); do
 done
 echo "ok: no restart or state change for ${STABLE_WINDOW}s"
 
+step "Health and metrics"
+for service in api probe status notify; do
+  wait_for "$T_UP" "$service is healthy" is_healthy "$service"
+done
+wait_for "$T_UP" "GET /healthz on the api answers ok" api_healthz_ok
+wait_for "$T_UP" "GET /metrics on the api has the pulse_ series" api_metrics_ok
+
 step "First check result"
 wait_for "$T_FIRST_RESULT" "status-page has a state other than unknown" check_state_known
 
@@ -206,6 +233,18 @@ assert_volume notify-data
 docker compose up -d
 wait_for "$T_UP" "api answers after up" api /checks
 wait_for "$T_PAGE" "incident ${incident_id} is still listed" has_incident "$incident_id"
+# The probe starts only after the api is healthy; a SIGTERM before its handlers exist would be ignored.
+for service in api probe status notify; do
+  wait_for "$T_UP" "$service is healthy after up" is_healthy "$service"
+done
+
+step "Clean stop"
+# docker stop sends SIGTERM and kills after the timeout: exit 0 means the service stopped by itself.
+docker compose stop -t 10 api probe status notify
+for service in api probe status notify; do
+  [[ "$(exit_code_of "$service")" == "0" ]] || fail "$service did not exit with code 0 on docker stop"
+  echo "ok: $service exited with code 0"
+done
 
 step "Demo profile"
 docker compose --profile demo up -d demo-status

@@ -2,7 +2,9 @@ import { readFileSync } from "node:fs";
 import type { Check, MaintenanceWindow } from "@lorenzh/pulse-contract";
 import { type ProbeToken, parseTokens, TokensError } from "./tokens.ts";
 
-export class ConfigError extends Error {}
+export class ConfigError extends Error {
+  override name = "ConfigError";
+}
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -18,6 +20,25 @@ function positiveInt(v: unknown): v is number {
 
 function intIn(v: unknown, min: number, max: number): v is number {
   return typeof v === "number" && Number.isInteger(v) && v >= min && v <= max;
+}
+
+const TOP_KEYS = ["checks", "maintenance"];
+const COMMON_CHECK_KEYS = ["id", "name", "type", "timeoutMs", "keyword"];
+const HTTP_CHECK_KEYS = [
+  ...COMMON_CHECK_KEYS,
+  "url",
+  "intervalMs",
+  "retries",
+  "retryDelayMs",
+  "latencyObjectiveMs",
+];
+const TLS_CHECK_KEYS = [...COMMON_CHECK_KEYS, "host", "port", "warnDays", "intervalMs"];
+const MAINTENANCE_KEYS = ["checkId", "start", "end", "note"];
+
+/** Reject a key a typo or a stale option leaves behind: `unknown key "keywrod" in checks[2]`. */
+function rejectUnknownKeys(raw: Record<string, unknown>, allowed: string[], where: string): void {
+  const unknown = Object.keys(raw).find((k) => !allowed.includes(k));
+  if (unknown !== undefined) throw new ConfigError(`unknown key "${unknown}" in ${where}`);
 }
 
 const MAX_RETRIES = 10;
@@ -58,6 +79,7 @@ export function parseChecks(data: unknown): Check[] {
   if (!isRecord(data) || !Array.isArray(data.checks)) {
     throw new ConfigError('config must be an object with a "checks" array');
   }
+  rejectUnknownKeys(data, TOP_KEYS, "the top level");
   const seen = new Set<string>();
   const checks: Check[] = [];
   // eslint-disable-next-line sonarjs/cognitive-complexity -- splitting this validator/handler would be a behaviour-risking refactor
@@ -74,6 +96,7 @@ export function parseChecks(data: unknown): Check[] {
     if (type !== "http" && type !== "tls") {
       throw new ConfigError(`${where}.type must be "http" or "tls"`);
     }
+    rejectUnknownKeys(raw, type === "tls" ? TLS_CHECK_KEYS : HTTP_CHECK_KEYS, where);
     let check: Check;
     if (type === "tls") {
       check = parseTls(raw, where, id, name);
@@ -173,6 +196,7 @@ export function parseConfig(data: unknown): Config {
   const maintenance = raw.map((w: unknown, i: number): MaintenanceWindow => {
     const where = `maintenance[${i}]`;
     if (!isRecord(w)) throw new ConfigError(`${where} must be an object`);
+    rejectUnknownKeys(w, MAINTENANCE_KEYS, where);
     if (!nonEmptyString(w.checkId) || !ids.has(w.checkId)) {
       throw new ConfigError(`${where}.checkId must reference a configured check`);
     }
@@ -201,12 +225,25 @@ function readJson(path: string): unknown {
   }
 }
 
+/** Run a parser on the checks file; a validation error names the file: `<path>: <message>`. */
+function parseFile<T>(path: string, parse: (data: unknown) => T): T {
+  const data = readJson(path);
+  try {
+    return parse(data);
+  } catch (err) {
+    if (err instanceof ConfigError) {
+      throw new ConfigError(`${path}: ${err.message}`, { cause: err });
+    }
+    throw err;
+  }
+}
+
 export function loadConfig(path: string): Config {
-  return parseConfig(readJson(path));
+  return parseFile(path, parseConfig);
 }
 
 export function loadChecks(path: string): Check[] {
-  return parseChecks(readJson(path));
+  return parseFile(path, parseChecks);
 }
 
 /** Read and validate the tokens file. Messages never contain a token value. */

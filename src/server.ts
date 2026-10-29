@@ -6,6 +6,7 @@ import {
   WIRE_VERSION,
   WIRE_VERSION_HEADER,
 } from "@lorenzh/pulse-contract";
+import { createMetrics, type Metrics } from "./metrics.ts";
 import {
   DEFAULT_LOCATION,
   MAX_LOCATION_LENGTH,
@@ -161,18 +162,71 @@ export function validateResult(body: unknown, now: number): Result | string {
 }
 
 const RESULTS_PATH = /^\/checks\/([^/]+)\/results$/;
+const ROUTES = [
+  "/results",
+  "/checks",
+  "/uptime",
+  "/incidents",
+  "/maintenance",
+  "/healthz",
+  "/metrics",
+];
+
+/** The route pattern of a path, so a metric label never holds a raw path or check id. */
+function routeOf(rawUrl: string | undefined): string {
+  let path: string;
+  try {
+    path = new URL(rawUrl ?? "/", "http://localhost").pathname;
+  } catch {
+    // An unparsable URL is answered with an error by the handler; it has no route.
+    return "unmatched";
+  }
+  if (RESULTS_PATH.test(path)) return "/checks/:id/results";
+  return ROUTES.find((r) => r === path) ?? "unmatched";
+}
+
+function sendText(res: ServerResponse, status: number, text: string, type = "text/plain"): void {
+  res.writeHead(status, {
+    "content-type": `${type}; charset=utf-8`,
+    "content-length": Buffer.byteLength(text),
+  });
+  res.end(text);
+}
+
+type Ops = { service: Service; metrics: Metrics; notReadyReason: () => string | undefined };
+
+/** Serve `/healthz` and `/metrics`. Returns false for any other path. Neither needs auth. */
+function serveOps(ops: Ops, path: string, method: string, res: ServerResponse): boolean {
+  if (path !== "/healthz" && path !== "/metrics") return false;
+  if (method !== "GET") throw new HttpError(405, "method not allowed");
+  if (path === "/metrics") {
+    sendText(
+      res,
+      200,
+      ops.metrics.render(ops.service.listCheckStates()),
+      "text/plain; version=0.0.4",
+    );
+    return true;
+  }
+  const reason = ops.notReadyReason();
+  if (reason === undefined) sendText(res, 200, "ok\n");
+  else sendText(res, 503, `${reason}\n`);
+  return true;
+}
 
 // eslint-disable-next-line sonarjs/cognitive-complexity -- splitting this validator/handler would be a behaviour-risking refactor
 async function handle(
-  service: Service,
+  ops: Ops,
   tokens: readonly ProbeToken[],
   now: () => number,
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
+  const { service } = ops;
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname;
   const method = req.method ?? "GET";
+  if (serveOps(ops, path, method, res)) return;
   const known =
     path === "/results" ||
     path === "/checks" ||
@@ -210,6 +264,7 @@ async function handle(
         throw new HttpError(404, `unknown check "${result.checkId}"`);
       throw err;
     }
+    ops.metrics.recordResult(result.checkId, result.location, result.latencyMs);
     res.writeHead(204).end();
     return;
   }
@@ -261,14 +316,30 @@ async function handle(
   sendJson(res, 200, service.listResults(id, limit));
 }
 
-export type ApiServerOptions = { tokens: readonly ProbeToken[]; now?: () => number };
+export type ApiServerOptions = {
+  tokens: readonly ProbeToken[];
+  now?: () => number;
+  /** Counters for `/metrics`; the caller shares it with the service to count incidents. */
+  metrics?: Metrics;
+  /** A short reason while the API is not ready (`/healthz` answers 503), else undefined. */
+  notReadyReason?: () => string | undefined;
+  /** Receives unexpected request failures. */
+  logError?: (message: string, err: unknown) => void;
+};
 
 export function createApiServer(service: Service, options: ApiServerOptions): Server {
   const now = options.now ?? Date.now;
+  const ops: Ops = {
+    service,
+    metrics: options.metrics ?? createMetrics(),
+    notReadyReason: options.notReadyReason ?? (() => undefined),
+  };
+  const logError = options.logError ?? ((_message, err) => console.error(err));
   return createServer((req, res) => {
+    res.on("finish", () => ops.metrics.recordRequest(routeOf(req.url), res.statusCode));
     // Set before any write; writeHead keeps these next to the headers a response adds.
     for (const [name, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(name, value);
-    handle(service, options.tokens, now, req, res).catch((err: unknown) => {
+    handle(ops, options.tokens, now, req, res).catch((err: unknown) => {
       if (res.headersSent) {
         res.destroy();
         return;
@@ -276,7 +347,7 @@ export function createApiServer(service: Service, options: ApiServerOptions): Se
       if (err instanceof HttpError) {
         sendError(res, err.status, err.message, err.headers);
       } else {
-        console.error(err);
+        logError("request failed", err);
         sendError(res, 500, "internal error");
       }
     });

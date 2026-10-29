@@ -77,17 +77,27 @@ An inactive check is left out of `GET /checks` and `GET /uptime`, and `POST /res
 
 ## Logs
 
-The API writes to stdout and stderr. It has no log levels and no log file.
+The API writes JSON lines: `{"time":"<ISO 8601>","level":"info","msg":"...", ...fields}`. `info` and `debug` go to stdout, `warn` and `error` to stderr. `PULSE_LOG_LEVEL` (`debug`, `info`, `warn`, `error`; default `info`) sets the lowest level that is written. There is no log file.
 
-| Line                                                                                                                                                              | When                                                                     |
-| ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `pulse-api listening on :<port> (<n> checks, <n> maintenance windows from <file>, db <path>, retention <n> days; <n> probe tokens for <n> locations from <file>)` | The API is ready.                                                        |
-| `retention: deleted <n> results`                                                                                                                                  | A cleanup deleted rows. Silent when it deletes none.                     |
-| `retention failed: <message>`                                                                                                                                     | A cleanup failed. The next run is still scheduled.                       |
-| `pulse-api: <message>`                                                                                                                                            | The tokens file is invalid. Exit code 1.                                 |
-| An error stack that starts with `ConfigError:` (checks file) or `RetentionConfigError:`                                                                           | The checks file or `PULSE_RETENTION_DAYS` is invalid. The process exits. |
-| An error stack on stderr                                                                                                                                          | An unexpected failure in a request (`500`).                              |
+- `listening` (info): The API is ready. Fields: `port`, `checks`, `maintenanceWindows`, `checksFile`, `db`, `retentionDays`, `probeTokens`, `locations`, `tokensFile`.
+- `retention: deleted <n> results` (info): A cleanup deleted rows. Silent when it deletes none.
+- `retention failed: <message>` (info): A cleanup failed. The next run is still scheduled.
+- `check "<id>" removed from the checks file: incident resolved` (info): One line per incident resolved at start.
+- `request failed` (error): An unexpected failure in a request (`500`). The field `error` holds the stack.
+- `shutdown bound reached: closing open connections` (warn): The shutdown took longer than 5 s.
+- `stopped` (info): The shutdown is done.
+- `unexpected failure` (error): The process exits with code 1.
+
+A configuration or startup error is not a JSON line: it is one line `pulse-api: <message>` on stderr with exit code 2. See [Exit codes](configuration.md#exit-codes).
 
 The log never prints token values.
 
 With Compose: `docker compose logs api`.
+
+## Health and metrics
+
+`GET /healthz` returns `200 ok` when the database is open and the checks are loaded, and `503` while the API shuts down. The image `HEALTHCHECK` calls it. `GET /metrics` returns Prometheus text. Both need no token. See [GET /healthz](rest-api.md#get-healthz) and [GET /metrics](rest-api.md#get-metrics). `/metrics` lists check ids: keep it on a private network.
+
+## Shutdown
+
+`SIGINT` and `SIGTERM` are handled from the first line of the process. The API then answers `/healthz` with `503`, stops accepting connections, closes idle ones, stops the retention timer, waits for open requests and a running cleanup, closes the database and exits with code 0. The wait is bounded by 5 s. When the bound is hit, the API logs a `warn` line, drops the remaining connections and still exits with 0. A second signal changes nothing. `docker stop` therefore returns well within its default 10 s.
