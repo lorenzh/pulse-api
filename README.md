@@ -59,7 +59,7 @@ The status page is then on http://localhost:8090. The api port stays bound to 12
 
 ### Token
 
-`.env` holds `PULSE_PROBE_TOKEN` and `PULSE_LOCATION`. The example token in `.env.example` is public: replace it (`openssl rand -hex 32`) before you expose the stack. Compose generates the API's tokens file from these two variables (a `configs:` entry with `content:`) and gives the same two variables to the probe, so the location matches the token. Without a `.env`, Compose stops with an error.
+`.env` holds `PULSE_PROBE_TOKEN` and `PULSE_LOCATION`. The example token in `.env.example` is public: replace it (`openssl rand -hex 32`) before you expose the stack. Compose generates the API's tokens file from these two variables (a `configs:` entry with `content:`) and gives the same two variables to the probe, so the location matches the token. Without a `.env` the token is empty and the API stops at start with `token must be a string of at least 16 characters`: copy `.env.example` to `.env` first.
 
 ### Adding checks
 
@@ -90,6 +90,42 @@ docker run --rm -p 3000:3000 \
 ```
 
 The image runs as the non-root `node` user with `node src/main.ts`, owns `/data` (database at `PULSE_DB=/data/pulse.db`), exposes 3000 and has a healthcheck on `GET /checks`. It contains no checks or tokens file; mount them.
+
+## Demo
+
+The `demo` Compose profile starts a self-contained pulse whose status page shows every state within five minutes. It needs Docker Compose >= 2.23 and access to github.com (the probe and status images are built from `main`). It needs no `.env`.
+
+```sh
+docker compose --profile demo up demo-status
+```
+
+Open http://localhost:8081. The `demo-` services have their own volumes and ports, so they never clash with the regular stack: `demo-status` on `PULSE_DEMO_STATUS_PORT` (default 8081), `demo-api` on `127.0.0.1:${PULSE_DEMO_API_PORT:-3001}`. `depends_on` starts the dependencies: `demo-init` (writes the checks file with maintenance windows relative to the start time), `demo-api`, two probes (`demo-probe-a` in location `eu`, `demo-probe-b` in `us`), `demo-targets` (HTTP endpoints driven by time since start, `compose/demo/targets.mjs`) and `demo-tls` (HTTPS with a self-signed certificate valid for 5 days, `compose/demo/tls.sh`, an `openssl` image pinned by digest).
+
+Plain `docker compose --profile demo up` also starts the regular services. They do not affect the demo, but without a `.env` the regular `api` exits with the token error above and the regular `probe`, `status` and `notify` do not start.
+
+| Check             | Target          | Expected state                                    | Appears                                                               |
+| ----------------- | --------------- | ------------------------------------------------- | --------------------------------------------------------------------- |
+| Always healthy    | `/up`           | up                                                | within 10 s                                                           |
+| Slow endpoint     | `/slow`         | degraded (answers in 1.5 s, objective 500 ms)     | within 10 s                                                           |
+| Flaky service     | `/flaky`        | down with an open incident, then up and resolved  | down from about 30 s, incident about 15 s later, resolved after 150 s |
+| Database upgrade  | `/maintenance`  | maintenance (current window, target always fails) | within 10 s                                                           |
+| Scheduled upgrade | `/up`           | up, upcoming maintenance window in 30 to 90 min   | within 10 s                                                           |
+| TLS certificate   | `demo-tls:8443` | up, certificate valid for 5 days, `warnDays` 3    | within 10 s                                                           |
+
+Times count from the start of `demo-targets`. Maintenance windows are computed when `demo-init` runs and the API reads them at startup only. To refresh them (the windows go stale after 15 minutes), run `docker compose --profile demo down -v` and start again.
+
+White-label theme: `compose/demo/theme-white-label.json` is an example in the [pulse-status theme file format](https://github.com/lorenzh/pulse-status#theme-file). It is not mounted by default. Add this to `demo-status` in a `compose.override.yaml` (or in `compose.yaml`) and restart it:
+
+```yaml
+services:
+  demo-status:
+    environment:
+      PULSE_STATUS_THEME: /config/theme.json
+    volumes:
+      - ./compose/demo/theme-white-label.json:/config/theme.json:ro
+```
+
+Clean up with `docker compose --profile demo down -v`. The two demo tokens in `compose.yaml` are public example values: never use them for a real deployment.
 
 ## Formatting and linting
 
