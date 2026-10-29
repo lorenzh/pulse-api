@@ -2,3 +2,5 @@ node_modules/
 pulse.db*
 checks.json
 tokens.json
+.env
+!compose/checks.json
