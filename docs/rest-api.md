@@ -48,7 +48,7 @@ The checks run in this order:
 4. `400` `body is not valid JSON`.
 5. `400` with the first failing field message, for example `status must be "up", "degraded" or "down"`. The messages are listed in [Troubleshooting](troubleshooting.md#400-on-post-results).
 6. `403` `location does not match token` if the body has a `location` that differs from the token's location (after trim).
-7. `404` `unknown check "<id>"`.
+7. `404` `unknown check "<id>"` (also for a check removed from the checks file).
 8. `204` and the result is stored. The stored location is always the token's.
 
 Every message names the field, for example `timestamp is more than 60000 ms in the future` or `timestamp is older than 7 days`. Nothing is stored when a request is rejected.
@@ -70,7 +70,7 @@ The response is `HTTP/1.1 204 No Content`. A request with an old fixed `timestam
 
 ## GET /checks
 
-Returns every check in database rowid order (the order in which the checks were first inserted, not the order of the checks file) with its state (`CheckWithState[]`): the check fields plus `state`, `consecutiveDown`, `lastResultAt`, `lastReason`, `locations`, and when set `maintenance` and `certDaysLeft`. `retries` and `retryDelayMs` are always present for HTTP checks. `timeoutMs`, `latencyObjectiveMs` and `keyword` are present when configured. `locations` has one `{ location, result, stale }` per location ever seen, sorted by name, and is empty for a check without results.
+Returns every active check (checks removed from the checks file are left out) in database rowid order (the order in which the checks were first inserted, not the order of the checks file) with its state (`CheckWithState[]`): the check fields plus `state`, `consecutiveDown`, `lastResultAt`, `lastReason`, `locations`, and when set `maintenance` and `certDaysLeft`. `retries` and `retryDelayMs` are always present for HTTP checks. `timeoutMs`, `latencyObjectiveMs` and `keyword` are present when configured. `locations` has one `{ location, result, stale }` per location ever seen, sorted by name, and is empty for a check without results.
 
 ```sh
 curl http://localhost:3000/checks
@@ -129,7 +129,7 @@ curl 'http://localhost:3000/checks/example/results?limit=1'
 
 ## GET /uptime
 
-Returns one `CheckUptime` per check, in the order of `GET /checks`. Each has `checkId`, `days` and `uptime`. `days` has exactly 90 UTC calendar days, oldest first, and the last is today. A day has `date` (`YYYY-MM-DD`), `uptime` (percent, unrounded, `null` without results) and `results`. `uptime` is the result-weighted value over the window (`null` without results). Results before the window or after now are ignored. See [Uptime](concepts.md#uptime).
+Returns one `CheckUptime` per active check, in the order of `GET /checks`. Each has `checkId`, `days` and `uptime`. `days` has exactly 90 UTC calendar days, oldest first, and the last is today. A day has `date` (`YYYY-MM-DD`), `uptime` (percent, unrounded, `null` without results) and `results`. `uptime` is the result-weighted value over the window (`null` without results). Results before the window or after now are ignored. See [Uptime](concepts.md#uptime).
 
 ```sh
 curl http://localhost:3000/uptime

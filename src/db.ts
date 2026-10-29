@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS checks (
   state TEXT NOT NULL DEFAULT 'unknown',
   consecutive_down INTEGER NOT NULL DEFAULT 0,
   last_result_at INTEGER,
-  last_reason TEXT
+  last_reason TEXT,
+  active INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS results (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,6 +81,7 @@ function migrate(db: DatabaseSync): void {
   addCheckColumn("retries", "retries INTEGER");
   addCheckColumn("retry_delay_ms", "retry_delay_ms INTEGER");
   addCheckColumn("keyword", "keyword TEXT");
+  addCheckColumn("active", "active INTEGER NOT NULL DEFAULT 1");
   db.exec(
     "CREATE INDEX IF NOT EXISTS results_by_location ON results (check_id, location, timestamp)",
   );

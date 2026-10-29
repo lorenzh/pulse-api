@@ -92,7 +92,7 @@ The body is invalid. The message names the field:
 
 ## 404 on POST /results
 
-`unknown check "<id>"`. The check id is not in the checks file the API loaded. The probe and the API use different check lists, or the API was not restarted after you added the check. Restart the API, then the probe.
+`unknown check "<id>"`. The check id is not in the checks file the API loaded, or the check was removed from the file (it is inactive). The probe and the API use different check lists, or the API was not restarted after you changed the file. Restart the API; the probe reloads its checks within its reload interval.
 
 ## 404 on GET /checks/:id/results
 
@@ -119,7 +119,7 @@ An incident opens at the third consecutive `down` evaluation. Check these points
 
 ## A check stays `unknown`
 
-No probe has posted a result yet. Check that the probe runs, that it reaches the API, and that it logs no `401` or `403`. The probe reads its checks at start, so restart it after you add a check.
+No probe has posted a result yet. Check that the probe runs, that it reaches the API, and that it logs no `401` or `403`. After you add a check, restart the API; the probe picks the check up at its next reload.
 
 ## The status page is stale
 

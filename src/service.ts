@@ -90,11 +90,13 @@ export interface ServiceOptions {
   maintenance?: MaintenanceWindow[];
   /** Clock for displayed state and window listings; results are classified by their own timestamp. */
   now?: () => number;
+  /** Receives one line per incident resolved because its check left the checks file. */
+  log?: (line: string) => void;
 }
 
 export function createService(
   db: DatabaseSync,
-  { maintenance = [], now = Date.now }: ServiceOptions = {},
+  { maintenance = [], now = Date.now, log = () => undefined }: ServiceOptions = {},
 ): Service {
   const windows = [...maintenance].sort(
     // eslint-disable-next-line sonarjs/no-nested-conditional -- tie-break comparator reads clearest as one expression; refactor out of scope
@@ -113,9 +115,22 @@ export function createService(
       interval_ms = excluded.interval_ms, timeout_ms = excluded.timeout_ms,
       latency_objective_ms = excluded.latency_objective_ms,
       retries = excluded.retries, retry_delay_ms = excluded.retry_delay_ms,
-      keyword = excluded.keyword`);
+      keyword = excluded.keyword, active = 1`);
   const clearKeywords = db.prepare("UPDATE checks SET keyword = NULL WHERE keyword IS NOT NULL");
   const getCheck = db.prepare("SELECT * FROM checks WHERE id = ?");
+  const getActiveCheck = db.prepare("SELECT * FROM checks WHERE id = ? AND active = 1");
+  const deactivateAll = db.prepare("UPDATE checks SET active = 0");
+  const resolveInactiveIncidents = db.prepare(
+    `UPDATE incidents SET resolved_at = MAX(?, opened_at)
+     WHERE resolved_at IS NULL AND check_id IN (SELECT id FROM checks WHERE active = 0)`,
+  );
+  const resetInactiveState = db.prepare(
+    "UPDATE checks SET state = 'unknown', consecutive_down = 0 WHERE active = 0 AND (state != 'unknown' OR consecutive_down != 0)",
+  );
+  const openInactive = db.prepare(
+    `SELECT i.check_id AS id FROM incidents i JOIN checks c ON c.id = i.check_id
+     WHERE i.resolved_at IS NULL AND c.active = 0`,
+  );
   const insertResult = db.prepare(
     `INSERT INTO results (check_id, timestamp, status, status_code, latency_ms, reason, location, cert_days_left, attempts, late)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -235,6 +250,7 @@ export function createService(
       transaction(() => {
         // Clear first, then upsert: checks removed from the file lose their keyword without a long NOT IN list.
         clearKeywords.run();
+        deactivateAll.run();
         for (const c of checks) {
           const timeout = c.timeoutMs ?? null;
           if (c.type === "tls") {
@@ -271,12 +287,18 @@ export function createService(
             );
           }
         }
+        // Removed checks keep their rows and history, but no incident stays open and no stale state survives.
+        const closing = openInactive.all() as unknown as { id: string }[];
+        resolveInactiveIncidents.run(now());
+        resetInactiveState.run();
+        for (const { id } of closing)
+          log(`check "${id}" removed from the checks file: incident resolved`);
       });
     },
 
     ingest(result) {
       transaction(() => {
-        const row = getCheck.get(result.checkId) as CheckRow | undefined;
+        const row = getActiveCheck.get(result.checkId) as CheckRow | undefined;
         if (!row) throw new UnknownCheckError(result.checkId);
         // Read before the insert, so the new row is not compared with itself.
         const newest = (
@@ -338,33 +360,35 @@ export function createService(
 
     listChecks() {
       const t = now();
-      return (db.prepare("SELECT * FROM checks ORDER BY rowid").all() as unknown as CheckRow[]).map(
-        (r) => {
-          const c = toCheck(r);
-          const tls = c.type === "tls";
-          const latest = (latestPerLocation.all(c.id) as unknown as ResultRow[]).map((l) =>
-            toResult(l, tls),
-          );
-          const newest = Math.max(...latest.map((l) => l.timestamp));
-          if (tls) {
-            const newestResult = latest.find((l) => l.timestamp === newest);
-            c.certDaysLeft = newestResult?.certDaysLeft ?? null;
-          }
-          c.locations = latest.map(
-            (result): LocationResult => ({
-              location: result.location,
-              result,
-              stale: result.timestamp < newest - WINDOW_INTERVALS * c.intervalMs,
-            }),
-          );
-          const active = windows.find((w) => w.checkId === c.id && w.start <= t && t < w.end);
-          if (active) {
-            c.state = "maintenance";
-            c.maintenance = { ...active };
-          }
-          return c;
-        },
-      );
+      return (
+        db
+          .prepare("SELECT * FROM checks WHERE active = 1 ORDER BY rowid")
+          .all() as unknown as CheckRow[]
+      ).map((r) => {
+        const c = toCheck(r);
+        const tls = c.type === "tls";
+        const latest = (latestPerLocation.all(c.id) as unknown as ResultRow[]).map((l) =>
+          toResult(l, tls),
+        );
+        const newest = Math.max(...latest.map((l) => l.timestamp));
+        if (tls) {
+          const newestResult = latest.find((l) => l.timestamp === newest);
+          c.certDaysLeft = newestResult?.certDaysLeft ?? null;
+        }
+        c.locations = latest.map(
+          (result): LocationResult => ({
+            location: result.location,
+            result,
+            stale: result.timestamp < newest - WINDOW_INTERVALS * c.intervalMs,
+          }),
+        );
+        const active = windows.find((w) => w.checkId === c.id && w.start <= t && t < w.end);
+        if (active) {
+          c.state = "maintenance";
+          c.maintenance = { ...active };
+        }
+        return c;
+      });
     },
 
     listMaintenance(checkId) {
@@ -378,10 +402,9 @@ export function createService(
       const t = now();
       const today = Math.floor(t / DAY_MS);
       const firstDay = today - (UPTIME_DAYS - 1);
-      const ids = db.prepare("SELECT id FROM checks ORDER BY rowid").all() as unknown as Pick<
-        CheckRow,
-        "id"
-      >[];
+      const ids = db
+        .prepare("SELECT id FROM checks WHERE active = 1 ORDER BY rowid")
+        .all() as unknown as Pick<CheckRow, "id">[];
       return ids.map(({ id }): CheckUptime => {
         const byDay = new Map<number, { good: number; total: number }>();
         for (const r of dailyUptime.all(id, firstDay * DAY_MS, t) as unknown as DayRow[]) {

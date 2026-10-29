@@ -76,11 +76,10 @@ The status page is then on http://localhost:8090. The API port (`PULSE_API_PORT`
 
 ### Adding checks
 
-Edit `compose/checks.json` (format: [checks.json](configuration.md#checksjson)). The API and the probe read the file once at start, so restart the API, then the probe:
+Edit `compose/checks.json` (format: [checks.json](configuration.md#checksjson)). The API reads the file once at start, so restart the API. The probe reloads its checks from the API on its own, within its reload interval:
 
 ```sh
 docker compose restart api
-docker compose restart probe
 ```
 
 `docker compose up -d` is not a reload step: it does not recreate the API when only the mounted file changed, and the API reads the checks only at start.

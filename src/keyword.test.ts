@@ -116,18 +116,17 @@ test("service: keyword of a check removed from the file is cleared, results stay
     reason: null,
     attempts: 1,
   });
-  const s2 = createService(openDb(path));
+  const db2 = openDb(path);
+  const s2 = createService(db2);
   s2.upsertChecks([kept]);
   const list = s2.listChecks();
   assert.equal((list.find((c) => c.id === "kept") as HttpCheck).keyword, "stay");
-  const gone = list.find((c) => c.id === "gone");
-  assert.ok(gone);
-  assert.equal("keyword" in gone, false);
+  assert.equal(db2.prepare("SELECT keyword FROM checks WHERE id = 'gone'").get()?.keyword, null);
   assert.equal(s2.listResults("gone", 10).length, 1);
   s2.upsertChecks([]);
   assert.equal(
     s2.listChecks().some((c) => "keyword" in c),
     false,
   );
-  assert.equal(s2.listChecks().length, 2);
+  assert.equal(s2.listChecks().length, 0);
 });

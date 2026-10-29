@@ -4,11 +4,10 @@
 
 The API reads `checks.json`, the tokens file and its environment once at start. It has no reload. Restart it after any change to these.
 
-When you run the whole stack, restart in this order: the API first, then the probes. Probes read their checks from the API once at start.
+After a change to the checks file, restart only the API. Probes reload their checks from the API on their own, within their reload interval (`PULSE_CHECKS_RELOAD_MS`, see the probe docs).
 
 ```sh
 docker compose restart api
-docker compose restart probe
 ```
 
 Use `restart`, not `docker compose up -d`: `up -d` does not recreate the API when only the mounted checks file changed, so the API keeps the checks it loaded at start (`src/main.ts` reads the file once).
@@ -72,7 +71,9 @@ Changing a probe's location means changing both `PULSE_LOCATION` of the probe an
 
 ## Changing checks
 
-Edit `checks.json`, restart the API, then restart the probes. The file is upserted: checks that you remove from the file stay in the database with their old state and results. The API does not delete checks.
+Edit `checks.json` and restart the API. The probes follow within their reload interval. The file is upserted: checks that you remove from the file stay in the database with their results, but become inactive. The API does not delete checks.
+
+An inactive check is left out of `GET /checks` and `GET /uptime`, and `POST /results` for it answers `404 unknown check`. Its results and incidents stay readable. At the restart, an open incident of a removed check is resolved (`resolvedAt` is the startup time, one log line per incident) and the check state is reset, so `notify` may send a "resolved" notification. If you add the check again, it becomes active with its history.
 
 ## Logs
 
