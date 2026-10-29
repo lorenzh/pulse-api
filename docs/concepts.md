@@ -37,7 +37,7 @@ Details:
 
 ### Late results
 
-A result is late when its timestamp is strictly older than the newest stored result of the same check and the same location. A late result is stored and appears in the results history. It does not change the state, `consecutiveDown`, incidents, `lastResultAt` or `lastReason`. Results of other locations keep their role in the quorum. A result with a timestamp equal to the newest one is not late; the higher row id wins the tie.
+A result is late when its timestamp is strictly older than the newest stored result of the same check and the same location. A late result is stored (marked `late` in the `results` table, not in the JSON) and appears in the results history. It is excluded from every later window, so it never takes part in the quorum. It does not change the state, `consecutiveDown`, incidents, `lastResultAt` or `lastReason`. Results of other locations keep their role in the quorum. A result with a timestamp equal to the newest one is not late; the higher row id wins the tie. `GET /uptime` is a history statistic and still counts late results.
 - The counter is `consecutiveDown` in `GET /checks`.
 
 Example: a check has `intervalMs` 10000 and one probe. Three `down` results in a row open an incident. The next `up` result resolves it.

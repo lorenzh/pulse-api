@@ -33,6 +33,8 @@ npm start
 
 ```sh
 cp .env.example .env
+# Put a random token into .env. The placeholder in .env.example is rejected at start.
+sed -i.bak "s/^PULSE_PROBE_TOKEN=.*/PULSE_PROBE_TOKEN=$(openssl rand -hex 32)/" .env && rm .env.bak
 docker compose up -d --build
 ```
 
