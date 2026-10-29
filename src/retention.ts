@@ -31,20 +31,29 @@ export interface CleanupDeps {
   retentionDays: number;
   batchSize?: number;
   sleep: (ms: number) => Promise<void>;
+  /** Checked between batches; true ends the run after the batch in progress. */
+  isAborted?: () => boolean;
 }
 
 /** Delete expired results in short batches, yielding between them. Returns the rows deleted. */
 export async function cleanupResults(
   service: Pick<Service, "deleteExpiredResults">,
-  { now, retentionDays, batchSize = RETENTION_BATCH_SIZE, sleep }: CleanupDeps,
+  {
+    now,
+    retentionDays,
+    batchSize = RETENTION_BATCH_SIZE,
+    sleep,
+    isAborted = () => false,
+  }: CleanupDeps,
 ): Promise<number> {
   const cutoff = retentionCutoff(now(), retentionDays);
   let total = 0;
   for (;;) {
     const deleted = service.deleteExpiredResults(cutoff, batchSize);
     total += deleted;
-    if (deleted < batchSize) return total;
+    if (deleted < batchSize || isAborted()) return total;
     await sleep(0);
+    if (isAborted()) return total;
   }
 }
 
@@ -54,28 +63,56 @@ export interface RetentionDeps extends CleanupDeps {
   setTimeout: (fn: () => Promise<void>, ms: number) => unknown;
   clearTimeout: (handle: unknown) => void;
   log: (message: string) => void;
+  /** Time between runs; defaults to RETENTION_INTERVAL_MS. Tests shorten it. */
+  intervalMs?: number;
+}
+
+export interface Retention {
+  /** Stop scheduling runs and resolve when the run in progress (if any) has ended. */
+  stop(): Promise<void>;
+  /** Tell the run in progress to end after its current batch. */
+  abort(): void;
+  /** The run in progress, or the last one. */
+  readonly done: Promise<void>;
 }
 
 /** Run cleanup now and then hourly. The next run is scheduled when one ends, so runs never overlap. */
-export function startRetention(deps: RetentionDeps): { stop(): void; done: Promise<void> } {
-  let stopped = false;
+export function startRetention(deps: RetentionDeps): Retention {
+  let isStopped = false;
+  let isAborted = false;
   let handle: unknown;
-  const run = async (): Promise<void> => {
-    try {
-      const deleted = await cleanupResults(deps.service, deps);
-      if (deleted > 0) deps.log(`retention: deleted ${deleted} results`);
-    } catch (err) {
-      deps.log(`retention failed: ${err instanceof Error ? err.message : "unknown error"}`);
-    }
-    if (!stopped) {
-      handle = deps.setTimeout(run, RETENTION_INTERVAL_MS);
-    }
+  let current: Promise<void> = Promise.resolve();
+  const run = (): Promise<void> => {
+    // A timer that fires in the same tick as stop() must not start a run.
+    if (isStopped) return Promise.resolve();
+    current = (async (): Promise<void> => {
+      try {
+        const deleted = await cleanupResults(deps.service, {
+          ...deps,
+          isAborted: () => isAborted,
+        });
+        if (deleted > 0) deps.log(`retention: deleted ${deleted} results`);
+      } catch (err) {
+        deps.log(`retention failed: ${err instanceof Error ? err.message : "unknown error"}`);
+      }
+      if (!isStopped) {
+        handle = deps.setTimeout(run, deps.intervalMs ?? RETENTION_INTERVAL_MS);
+      }
+    })();
+    return current;
   };
+  void run();
   return {
-    done: run(),
+    get done() {
+      return current;
+    },
     stop() {
-      stopped = true;
+      isStopped = true;
       if (handle !== undefined) deps.clearTimeout(handle);
+      return current;
+    },
+    abort() {
+      isAborted = true;
     },
   };
 }

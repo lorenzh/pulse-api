@@ -46,7 +46,7 @@ A check of type `heartbeat` is for cron jobs and workers. The job calls `POST|GE
 
 ## Health and metrics
 
-`GET /healthz` answers `200 ok` when the API is ready. `GET /metrics` serves Prometheus text with check ids only: keep it on a private network. Logs are JSON lines (`PULSE_LOG_LEVEL`). The API stops cleanly on `SIGINT` and `SIGTERM` (exit 0). A configuration error prints one line `pulse-api: <message>` and exits with 2. See [Operation](docs/operation.md).
+`GET /healthz` is liveness: it answers `200 ok` without touching the database, also while the API shuts down. `GET /readyz` is readiness: `200 ok` when the database answers and the API is not shutting down, else `503` without error text. `GET /metrics` serves Prometheus text with check ids only: keep it on a private network. Logs are JSON lines (`PULSE_LOG_LEVEL`). The API stops cleanly on `SIGINT` and `SIGTERM` (exit 0). A configuration error prints one line `pulse-api: <message>` and exits with 2. See [Operation](docs/operation.md).
 
 ## Documentation
 

@@ -12,7 +12,8 @@ The API serves JSON over HTTP. The types come from [pulse-contract](https://gith
 | `GET`  | `/uptime`             | none         | `UptimeResponse` (`CheckUptime[]`)             |
 | `GET`  | `/incidents`          | none         | `IncidentsResponse` (`Incident[]`)             |
 | `GET`  | `/maintenance`        | none         | `MaintenanceResponse` (`MaintenanceWindow[]`)  |
-| `GET`  | `/healthz`            | none         | `200 ok` or `503` with a reason (`text/plain`) |
+| `GET`  | `/healthz`            | none         | `200 ok` (liveness, `text/plain`)              |
+| `GET`  | `/readyz`             | none         | `200 ok` or `503` with a reason (`text/plain`) |
 | `GET`  | `/metrics`            | none         | Prometheus text                                |
 
 General rules:
@@ -55,7 +56,7 @@ The checks run in this order:
 
 Every message names the field, for example `timestamp is more than 60000 ms in the future` or `timestamp is older than 7 days`. Nothing is stored when a request is rejected.
 
-A result older than the newest stored result of the same check and location is a late result. It is stored and listed in the results history, but it does not change the state, the counter, the incidents or `lastResultAt` (see [Late results](concepts.md#late-results)). Rows stored earlier with a future timestamp are not cleaned up; an operator can delete them from the `results` table.
+A result older than the newest stored result of the same check (any location) never changes the state, the counter, the incidents or `lastResultAt`; it is stored and listed in the results history (see [Late results](concepts.md#late-results)). Rows stored earlier with a future timestamp are not cleaned up; an operator can delete them from the `results` table.
 
 Every response carries the headers `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` `Referrer-Policy: no-referrer` and `x-pulse-contract: <WIRE_VERSION>` (the wire-format version of the contract, `1` today). The result triggers one evaluation (see [Quorum and incidents](concepts.md#quorum-and-incidents)).
 
@@ -119,11 +120,14 @@ curl http://localhost:3000/checks
 
 Returns the results of one check, newest first (`Result[]`).
 
-| Query   | Meaning                                        |
-| ------- | ---------------------------------------------- |
-| `limit` | Positive integer. Default 100, capped at 1000. |
+| Query    | Meaning                                         |
+| -------- | ----------------------------------------------- |
+| `limit`  | Positive integer. Default 100, capped at 1000.  |
+| `before` | Epoch ms, exclusive cursor: only older results. |
 
-Errors: `400` `limit must be a positive integer`, `400` `bad check id` (malformed percent escape), `404` `unknown check "<id>"`.
+To page, request the next page with `before` set to the `timestamp` of the last item. A page that ends inside a group of results with the same timestamp (one per location) returns the whole group, so it can exceed `limit` by at most the number of locations; nothing is skipped or repeated.
+
+Errors: `400` `limit must be a positive integer`, `400` `before must be a non-negative integer`, `400` `bad check id` (malformed percent escape), `404` `unknown check "<id>"`.
 
 ```sh
 curl 'http://localhost:3000/checks/example/results?limit=1'
@@ -137,15 +141,23 @@ Returns one `CheckUptime` per active check, in the order of `GET /checks`. Each 
 curl http://localhost:3000/uptime
 ```
 
+## Read cache
+
+`GET /checks` and `GET /uptime` answers are reused for up to 5 s. Every ingest (`POST /results`, a heartbeat ping or expiry), a checks file load and every retention delete clears the cache, so a result is visible right after it is accepted. The TTL only bounds changes made by the clock; a maintenance window that opens or closes also ends a cached answer.
+
 ## GET /incidents
 
 Returns incidents (`Incident[]`) with `id`, `checkId`, `openedAt`, `resolvedAt` (`null` while open) and `reason`. Open incidents come first, then the newest first.
 
-| Query    | Meaning                                                |
-| -------- | ------------------------------------------------------ |
-| `status` | `open` or `resolved`. When omitted, both are returned. |
+| Query    | Meaning                                                                                                      |
+| -------- | ------------------------------------------------------------------------------------------------------------ |
+| `status` | `open` or `resolved`. When omitted, both are returned.                                                       |
+| `limit`  | Positive integer. Default 1000, capped at 5000.                                                              |
+| `since`  | Epoch ms. Only incidents relevant at or after it: `openedAt >= since`, `resolvedAt >= since`, or still open. |
 
-Error: `400` `status must be "open" or "resolved"`.
+The default limit is large so that a reader without parameters (the status page) gets every incident in practice; with more than 1000 incidents, narrow with `since` or raise `limit`.
+
+Errors: `400` `status must be "open" or "resolved"`, `400` `limit must be a positive integer`, `400` `since must be a non-negative integer`.
 
 ```sh
 curl 'http://localhost:3000/incidents?status=open'
@@ -167,9 +179,9 @@ curl 'http://localhost:3000/incidents?status=open'
 
 Returns maintenance windows (`MaintenanceWindow[]`) with `end > now`, sorted by `start` and then `checkId`. A window is current when `start <= now` and upcoming otherwise. Windows are half-open: `[start, end)`.
 
-| Query     | Meaning                       |
-| --------- | ----------------------------- |
-| `checkId` | Optional filter on one check. |
+| Query     | Meaning                                                                                                                                       |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `checkId` | Optional filter on one check. An unknown id answers `404` `unknown check "<id>"` (like the results route; before, it answered an empty list). |
 
 ```sh
 curl 'http://localhost:3000/maintenance?checkId=example'
@@ -203,7 +215,11 @@ A ping stores an `up` result with `location` `heartbeat`, `statusCode` null, `la
 
 ## GET /healthz
 
-Returns `200` with the body `ok` when the API is ready: the database is open and the checks are loaded. While the API shuts down it returns `503` with `shutting down`. It reads only an in-memory flag, so it is cheap and the Docker `HEALTHCHECK` uses it.
+Liveness. Returns `200` with the body `ok` as long as the process answers. It does not access the database and also answers `200` while the API shuts down (it answered `503` then before; use `/readyz` for readiness).
+
+## GET /readyz
+
+Readiness, no token. Returns `200 ok` when `SELECT 1` works on the database and the API is not shutting down. Otherwise `503` with `shutting down` or `database unavailable`; the body never holds a database error text. The Docker `HEALTHCHECK` and the Compose gates use it.
 
 ## GET /metrics
 

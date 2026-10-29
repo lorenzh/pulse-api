@@ -136,7 +136,7 @@ test("scheduler: runs at startup and hourly, errors do not stop it", async () =>
   await timers[0]?.fn();
   assert.deepEqual(logs[1], "retention: deleted 3 results");
   assert.equal(timers.length, 2);
-  r.stop();
+  await r.stop();
 });
 
 test("GET /uptime is identical before and after cleanup", async (t) => {
@@ -150,4 +150,64 @@ test("GET /uptime is identical before and after cleanup", async (t) => {
   const before = await get();
   await cleanupResults(service, { now: () => NOW, retentionDays: 90, sleep: sleepFake([]) });
   assert.deepEqual(await get(), before);
+});
+
+test("scheduler: a timer that fires after stop() starts no run, and stop() awaits the run in progress", async () => {
+  const timers: { fn: () => Promise<void> }[] = [];
+  let calls = 0;
+  const gates: (() => void)[] = [];
+  const r = startRetention({
+    service: {
+      deleteExpiredResults(): number {
+        calls += 1;
+        return calls === 2 ? 1 : 0;
+      },
+    },
+    now: () => NOW,
+    retentionDays: 90,
+    batchSize: 1,
+    sleep: () => new Promise<void>((resolve) => gates.push(resolve)),
+    setTimeout: (fn) => timers.push({ fn }),
+    clearTimeout: () => undefined,
+    log: () => undefined,
+  });
+  await r.done;
+  const second = timers[0]?.fn();
+  assert.equal(calls, 2); // the second run is inside its first batch, waiting on sleep
+  let hasStopped = false;
+  const stopped = r.stop().then(() => {
+    hasStopped = true;
+  });
+  await Promise.resolve();
+  assert.equal(hasStopped, false);
+  gates[0]?.();
+  await stopped;
+  await second;
+  assert.equal(calls, 3);
+  void timers[0]?.fn(); // fires in the same tick as stop(): no run
+  assert.equal(calls, 3);
+  assert.equal(timers.length, 1);
+});
+
+test("abort ends a run after the batch in progress", async () => {
+  let calls = 0;
+  let abort = false;
+  const deleted = await cleanupResults(
+    {
+      deleteExpiredResults(): number {
+        calls += 1;
+        abort = true;
+        return 1;
+      },
+    },
+    {
+      now: () => NOW,
+      retentionDays: 90,
+      batchSize: 1,
+      sleep: sleepFake([]),
+      isAborted: () => abort,
+    },
+  );
+  assert.equal(calls, 1);
+  assert.equal(deleted, 1);
 });

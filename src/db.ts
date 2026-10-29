@@ -90,6 +90,7 @@ function migrate(db: DatabaseSync): void {
     "CREATE INDEX IF NOT EXISTS results_by_location ON results (check_id, location, timestamp)",
   );
   db.exec("CREATE INDEX IF NOT EXISTS results_by_time ON results (timestamp)");
+  db.exec("CREATE INDEX IF NOT EXISTS incidents_check_id ON incidents (check_id)");
   if (isLateMissing) {
     // Once: a row inserted after a row of the same check and location with a larger timestamp was late.
     db.exec(`UPDATE results SET late = 1 WHERE EXISTS (
