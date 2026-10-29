@@ -95,7 +95,7 @@ The file is `{"tokens": [{"location": "east", "token": "<secret>"}]}`. Keep it o
 | `location` | Non-empty string, at most 64 characters after trim.                                                                              |
 | `token`    | String of at least 16 characters, unique across the file. A value that starts with `replace-with-` is rejected as a placeholder. |
 
-A location may have several tokens. Create a token with `openssl rand -hex 32`. If the file is missing, not valid JSON or invalid, the API prints `pulse-api: <message>` and exits with code 1. The messages never print token values, and the start log only counts tokens and locations. See [Locations and tokens](concepts.md#locations-and-tokens).
+A token must not contain whitespace, must not start with `replace-with-` and must not be one of the public example tokens. A location may have several tokens. Create a token with `openssl rand -hex 32`. If the file is missing, not valid JSON or invalid, the API prints `pulse-api: <message>` and exits with code 1. The messages never print token values, and the start log only counts tokens and locations. See [Locations and tokens](concepts.md#locations-and-tokens).
 
 ## Compose variables
 
@@ -110,4 +110,4 @@ A location may have several tokens. Create a token with `openssl rand -hex 32`. 
 | `PULSE_DEMO_API_PORT`    | `3001`    | Host port of `demo-api` (demo profile). Bound to 127.0.0.1.                |
 | `PULSE_DEMO_STATUS_PORT` | `8081`    | Host port of `demo-status` (demo profile).                                 |
 
-`.env.example` sets `PULSE_PROBE_TOKEN` to a public example value and `PULSE_LOCATION=default`. The two port lines are commented out. Replace the example token before you expose the stack. See [Install](install.md#the-env-file).
+`.env.example` sets `PULSE_PROBE_TOKEN` to the placeholder `replace-with-a-random-token` and `PULSE_LOCATION=default`. The two port lines are commented out. The API rejects the placeholder at start, so replace it with your own token. See [Install](install.md#the-env-file).

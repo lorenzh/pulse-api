@@ -19,6 +19,7 @@ const server = createApiServer(service, {
     { location: "east", token: A },
     { location: "west", token: B },
   ],
+  now: () => 1000,
 });
 let base = "";
 

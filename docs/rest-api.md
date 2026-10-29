@@ -28,17 +28,17 @@ A probe posts one result. The body is a `Result` (`PostResultRequest`).
 
 Headers: `Authorization: Bearer <token>` (the word `Bearer` is case-insensitive, then one space and a non-empty token).
 
-| Field          | Type                           | Rule                                                                        |
-| -------------- | ------------------------------ | --------------------------------------------------------------------------- |
-| `checkId`      | string                         | Non-empty. Must be a configured check.                                      |
-| `timestamp`    | number                         | Finite, epoch ms, set by the probe.                                         |
-| `status`       | `"up"`, `"degraded"`, `"down"` | Required.                                                                   |
-| `statusCode`   | integer or `null`              | Required. `null` when no response arrived.                                  |
-| `latencyMs`    | number                         | Finite and not negative.                                                    |
-| `reason`       | string or `null`               | Required.                                                                   |
-| `location`     | string                         | Optional. Trimmed, at most 64 characters. Blank means the token's location. |
-| `attempts`     | integer                        | Optional, at least 1. A missing value is stored as 1.                       |
-| `certDaysLeft` | integer or `null`              | Optional. For TLS checks.                                                   |
+| Field          | Type                           | Rule                                                                                                                                        |
+| -------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `checkId`      | string                         | Non-empty. Must be a configured check.                                                                                                      |
+| `timestamp`    | integer                        | Epoch ms, set by the probe. At most 60000 ms (`MAX_FUTURE_SKEW_MS`) after the API clock and at most 7 days (`MAX_RESULT_AGE_MS`) before it. |
+| `status`       | `"up"`, `"degraded"`, `"down"` | Required.                                                                                                                                   |
+| `statusCode`   | integer or `null`              | Required. `null` when no response arrived, else 100 to 599.                                                                                 |
+| `latencyMs`    | number                         | Finite, from 0 to 86400000 (`MAX_LATENCY_MS`).                                                                                              |
+| `reason`       | string or `null`               | Required. At most 1000 UTF-16 code units (`MAX_REASON_LENGTH`).                                                                             |
+| `location`     | string                         | Optional. Trimmed, at most 64 characters. Blank means the token's location.                                                                 |
+| `attempts`     | integer                        | Optional, 1 to 100 (`MAX_ATTEMPTS`). A missing value is stored as 1.                                                                        |
+| `certDaysLeft` | integer or `null`              | Optional. For TLS checks.                                                                                                                   |
 
 The checks run in this order:
 
@@ -51,18 +51,22 @@ The checks run in this order:
 7. `404` `unknown check "<id>"`.
 8. `204` and the result is stored. The stored location is always the token's.
 
-Nothing is stored when a request is rejected. The result triggers one evaluation (see [Quorum and incidents](concepts.md#quorum-and-incidents)).
+Every message names the field, for example `timestamp is more than 60000 ms in the future` or `timestamp is older than 7 days`. Nothing is stored when a request is rejected.
 
-Example (the API runs with the example `tokens.json` entry `east`, and `checks.json` has a check `example`):
+A result older than the newest stored result of the same check and location is a late result. It is stored and listed in the results history, but it does not change the state, the counter, the incidents or `lastResultAt` (see [Late results](concepts.md#late-results)). Rows stored earlier with a future timestamp are not cleaned up; an operator can delete them from the `results` table.
+
+Every response carries the headers `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` and `Referrer-Policy: no-referrer`. The result triggers one evaluation (see [Quorum and incidents](concepts.md#quorum-and-incidents)).
+
+Example (`PULSE_PROBE_TOKEN` holds the token of the `tokens.json` entry `east`, and `checks.json` has a check `example`):
 
 ```sh
 curl -i -X POST http://localhost:3000/results \
-  -H 'Authorization: Bearer example-token-0123456789abcdef' \
+  -H "Authorization: Bearer $PULSE_PROBE_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"checkId":"example","timestamp":1793265326000,"status":"down","statusCode":503,"latencyMs":12,"reason":"HTTP 503"}'
+  -d '{"checkId":"example","timestamp":'"$(date +%s)000"',"status":"down","statusCode":503,"latencyMs":12,"reason":"HTTP 503"}'
 ```
 
-The response is `HTTP/1.1 204 No Content`.
+The response is `HTTP/1.1 204 No Content`. A request with an old fixed `timestamp` fails with `400`, so the example takes the current time.
 
 ## GET /checks
 

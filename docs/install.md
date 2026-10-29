@@ -34,6 +34,8 @@ The API only stores and serves data. Start a [pulse-probe](https://github.com/lo
 
 ```sh
 cp .env.example .env
+# Put a random token into .env. The placeholder in .env.example is rejected at start.
+sed -i.bak "s/^PULSE_PROBE_TOKEN=.*/PULSE_PROBE_TOKEN=$(openssl rand -hex 32)/" .env && rm .env.bak
 docker compose up -d --build
 ```
 
@@ -52,13 +54,13 @@ All images run as the non-root `node` user. `status` and `notify` wait for `api`
 
 ### The `.env` file
 
-`.env` holds `PULSE_PROBE_TOKEN` and `PULSE_LOCATION`. The example token in `.env.example` is public. Replace it before you expose the stack:
+`.env` holds `PULSE_PROBE_TOKEN` and `PULSE_LOCATION`. `.env.example` has a placeholder token (`replace-with-...`). The API refuses to start with it, so replace it with your own token:
 
 ```sh
 openssl rand -hex 32
 ```
 
-Compose writes the API's tokens file from these two variables and gives the same two variables to the probe, so the location matches the token. Without a `.env` the token is empty. The API then stops at start with `token must be a string of at least 16 characters`. Copy `.env.example` to `.env` first. All Compose variables are listed in [Configuration](configuration.md#compose-variables).
+Compose writes the API's tokens file from these two variables and gives the same two variables to the probe, so the location matches the token. Without a `.env` the token is empty. The API then stops at start with `token must be a string of at least 16 characters`. Copy `.env.example` to `.env` and set the token first. The Compose demo profile has its own public tokens in `compose.yaml` and still starts without `.env`. All Compose variables are listed in [Configuration](configuration.md#compose-variables).
 
 ### Ports
 

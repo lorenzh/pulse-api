@@ -120,6 +120,12 @@ export function createService(
     `INSERT INTO results (check_id, timestamp, status, status_code, latency_ms, reason, location, cert_days_left, attempts)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
+  const newestStored = db.prepare(
+    "SELECT MAX(timestamp) AS t FROM results WHERE check_id = ? AND location = ?",
+  );
+  const openedAtOf = db.prepare(
+    "SELECT opened_at FROM incidents WHERE check_id = ? AND resolved_at IS NULL LIMIT 1",
+  );
   const windowResults = db.prepare(
     `SELECT * FROM results WHERE check_id = ? AND timestamp >= ? AND timestamp <= ?
      ORDER BY timestamp DESC, id DESC`,
@@ -271,6 +277,11 @@ export function createService(
       transaction(() => {
         const row = getCheck.get(result.checkId) as CheckRow | undefined;
         if (!row) throw new UnknownCheckError(result.checkId);
+        // Read before the insert, so the new row is not compared with itself.
+        const newest = (
+          newestStored.get(result.checkId, result.location) as { t: number | null } | undefined
+        )?.t;
+        const isLate = newest !== null && newest !== undefined && result.timestamp < newest;
         insertResult.run(
           result.checkId,
           result.timestamp,
@@ -282,6 +293,8 @@ export function createService(
           result.certDaysLeft ?? null,
           result.attempts ?? 1,
         );
+        // A late result is history only: it must not rewrite live state or incidents.
+        if (isLate) return;
         if (result.status === "down" && inWindow(result.checkId, result.timestamp)) {
           updateLast.run(result.timestamp, result.reason, result.checkId);
           return;
@@ -306,7 +319,11 @@ export function createService(
         );
         if (action === "open")
           openIncident.run(result.checkId, result.timestamp, latestDown?.reason ?? result.reason);
-        if (action === "resolve") resolveIncident.run(result.timestamp, result.checkId);
+        if (action === "resolve") {
+          // Another location may report an older timestamp: never resolve before the open.
+          const opened = openedAtOf.get(result.checkId) as { opened_at: number } | undefined;
+          resolveIncident.run(Math.max(result.timestamp, opened?.opened_at ?? 0), result.checkId);
+        }
         updateState.run(
           next.state,
           next.consecutiveDown,

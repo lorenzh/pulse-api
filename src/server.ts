@@ -9,8 +9,19 @@ import {
 import { authenticate, type ProbeToken } from "./tokens.ts";
 
 const MAX_BODY = 1_000_000;
+export const MAX_FUTURE_SKEW_MS = 60_000;
+export const MAX_RESULT_AGE_MS = 7 * 86_400_000;
+export const MAX_REASON_LENGTH = 1000;
+export const MAX_ATTEMPTS = 100;
+export const MAX_LATENCY_MS = 86_400_000;
 export const DEFAULT_LIMIT = 100;
 export const MAX_LIMIT = 1000;
+
+const SECURITY_HEADERS: Record<string, string> = {
+  "x-content-type-options": "nosniff",
+  "content-security-policy": "default-src 'none'; frame-ancestors 'none'",
+  "referrer-policy": "no-referrer",
+};
 
 class HttpError extends Error {
   status: number;
@@ -62,28 +73,27 @@ function isFiniteNumber(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v);
 }
 
-/** Validate a POST /results body; returns an error message or the Result. */
-// eslint-disable-next-line sonarjs/cognitive-complexity -- splitting this validator/handler would be a behaviour-risking refactor
-export function validateResult(body: unknown): Result | string {
-  if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    return "body must be a JSON object";
-  }
-  const b = body as Record<string, unknown>;
-  if (typeof b.checkId !== "string" || b.checkId === "")
-    return "checkId must be a non-empty string";
-  if (!isFiniteNumber(b.timestamp)) return "timestamp must be a number";
-  if (b.status !== "up" && b.status !== "degraded" && b.status !== "down") {
-    return 'status must be "up", "degraded" or "down"';
-  }
-  if (
-    b.statusCode !== null &&
-    !(typeof b.statusCode === "number" && Number.isInteger(b.statusCode))
-  ) {
-    return "statusCode must be an integer or null";
-  }
-  if (!isFiniteNumber(b.latencyMs) || b.latencyMs < 0)
-    return "latencyMs must be a non-negative number";
+function isIntegerIn(v: unknown, min: number, max: number): v is number {
+  return typeof v === "number" && Number.isInteger(v) && v >= min && v <= max;
+}
+
+function checkTimestamp(v: unknown, now: number): string | undefined {
+  if (typeof v !== "number" || !Number.isInteger(v))
+    return "timestamp must be an integer (epoch ms)";
+  if (v > now + MAX_FUTURE_SKEW_MS)
+    return `timestamp is more than ${MAX_FUTURE_SKEW_MS} ms in the future`;
+  if (v < now - MAX_RESULT_AGE_MS) return "timestamp is older than 7 days";
+  return undefined;
+}
+
+function checkMeasurements(b: Record<string, unknown>): string | undefined {
+  if (b.statusCode !== null && !isIntegerIn(b.statusCode, 100, 599))
+    return "statusCode must be null or an integer from 100 to 599";
+  if (!isFiniteNumber(b.latencyMs) || b.latencyMs < 0 || b.latencyMs > MAX_LATENCY_MS)
+    return `latencyMs must be a number from 0 to ${MAX_LATENCY_MS}`;
   if (b.reason !== null && typeof b.reason !== "string") return "reason must be a string or null";
+  if (typeof b.reason === "string" && b.reason.length > MAX_REASON_LENGTH)
+    return `reason must be at most ${MAX_REASON_LENGTH} characters`;
   if (
     b.certDaysLeft !== undefined &&
     b.certDaysLeft !== null &&
@@ -91,31 +101,52 @@ export function validateResult(body: unknown): Result | string {
   ) {
     return "certDaysLeft must be an integer or null";
   }
-  if (
-    b.attempts !== undefined &&
-    !(typeof b.attempts === "number" && Number.isInteger(b.attempts) && b.attempts >= 1)
-  ) {
-    return "attempts must be an integer >= 1";
+  if (b.attempts !== undefined && !isIntegerIn(b.attempts, 1, MAX_ATTEMPTS))
+    return `attempts must be an integer from 1 to ${MAX_ATTEMPTS}`;
+  return undefined;
+}
+
+function parseLocation(v: unknown): string {
+  if (v === undefined) return DEFAULT_LOCATION;
+  if (typeof v !== "string") throw new TypeError("location must be a string");
+  const trimmed = v.trim();
+  if (trimmed.length > MAX_LOCATION_LENGTH)
+    throw new TypeError(`location must be at most ${MAX_LOCATION_LENGTH} characters`);
+  return trimmed === "" ? DEFAULT_LOCATION : trimmed;
+}
+
+/** Validate a POST /results body against the clock `now` (epoch ms); returns an error message or the Result. */
+export function validateResult(body: unknown, now: number): Result | string {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return "body must be a JSON object";
   }
-  let location = DEFAULT_LOCATION;
-  if (b.location !== undefined) {
-    if (typeof b.location !== "string") return "location must be a string";
-    const trimmed = b.location.trim();
-    if (trimmed.length > MAX_LOCATION_LENGTH)
-      return `location must be at most ${MAX_LOCATION_LENGTH} characters`;
-    if (trimmed !== "") location = trimmed;
+  const b = body as Record<string, unknown>;
+  if (typeof b.checkId !== "string" || b.checkId === "")
+    return "checkId must be a non-empty string";
+  const timestampError = checkTimestamp(b.timestamp, now);
+  if (timestampError !== undefined) return timestampError;
+  if (b.status !== "up" && b.status !== "degraded" && b.status !== "down") {
+    return 'status must be "up", "degraded" or "down"';
+  }
+  const measurementError = checkMeasurements(b);
+  if (measurementError !== undefined) return measurementError;
+  let location: string;
+  try {
+    location = parseLocation(b.location);
+  } catch (err) {
+    return err instanceof Error ? err.message : "location is invalid";
   }
   const result: Result = {
     checkId: b.checkId,
-    timestamp: b.timestamp,
+    timestamp: b.timestamp as number,
     status: b.status,
-    statusCode: b.statusCode,
-    latencyMs: b.latencyMs,
-    reason: b.reason,
+    statusCode: b.statusCode as number | null,
+    latencyMs: b.latencyMs as number,
+    reason: b.reason as string | null,
     location,
-    attempts: b.attempts ?? 1,
+    attempts: (b.attempts as number | undefined) ?? 1,
   };
-  if (b.certDaysLeft !== undefined) result.certDaysLeft = b.certDaysLeft;
+  if (b.certDaysLeft !== undefined) result.certDaysLeft = b.certDaysLeft as number | null;
   return result;
 }
 
@@ -125,6 +156,7 @@ const RESULTS_PATH = /^\/checks\/([^/]+)\/results$/;
 async function handle(
   service: Service,
   tokens: readonly ProbeToken[],
+  now: () => number,
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
@@ -153,7 +185,7 @@ async function handle(
       if (err instanceof HttpError) throw err;
       throw new HttpError(400, "body is not valid JSON");
     }
-    const result = validateResult(parsed);
+    const result = validateResult(parsed, now());
     if (typeof result === "string") throw new HttpError(400, result);
     // validateResult maps an omitted or blank location to the default: the token decides then.
     const sent = (parsed as { location?: unknown }).location;
@@ -219,11 +251,14 @@ async function handle(
   sendJson(res, 200, service.listResults(id, limit));
 }
 
-export type ApiServerOptions = { tokens: readonly ProbeToken[] };
+export type ApiServerOptions = { tokens: readonly ProbeToken[]; now?: () => number };
 
 export function createApiServer(service: Service, options: ApiServerOptions): Server {
+  const now = options.now ?? Date.now;
   return createServer((req, res) => {
-    handle(service, options.tokens, req, res).catch((err: unknown) => {
+    // Set before any write; writeHead keeps these next to the headers a response adds.
+    for (const [name, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(name, value);
+    handle(service, options.tokens, now, req, res).catch((err: unknown) => {
       if (res.headersSent) {
         res.destroy();
         return;

@@ -1,0 +1,81 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import type { Check, Result } from "@lorenzh/pulse-contract";
+import { openDb } from "./db.ts";
+import { createService } from "./service.ts";
+
+// eslint-disable-next-line sonarjs/no-clear-text-protocols -- local test fixture, never requested
+const check: Check = { id: "c1", name: "C1", url: "http://x/", intervalMs: 1000 };
+
+function r(t: number, location: string, status: "up" | "down"): Result {
+  return {
+    checkId: "c1",
+    timestamp: t,
+    status,
+    statusCode: status === "up" ? 200 : 503,
+    latencyMs: 1,
+    reason: status === "down" ? `${location}@${t}` : null,
+    location,
+    attempts: 1,
+  };
+}
+
+function setup() {
+  const s = createService(openDb(":memory:"));
+  s.upsertChecks([check]);
+  return s;
+}
+
+function downWithIncident() {
+  const s = setup();
+  s.ingest(r(100, "a", "down"));
+  s.ingest(r(200, "b", "down"));
+  s.ingest(r(300, "a", "down"));
+  s.ingest(r(400, "b", "down"));
+  assert.equal(s.listIncidents("open").length, 1);
+  return s;
+}
+
+test("late result: stored in history, live state and incident unchanged", () => {
+  const s = downWithIncident();
+  const before = s.listChecks()[0]!;
+  s.ingest(r(150, "a", "up")); // a already has t=300
+  const after = s.listChecks()[0]!;
+  assert.equal(after.state, "down");
+  assert.equal(after.consecutiveDown, before.consecutiveDown);
+  assert.equal(after.lastResultAt, before.lastResultAt);
+  assert.equal(after.lastReason, before.lastReason);
+  assert.equal(s.listIncidents("open").length, 1);
+  assert.equal(s.listResults("c1", 10).length, 5);
+  assert.ok(s.listResults("c1", 10).some((x) => x.timestamp === 150 && x.status === "up"));
+  // The late row is not the latest of its location.
+  const loc = after.locations.find((l) => l.location === "a");
+  assert.equal(loc?.result.timestamp, 300);
+});
+
+test("late result: an equal timestamp is not late", () => {
+  const s = downWithIncident();
+  s.ingest(r(400, "b", "up"));
+  assert.equal(s.listChecks()[0]!.locations.find((l) => l.location === "b")?.result.status, "up");
+  assert.notEqual(s.listChecks()[0]!.lastReason, "b@400");
+});
+
+test("late result: another location still takes part in quorum", () => {
+  const s = downWithIncident();
+  s.ingest(r(450, "c", "up")); // first result of c, newer than the rest: not late
+  assert.equal(s.listChecks()[0]!.lastResultAt, 450);
+});
+
+test("resolve from another location never goes before openedAt", () => {
+  const s = setup();
+  s.ingest(r(100, "a", "down"));
+  s.ingest(r(200, "b", "down"));
+  s.ingest(r(300, "a", "down")); // third down result: the incident opens at 300
+  assert.equal(s.listIncidents("open")[0]?.openedAt, 300);
+  // b is not late at 250 (its newest is 200). The window at 250 sees a down at 100 and b up: quorum up.
+  s.ingest(r(250, "b", "up"));
+  assert.deepEqual(
+    s.listIncidents("resolved").map((i) => [i.openedAt, i.resolvedAt]),
+    [[300, 300]],
+  );
+});

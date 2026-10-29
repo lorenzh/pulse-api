@@ -141,14 +141,18 @@ assert_no_volume() {
 }
 
 step "Setup (project ${project})"
-for tool in docker curl jq; do
+for tool in docker curl jq openssl; do
   command -v "$tool" >/dev/null || fail "$tool is required"
 done
 if ! docker compose config | grep -qx "name: ${project}"; then
   fail "COMPOSE_PROJECT_NAME does not override the name in compose.yaml"
 fi
 if [[ ! -f .env ]]; then
-  cp .env.example .env
+  # The example token is a placeholder the API rejects: write a random one.
+  {
+    sed '/^PULSE_PROBE_TOKEN=/d' .env.example
+    printf 'PULSE_PROBE_TOKEN=%s\n' "$(openssl rand -hex 16)"
+  } >.env
   created_env=1
 fi
 api_port=$(env_value PULSE_API_PORT 3000)
