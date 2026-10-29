@@ -152,6 +152,19 @@ notify_has() {
   docker compose exec -T notify cat /data/incidents.jsonl | grep -qF -- "$1"
 }
 
+# True once notify finished a good poll; that poll seeds the incidents that already exist.
+# grep without -q reads all input, so pipefail never sees node die of SIGPIPE.
+notify_has_polled() {
+  docker compose exec -T notify node -e \
+    "fetch('http://127.0.0.1:9100/metrics').then(async (r) => console.log(await r.text()))" |
+    grep -E '^pulse_notify_polls_total\{outcome="ok"\} [1-9]'
+}
+
+hb_has_new_incident() { # hb_has_new_incident <old id>
+  local id
+  id=$(hb_open_incident_id) && [[ "$id" != "$1" ]]
+}
+
 # The page is rendered in the browser from /api/checks, which the status
 # service proxies from the API. So the check name is not in the HTML of GET /.
 page_has_title() {
@@ -260,9 +273,16 @@ wait_for "$T_PAGE" "the status page lists the heartbeat check" hb_page_has_check
 [[ "$(hb_status "http://127.0.0.1:${api_port}/heartbeat/no-such-check/${hb_secret}")" == "401" ]] ||
   fail "an unknown id did not answer 401"
 echo "ok: a wrong secret and an unknown id answer 401"
+# The first incident can open before notify's first poll, which seeds it without an
+# `opened` event. Resolve it, and assert on the next incident, opened after that poll.
+hb_first_incident_id=$(hb_open_incident_id)
+wait_for "$T_NOTIFY" "notify has polled the api" notify_has_polled
+wait_for "$T_INCIDENT_RESOLVE" "a ping with the header secret brings the check up and resolves the incident" hb_ping_resolves
+wait_for "$T_INCIDENT_OPEN" "heartbeat-e2e opens a new incident without a ping" hb_has_new_incident "$hb_first_incident_id"
 hb_incident_id=$(hb_open_incident_id)
 wait_for "$T_NOTIFY" "notify ledger has ${hb_incident_id}:opened" notify_has "${hb_incident_id}:opened"
-wait_for "$T_INCIDENT_RESOLVE" "a ping with the header secret brings the check up and resolves the incident" hb_ping_resolves
+wait_for "$T_INCIDENT_RESOLVE" "a ping resolves incident ${hb_incident_id}" hb_ping_resolves
+wait_for "$T_NOTIFY" "notify ledger has ${hb_incident_id}:resolved" notify_has "${hb_incident_id}:resolved"
 wait_for "$T_INCIDENT_OPEN" "pulse_heartbeat_pings_total is above 0" hb_metric_positive pulse_heartbeat_pings_total
 [[ "$(hb_status -X POST "http://127.0.0.1:${api_port}/heartbeat/heartbeat-e2e/${hb_secret}")" == "204" ]] ||
   fail "a ping with the path secret did not answer 204"
