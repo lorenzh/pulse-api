@@ -179,6 +179,7 @@ is_healthy() { # is_healthy <service>
 }
 
 api_healthz_ok() { [[ "$(api /healthz)" == "ok" ]]; }
+api_readyz_ok() { [[ "$(api /readyz)" == "ok" ]]; }
 
 api_metrics_ok() {
   local text
@@ -249,6 +250,7 @@ step "Health and metrics"
 for service in api probe status notify; do
   wait_for "$T_UP" "$service is healthy" is_healthy "$service"
 done
+wait_for "$T_UP" "GET /readyz on the api answers ok" api_readyz_ok
 wait_for "$T_UP" "GET /healthz on the api answers ok" api_healthz_ok
 wait_for "$T_UP" "GET /metrics on the api has the pulse_ series" api_metrics_ok
 

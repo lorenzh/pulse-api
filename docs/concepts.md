@@ -39,9 +39,13 @@ Details:
 - The counter is stored in the database and survives restarts.
 - `resolvedAt` is never earlier than `openedAt`. If the resolving result carries an older timestamp (another location's clock), the API stores `openedAt` instead.
 
+### Maintenance and quorum
+
+Whether a `down` result lies in a maintenance window is decided by its own timestamp (`start <= t < end`), not by the arrival time. Such a down never counts in a quorum window, also when it arrives after the window ended. A down at `end` counts. Windows come from the checks file at start, so a changed file applies from the next start.
+
 ### Late results
 
-A result is late when its timestamp is strictly older than the newest stored result of the same check and the same location. A late result is stored (marked `late` in the `results` table, not in the JSON) and appears in the results history. It is excluded from every later window, so it never takes part in the quorum. It does not change the state, `consecutiveDown`, incidents, `lastResultAt` or `lastReason`. Results of other locations keep their role in the quorum. A result with a timestamp equal to the newest one is not late; the higher row id wins the tie. `GET /uptime` is a history statistic and still counts late results.
+A result is late when its timestamp is strictly older than the newest stored result of the same check and the same location. A result that is older than the newest result of the same check in any other location is not marked late and still takes part in later quorum windows at its own timestamp, but it never changes the state, `consecutiveDown`, incidents, `lastResultAt` or `lastReason` either. Equal timestamps are not older. A late result is stored (marked `late` in the `results` table, not in the JSON) and appears in the results history. It is excluded from every later window, so it never takes part in the quorum. It does not change the state, `consecutiveDown`, incidents, `lastResultAt` or `lastReason`. Results of other locations keep their role in the quorum. A result with a timestamp equal to the newest one is not late; the higher row id wins the tie. `GET /uptime` is a history statistic and still counts late results.
 - The counter is `consecutiveDown` in `GET /checks`.
 
 Example: a check has `intervalMs` 10000 and one probe. Three `down` results in a row open an incident. The next `up` result resolves it.

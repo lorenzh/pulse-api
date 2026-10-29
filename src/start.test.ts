@@ -316,3 +316,59 @@ test("heartbeat e2e: the started api goes down without a ping and a ping resolve
     await api.close();
   }
 });
+
+test("shutdown during a retention run waits for the run, then closes: no write after close", async () => {
+  const dbFile = join(dir, "race.db");
+  let db: DatabaseSync | undefined;
+  const timers: { fn: () => void; ms: number }[] = [];
+  const gates: (() => void)[] = [];
+  const { base, lines } = deps(
+    { PULSE_DB: dbFile },
+    {
+      retentionIntervalMs: 10,
+      setTimeout: (fn, ms) => {
+        timers.push({ fn, ms });
+        return timers.length;
+      },
+      // sleep(0) is the pause between retention batches; the shutdown bound never fires.
+      sleep: (ms) =>
+        ms === 0
+          ? new Promise<void>((resolve) => gates.push(resolve))
+          : new Promise<void>(() => undefined),
+      openDb: (path) => {
+        db = openDb(path);
+        return db;
+      },
+    },
+  );
+  const api = await startApi(base);
+  assert.ok(db);
+  // 2500 expired rows plus one fresh row that is kept as the newest of its location.
+  const insert = db.prepare(
+    "INSERT INTO results (check_id, timestamp, status, latency_ms, location) VALUES ('c1', ?, 'up', 1, 'eu')",
+  );
+  db.exec("BEGIN");
+  for (let i = 0; i < 2500; i++) insert.run(NOW - 200 * 86_400_000 + i);
+  insert.run(NOW);
+  db.exec("COMMIT");
+  const retentionTimers = (): { fn: () => void; ms: number }[] => timers.filter((t) => t.ms === 10);
+  const start = retentionTimers()[0];
+  assert.ok(start, "the first run scheduled the second");
+  start.fn(); // second run: first batch deleted, now waiting between batches
+  const closing = api.close();
+  let isClosed = false;
+  void closing.then(() => {
+    isClosed = true;
+  });
+  for (let i = 0; i < 10 && !isClosed; i++) {
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(db.isOpen, !isClosed || false);
+    gates.shift()?.();
+  }
+  await closing;
+  const text = lines.map((l) => l.line).join("\n");
+  assert.doesNotMatch(text, /not open/);
+  assert.doesNotMatch(text, /retention failed/);
+  assert.match(text, /retention: deleted 2500 results/);
+  assert.equal(retentionTimers().length, 1, "no run was scheduled after stop");
+});

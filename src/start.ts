@@ -29,6 +29,8 @@ export interface StartDeps {
   openDb: (path: string) => DatabaseSync;
   /** Bound for the shutdown; defaults to SHUTDOWN_TIMEOUT_MS. */
   shutdownTimeoutMs?: number;
+  /** Time between retention runs; a test hook, the production interval is fixed at one hour. */
+  retentionIntervalMs?: number;
 }
 
 export interface RunningApi {
@@ -112,6 +114,7 @@ async function run(deps: StartDeps, onDb: (db: DatabaseSync) => void): Promise<R
     now: deps.now,
     retentionDays,
     sleep: deps.sleep,
+    ...(deps.retentionIntervalMs === undefined ? {} : { intervalMs: deps.retentionIntervalMs }),
     setTimeout: (fn, ms) => deps.setTimeout(() => void fn(), ms),
     clearTimeout: deps.clearTimeout,
     log: (line) => logger.info(line),
@@ -140,7 +143,7 @@ async function run(deps: StartDeps, onDb: (db: DatabaseSync) => void): Promise<R
       server.listen(port, resolve);
     });
   } catch (err) {
-    retention.stop();
+    await retention.stop();
     heartbeat.stop();
     throw new StartupError(`cannot listen on port ${port} (PORT): ${errorText(err)}`, {
       cause: err,
@@ -162,12 +165,13 @@ async function run(deps: StartDeps, onDb: (db: DatabaseSync) => void): Promise<R
   const timeoutMs = deps.shutdownTimeoutMs ?? SHUTDOWN_TIMEOUT_MS;
   const shutdown = async (): Promise<void> => {
     isShuttingDown = true;
-    retention.stop();
+    // Stop both timers first, so no run starts while the server drains.
+    const retentionEnded = retention.stop();
     heartbeat.stop();
     const drained = new Promise<void>((resolve) => {
       server.close(() => resolve());
       server.closeIdleConnections();
-    }).then(() => retention.done);
+    }).then(() => retentionEnded);
     const outcome = await Promise.race([
       drained.then(() => "drained" as const),
       deps.sleep(timeoutMs).then(() => "timeout" as const),
@@ -175,7 +179,11 @@ async function run(deps: StartDeps, onDb: (db: DatabaseSync) => void): Promise<R
     if (outcome === "timeout") {
       logger.warn("shutdown bound reached: closing open connections", { timeoutMs });
       server.closeAllConnections();
+      // A batch is synchronous: the run ends right after the batch in progress.
+      retention.abort();
     }
+    // The database closes only after the run in progress has ended, so nothing writes after close.
+    await retentionEnded;
     db.close();
     logger.info("stopped");
   };

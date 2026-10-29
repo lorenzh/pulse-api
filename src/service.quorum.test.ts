@@ -113,15 +113,16 @@ test("quorum: window expiry drops a location after 2 intervals", () => {
   assert.equal(s.listChecks()[0]!.state, "down");
 });
 
-test("quorum: results newer than the ingested one are ignored", () => {
+test("quorum: a result older than another location's newest does not change the state", () => {
   const s = setup();
   s.ingest(r(100, "a", "up"));
   s.ingest(r(200, "b", "down"));
   s.ingest(r(300, "c", "down"));
   assert.equal(s.listChecks()[0]!.state, "down");
-  // t=150 is newer than a's t=100, so it counts: the window sees a up, only; b and c are newer
+  // t=150 is newer than a's t=100 but older than c's 300: stored, state untouched
   s.ingest(r(150, "a", "up"));
-  assert.equal(s.listChecks()[0]!.state, "up");
+  assert.equal(s.listChecks()[0]!.state, "down");
+  assert.equal(s.listChecks()[0]!.lastResultAt, 300);
 });
 
 test("quorum: a late result of a location is history only and the state stays down", () => {

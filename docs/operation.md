@@ -117,8 +117,8 @@ With Compose: `docker compose logs api`.
 
 ## Health and metrics
 
-`GET /healthz` returns `200 ok` when the database is open and the checks are loaded, and `503` while the API shuts down. The image `HEALTHCHECK` calls it. `GET /metrics` returns Prometheus text. Both need no token. See [GET /healthz](rest-api.md#get-healthz) and [GET /metrics](rest-api.md#get-metrics). `/metrics` lists check ids: keep it on a private network.
+`GET /healthz` is liveness: `200 ok`, no database access, also while the API shuts down (it used to answer `503` then). `GET /readyz` is readiness: `200 ok` when `SELECT 1` works and the API is not shutting down, else `503` with a short text and no database error. The image `HEALTHCHECK` and every gate on the API use `/readyz`. `GET /metrics` returns Prometheus text. Both need no token. See [GET /healthz](rest-api.md#get-healthz) and [GET /metrics](rest-api.md#get-metrics). `/metrics` lists check ids: keep it on a private network.
 
 ## Shutdown
 
-`SIGINT` and `SIGTERM` are handled from the first line of the process. The API then answers `/healthz` with `503`, stops accepting connections, closes idle ones, stops the retention timer, waits for open requests and a running cleanup, closes the database and exits with code 0. The wait is bounded by 5 s. When the bound is hit, the API logs a `warn` line, drops the remaining connections and still exits with 0. A second signal changes nothing. `docker stop` therefore returns well within its default 10 s.
+`SIGINT` and `SIGTERM` are handled from the first line of the process. The API then answers `/readyz` with `503`, stops accepting connections, closes idle ones, stops the retention timer (no run starts after that), waits for open requests and for the cleanup run in progress, closes the database and exits with code 0. The wait is bounded by 5 s. When the bound is hit, the cleanup is told to stop after its current batch (a batch is synchronous) and the database closes only after it ended; then the API logs a `warn` line, drops the remaining connections and still exits with 0. A second signal changes nothing. `docker stop` therefore returns well within its default 10 s.

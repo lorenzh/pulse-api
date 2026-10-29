@@ -70,18 +70,18 @@ test("late result: another location still takes part in quorum", () => {
   assert.equal(s.listChecks()[0]!.lastResultAt, 450);
 });
 
-test("resolve from another location never goes before openedAt", () => {
+test("a result older than another location's newest never changes state or incidents", () => {
   const s = setup();
   s.ingest(r(100, "a", "down"));
   s.ingest(r(200, "b", "down"));
   s.ingest(r(300, "a", "down")); // third down result: the incident opens at 300
   assert.equal(s.listIncidents("open")[0]?.openedAt, 300);
-  // b is not late at 250 (its newest is 200). The window at 250 sees a down at 100 and b up: quorum up.
+  // 250 is stored (b's own newest is 200) but older than a's 300: the incident stays open.
   s.ingest(r(250, "b", "up"));
-  assert.deepEqual(
-    s.listIncidents("resolved").map((i) => [i.openedAt, i.resolvedAt]),
-    [[300, 300]],
-  );
+  assert.deepEqual(s.listIncidents("resolved"), []);
+  assert.equal(s.listIncidents("open").length, 1);
+  assert.equal(s.listChecks()[0]!.lastResultAt, 300);
+  assert.equal(s.listResults("c1", 10).length, 4);
 });
 
 test("late result: never enters a later window, so the incident stays open", () => {
@@ -129,4 +129,15 @@ test("migration: late column is added and the backfill marks earlier-inserted ol
     ],
   );
   assert.equal(createService(db).listResults("c1", 10).length, 3);
+});
+
+test("two locations: loc2 at t=50 after loc1 at t=100 keeps last_result_at and state", () => {
+  const s = setup();
+  s.ingest(r(100, "loc1", "up"));
+  s.ingest(r(50, "loc2", "down"));
+  const c = s.listChecks()[0]!;
+  assert.equal(c.lastResultAt, 100);
+  assert.equal(c.state, "up");
+  assert.equal(c.consecutiveDown, 0);
+  assert.equal(s.listResults("c1", 10).length, 2);
 });

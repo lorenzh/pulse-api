@@ -134,3 +134,27 @@ test("maintenance: GET /maintenance over HTTP", async () => {
     server.closeAllConnections();
   }
 });
+
+function at(t: number, location: string, status: "up" | "down"): Result {
+  return { ...res(t, status), location };
+}
+
+test("maintenance quorum: a down at end - 1 is excluded later, a down at end counts", () => {
+  const { s } = setup();
+  s.ingest(at(150, "a", "up"));
+  s.ingest(at(199, "a", "down")); // inside [100, 200): never counts, also in later windows
+  s.ingest(at(200, "b", "down")); // quorum window sees a up (199 excluded) and b down: not two downs
+  assert.equal(s.listChecks()[0]!.state, "up");
+  s.ingest(at(200, "a", "down")); // at end: outside the window, counts; a and b are down
+  assert.equal(s.listChecks()[0]!.state, "down");
+});
+
+test("maintenance quorum: a late-arriving down inside a past window stays excluded", () => {
+  const { s, clock } = setup();
+  clock.t = 500; // the window is over when the results arrive
+  s.ingest(at(150, "a", "up"));
+  s.ingest(at(190, "a", "down"));
+  s.ingest(at(195, "b", "down"));
+  assert.equal(s.listChecks()[0]!.state, "up");
+  assert.deepEqual(s.listIncidents(), []);
+});

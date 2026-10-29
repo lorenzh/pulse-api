@@ -27,6 +27,8 @@ export const MAX_ATTEMPTS = 100;
 export const MAX_LATENCY_MS = 86_400_000;
 export const DEFAULT_LIMIT = 100;
 export const MAX_LIMIT = 1000;
+export const DEFAULT_INCIDENT_LIMIT = 1000;
+export const MAX_INCIDENT_LIMIT = 5000;
 
 const SECURITY_HEADERS: Record<string, string> = {
   "x-content-type-options": "nosniff",
@@ -183,6 +185,7 @@ const ROUTES = [
   "/incidents",
   "/maintenance",
   "/healthz",
+  "/readyz",
   "/metrics",
 ];
 
@@ -279,9 +282,9 @@ async function servePing(
   res.writeHead(204).end();
 }
 
-/** Serve `/healthz` and `/metrics`. Returns false for any other path. Neither needs auth. */
+/** Serve `/healthz`, `/readyz` and `/metrics`. Returns false for any other path. None needs auth. */
 function serveOps(ops: Ops, path: string, method: string, res: ServerResponse): boolean {
-  if (path !== "/healthz" && path !== "/metrics") return false;
+  if (path !== "/healthz" && path !== "/readyz" && path !== "/metrics") return false;
   if (method !== "GET") throw new HttpError(405, "method not allowed");
   if (path === "/metrics") {
     sendText(
@@ -292,10 +295,29 @@ function serveOps(ops: Ops, path: string, method: string, res: ServerResponse): 
     );
     return true;
   }
+  if (path === "/healthz") {
+    // Liveness only: no database access, and 200 also while shutting down.
+    sendText(res, 200, "ok\n");
+    return true;
+  }
   const reason = ops.notReadyReason();
-  if (reason === undefined) sendText(res, 200, "ok\n");
-  else sendText(res, 503, `${reason}\n`);
+  if (reason !== undefined) sendText(res, 503, `${reason}\n`);
+  else if (!ops.service.isDbReady()) sendText(res, 503, "database unavailable\n");
+  else sendText(res, 200, "ok\n");
   return true;
+}
+
+/** A query integer of at least `min`; undefined when absent, a 400 when malformed. */
+function parseCount(raw: string | null, name: string, min: number): number | undefined {
+  if (raw === null) return undefined;
+  const n = Number(raw);
+  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(n) || n < min) {
+    throw new HttpError(
+      400,
+      `${name} must be ${min === 0 ? "a non-negative" : "a positive"} integer`,
+    );
+  }
+  return n;
 }
 
 // eslint-disable-next-line sonarjs/cognitive-complexity -- splitting this validator/handler would be a behaviour-risking refactor
@@ -372,12 +394,25 @@ async function handle(
     if (status !== null && status !== "open" && status !== "resolved") {
       throw new HttpError(400, 'status must be "open" or "resolved"');
     }
-    sendJson(res, 200, service.listIncidents(status ?? undefined));
+    const limit = parseCount(url.searchParams.get("limit"), "limit", 1);
+    const since = parseCount(url.searchParams.get("since"), "since", 0);
+    sendJson(
+      res,
+      200,
+      service.listIncidents(status ?? undefined, {
+        limit: Math.min(limit ?? DEFAULT_INCIDENT_LIMIT, MAX_INCIDENT_LIMIT),
+        ...(since === undefined ? {} : { since }),
+      }),
+    );
     return;
   }
 
   if (path === "/maintenance") {
-    sendJson(res, 200, service.listMaintenance(url.searchParams.get("checkId") ?? undefined));
+    const checkId = url.searchParams.get("checkId") ?? undefined;
+    if (checkId !== undefined && !service.hasCheck(checkId)) {
+      throw new HttpError(404, `unknown check "${checkId}"`);
+    }
+    sendJson(res, 200, service.listMaintenance(checkId));
     return;
   }
 
@@ -391,15 +426,13 @@ async function handle(
     // decodeURIComponent throws URIError on malformed escapes: report it as a bad id
     throw new HttpError(400, "bad check id");
   }
-  let limit = DEFAULT_LIMIT;
-  const raw = url.searchParams.get("limit");
-  if (raw !== null) {
-    if (!/^\d+$/.test(raw) || Number(raw) < 1)
-      throw new HttpError(400, "limit must be a positive integer");
-    limit = Math.min(Number(raw), MAX_LIMIT);
-  }
+  const limit = Math.min(
+    parseCount(url.searchParams.get("limit"), "limit", 1) ?? DEFAULT_LIMIT,
+    MAX_LIMIT,
+  );
+  const before = parseCount(url.searchParams.get("before"), "before", 0);
   if (!service.hasCheck(id)) throw new HttpError(404, `unknown check "${id}"`);
-  sendJson(res, 200, service.listResults(id, limit));
+  sendJson(res, 200, service.listResults(id, limit, before));
 }
 
 export type ApiServerOptions = {

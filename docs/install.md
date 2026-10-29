@@ -43,12 +43,12 @@ Open http://localhost:8080. The example check (`compose/checks.json`) probes the
 
 Stop the stack with `docker compose down`. The `api-data` and `notify-data` volumes keep the database and the notify ledger for the next start. `docker compose down -v` deletes them.
 
-| Service  | Image                | Port                          | Healthcheck    |
-| -------- | -------------------- | ----------------------------- | -------------- |
-| `api`    | `pulse-api:local`    | `127.0.0.1:3000` (not public) | `GET /healthz` |
-| `probe`  | `pulse-probe:local`  | none                          | none           |
-| `status` | `pulse-status:local` | `8080` (the status page)      | `GET /`        |
-| `notify` | `pulse-notify:local` | none                          | none           |
+| Service  | Image                | Port                          | Healthcheck   |
+| -------- | -------------------- | ----------------------------- | ------------- |
+| `api`    | `pulse-api:local`    | `127.0.0.1:3000` (not public) | `GET /readyz` |
+| `probe`  | `pulse-probe:local`  | none                          | none          |
+| `status` | `pulse-status:local` | `8080` (the status page)      | `GET /`       |
+| `notify` | `pulse-notify:local` | none                          | none          |
 
 The API stays non-public (`127.0.0.1:3000`). Port 8080 of `pulse-status` exposes a filtered, read-only subset of it: `GET /api/uptime`, `/api/checks`, `/api/maintenance` and `/api/incidents?status=open|resolved`. No other API path is proxied. The status page `/` and its static assets are served as well. Check targets, reasons and keywords are hidden by default (`PULSE_STATUS_HIDE_DETAILS`, see the pulse-status docs). If you show details, reasons can still reveal hosts or IPs.
 
@@ -103,7 +103,7 @@ docker run --rm -p 3000:3000 \
   pulse-api:local
 ```
 
-The image runs as the non-root `node` user with `node src/main.ts`. It owns `/data` (database at `PULSE_DB=/data/pulse.db`), exposes port 3000 and has a healthcheck on `GET /healthz`. It contains no checks or tokens file: mount them.
+The image runs as the non-root `node` user with `node src/main.ts`. It owns `/data` (database at `PULSE_DB=/data/pulse.db`), exposes port 3000 and has a healthcheck on `GET /readyz`. It contains no checks or tokens file: mount them.
 
 ## Demo profile
 
