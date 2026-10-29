@@ -50,6 +50,7 @@ interface CheckRow {
   latency_objective_ms: number | null;
   retries: number | null;
   retry_delay_ms: number | null;
+  keyword: string | null;
   state: CheckState;
   consecutive_down: number;
   last_result_at: number | null;
@@ -105,13 +106,14 @@ export function createService(
     "UPDATE checks SET last_result_at = ?, last_reason = ? WHERE id = ?",
   );
   const upsert = db.prepare(`
-    INSERT INTO checks (id, name, url, type, host, port, warn_days, interval_ms, timeout_ms, latency_objective_ms, retries, retry_delay_ms)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO checks (id, name, url, type, host, port, warn_days, interval_ms, timeout_ms, latency_objective_ms, retries, retry_delay_ms, keyword)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET name = excluded.name, url = excluded.url, type = excluded.type,
       host = excluded.host, port = excluded.port, warn_days = excluded.warn_days,
       interval_ms = excluded.interval_ms, timeout_ms = excluded.timeout_ms,
       latency_objective_ms = excluded.latency_objective_ms,
-      retries = excluded.retries, retry_delay_ms = excluded.retry_delay_ms`);
+      retries = excluded.retries, retry_delay_ms = excluded.retry_delay_ms,
+      keyword = excluded.keyword`);
   const getCheck = db.prepare("SELECT * FROM checks WHERE id = ?");
   const insertResult = db.prepare(
     `INSERT INTO results (check_id, timestamp, status, status_code, latency_ms, reason, location, cert_days_left, attempts)
@@ -205,6 +207,7 @@ export function createService(
     if (r.latency_objective_ms !== null && c.type !== "tls") {
       c.latencyObjectiveMs = r.latency_objective_ms;
     }
+    if (r.keyword !== null && c.type !== "tls") c.keyword = r.keyword;
     return c;
   }
 
@@ -238,6 +241,7 @@ export function createService(
               null,
               null,
               null,
+              null,
             );
           } else {
             upsert.run(
@@ -253,6 +257,7 @@ export function createService(
               c.latencyObjectiveMs ?? null,
               c.retries ?? 0,
               c.retryDelayMs ?? 1000,
+              c.keyword ?? null,
             );
           }
         }

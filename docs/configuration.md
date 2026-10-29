@@ -43,15 +43,17 @@ See `checks.example.json` for a complete example.
 
 An HTTP check has `type` absent or `"http"` and these fields besides the common ones:
 
-| Field                | Required | Meaning                                                                                                              |
-| -------------------- | -------- | -------------------------------------------------------------------------------------------------------------------- |
-| `url`                | yes      | `http` or `https` URL to probe.                                                                                      |
-| `retries`            | no       | Integer 0 to 10, default 0. Extra attempts the probe makes after a failed one before it reports `down`.              |
-| `retryDelayMs`       | no       | Integer 0 to 60000, default 1000. Wait between attempts.                                                             |
-| `latencyObjectiveMs` | no       | Positive integer, milliseconds. A successful (2xx) result slower than this is `degraded`. Absent means no objective. |
+| Field                | Required | Meaning                                                                                                                                                                 |
+| -------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `url`                | yes      | `http` or `https` URL to probe.                                                                                                                                         |
+| `retries`            | no       | Integer 0 to 10, default 0. Extra attempts the probe makes after a failed one before it reports `down`.                                                                 |
+| `retryDelayMs`       | no       | Integer 0 to 60000, default 1000. Wait between attempts.                                                                                                                |
+| `latencyObjectiveMs` | no       | Positive integer, milliseconds. A successful (2xx) result slower than this is `degraded`. Absent means no objective.                                                    |
+| `keyword`            | no       | Non-empty string, case-sensitive substring. A 2xx answer whose body does not contain it is `down` with the reason `keyword "<text>" not found`. Rejected on TLS checks. |
 
 Notes:
 
+- The probe looks for the keyword within the first 1 MiB (1,048,576 bytes) of the body. Reading the body counts towards the latency.
 - An objective at or above `timeoutMs` can never be degraded.
 - `GET /checks` always serves the resolved `retries` and `retryDelayMs`.
 - When `retries` is above 0, the file is rejected unless the worst case `(retries + 1) * timeoutMs + retries * retryDelayMs` fits within `intervalMs`. `timeoutMs` defaults to 5000 in this formula.

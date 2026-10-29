@@ -66,7 +66,7 @@ The response is `HTTP/1.1 204 No Content`.
 
 ## GET /checks
 
-Returns every check in database rowid order (the order in which the checks were first inserted, not the order of the checks file) with its state (`CheckWithState[]`): the check fields plus `state`, `consecutiveDown`, `lastResultAt`, `lastReason`, `locations`, and when set `maintenance` and `certDaysLeft`. `retries` and `retryDelayMs` are always present for HTTP checks. `timeoutMs` and `latencyObjectiveMs` are present when configured. `locations` has one `{ location, result, stale }` per location ever seen, sorted by name, and is empty for a check without results.
+Returns every check in database rowid order (the order in which the checks were first inserted, not the order of the checks file) with its state (`CheckWithState[]`): the check fields plus `state`, `consecutiveDown`, `lastResultAt`, `lastReason`, `locations`, and when set `maintenance` and `certDaysLeft`. `retries` and `retryDelayMs` are always present for HTTP checks. `timeoutMs`, `latencyObjectiveMs` and `keyword` are present when configured. `locations` has one `{ location, result, stale }` per location ever seen, sorted by name, and is empty for a check without results.
 
 ```sh
 curl http://localhost:3000/checks

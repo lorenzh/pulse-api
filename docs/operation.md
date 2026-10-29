@@ -21,7 +21,7 @@ The database is one SQLite file, at `PULSE_DB` (default `./pulse.db`, `/data/pul
 
 ### Schema migrations
 
-The schema is created at start (`CREATE TABLE IF NOT EXISTS`). Then `src/db.ts` checks the columns of `results` and `checks` and adds the ones that are missing (`location`, `cert_days_left`, `attempts` and the check columns for TLS and retries), and creates the indexes `results_by_location` and `results_by_time`. Old rows get the defaults (`location` is `default`, `attempts` is 1). There is no separate migration command, and no down migration.
+The schema is created at start (`CREATE TABLE IF NOT EXISTS`). Then `src/db.ts` checks the columns of `results` and `checks` and adds the ones that are missing (`location`, `cert_days_left`, `attempts` and the check columns for TLS, retries and `keyword`), and creates the indexes `results_by_location` and `results_by_time`. Old rows get the defaults (`location` is `default`, `attempts` is 1). There is no separate migration command, and no down migration.
 
 ### Upgrades
 

@@ -4,13 +4,13 @@
 
 A check is in one state. The state comes from the results that probes send.
 
-| State         | Meaning                                                                     |
-| ------------- | --------------------------------------------------------------------------- |
-| `unknown`     | The check has no results yet.                                               |
-| `up`          | The check answers and is fast enough.                                       |
-| `degraded`    | The check answers (2xx), but slower than its `latencyObjectiveMs`.          |
-| `down`        | The check fails, or a TLS certificate has `warnDays` days or fewer left.    |
-| `maintenance` | `now` is inside a [maintenance window](#maintenance-windows). Never stored. |
+| State         | Meaning                                                                                                  |
+| ------------- | -------------------------------------------------------------------------------------------------------- |
+| `unknown`     | The check has no results yet.                                                                            |
+| `up`          | The check answers and is fast enough.                                                                    |
+| `degraded`    | The check answers (2xx), but slower than its `latencyObjectiveMs`.                                       |
+| `down`        | The check fails, a 2xx body lacks the `keyword`, or a TLS certificate has `warnDays` days or fewer left. |
+| `maintenance` | `now` is inside a [maintenance window](#maintenance-windows). Never stored.                              |
 
 A probe reports each result as `up`, `degraded` or `down`. The API computes the other states.
 
