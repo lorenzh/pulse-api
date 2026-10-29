@@ -79,14 +79,19 @@ test("validateResult: degraded accepted, unknown rejected naming all three", () 
 test("server: POST degraded is 204, unknown is 400, GET /checks serves the objective", async () => {
   const service = createService(openDb(":memory:"));
   service.upsertChecks([{ ...check, latencyObjectiveMs: 500 }]);
-  const server = createApiServer(service);
+  const server = createApiServer(service, {
+    tokens: [{ location: "default", token: "test-token-default-0123456789" }],
+  });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   try {
     const post = (body: unknown) =>
       fetch(`${url}/results`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer test-token-default-0123456789",
+        },
         body: JSON.stringify(body),
       });
     assert.equal((await post(res(1, "degraded"))).status, 204);
