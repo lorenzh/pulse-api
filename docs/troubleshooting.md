@@ -31,9 +31,9 @@ Fix the JSON. The message does not quote the file, so that no token leaks.
 
 See [tokens.json](configuration.md#tokensjson).
 
-### `ConfigError: ...` and a stack trace
+### `Error: ...` and a stack trace (checks file)
 
-The checks file is invalid. The message names the entry, for example `checks[0].url is not a valid URL` or `duplicate check id "example"`. Fix the file. Messages you may see:
+The checks file is invalid. The first line starts with `Error:`. The message names the entry, for example `checks[0].url is not a valid URL` or `duplicate check id "example"`. Fix the file. Messages you may see:
 
 - `cannot read checks file <path>: ...`: wrong `PULSE_CHECKS_FILE`, or the file is not mounted.
 - `checks file <path> is not valid JSON: ...`

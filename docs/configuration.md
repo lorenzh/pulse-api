@@ -25,7 +25,7 @@ PORT=3100 PULSE_DB=/var/lib/pulse/pulse.db PULSE_CHECKS_FILE=/etc/pulse/checks.j
 
 ## checks.json
 
-The file is `{"checks": [...], "maintenance": [...]}`. `maintenance` is optional. The checks are validated and upserted into the database at start. Existing state and results are kept. An invalid or unreadable file stops the start with a `ConfigError`. Probes read the same checks from `GET /checks`.
+The file is `{"checks": [...], "maintenance": [...]}`. `maintenance` is optional. The checks are validated and upserted into the database at start. Existing state and results are kept. An invalid or unreadable file stops the start with an `Error` that names the problem. Probes read the same checks from `GET /checks`.
 
 See `checks.example.json` for a complete example.
 

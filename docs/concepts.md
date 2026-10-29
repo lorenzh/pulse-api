@@ -22,7 +22,7 @@ Every accepted result triggers one evaluation of its check. The evaluation works
 2. Each location counts by its latest result in the window.
 3. With one location in the window, it decides alone. A single probe can open an incident.
 4. With two or more locations in the window, the combined status is `down` only when at least two of them are down. Otherwise it is `degraded` if any is degraded, else `up`.
-5. The combined status feeds a counter. The third consecutive `down` evaluation opens an incident, if none is open. An `up` or `degraded` evaluation resets the counter and resolves an open incident.
+5. The combined status feeds a counter. The third consecutive `down` evaluation opens an incident, if none is open. A combined `up` or `degraded` evaluation resets the counter and resolves an open incident. A single `up` or `degraded` result does not resolve it by itself: only the combined quorum status does.
 
 "Locations in the window" are the locations that sent a result in the window. They are not the locations configured in `tokens.json`. If one of two probes stops sending, its last result falls out of the window and the other probe decides alone.
 
@@ -81,7 +81,7 @@ The database file does not shrink after deletes. SQLite reuses the freed pages. 
 Maintenance windows are listed in `checks.json` (see [maintenance](configuration.md#maintenance)). A result is classified by its own timestamp.
 
 - A `down` result inside a window is stored and updates `lastResultAt` and `lastReason`. It leaves the stored state, the counter and the incidents untouched.
-- An `up` or `degraded` result is processed as usual, so it resolves an open incident.
+- An `up` or `degraded` result is processed as usual: it goes through the quorum evaluation. Example: two of three locations are down and open an incident. A third location then reports `up` during maintenance. Two locations are still down, so the combined status stays `down` and the incident stays open.
 - An incident that is open when a window starts stays open.
 - While `now` is inside a window, `GET /checks` shows `state: "maintenance"` and the active window in `maintenance`, whatever the stored state. Afterwards the stored state shows again.
 - Windows of one check can overlap. They form a union, and the one with the earliest `start` is reported.
