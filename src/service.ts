@@ -18,7 +18,7 @@ export const MAX_LOCATION_LENGTH = 64;
 /** The quorum window spans this many check intervals before a result. */
 const WINDOW_INTERVALS = 2;
 
-const DAY_MS = 86_400_000;
+export const DAY_MS = 86_400_000;
 export const UPTIME_DAYS = 90;
 
 export class UnknownCheckError extends Error {}
@@ -32,6 +32,8 @@ export interface Service {
   listIncidents(status?: "open" | "resolved"): Incident[];
   listMaintenance(checkId?: string): MaintenanceWindow[];
   getUptime(): CheckUptime[];
+  /** Delete up to `limit` results older than `cutoff`, keeping the newest per check and location. Returns the count. */
+  deleteExpiredResults(cutoff: number, limit: number): number;
 }
 
 /** A row of `checks` as returned by node:sqlite; nullable columns are typed as such. */
@@ -131,6 +133,15 @@ export function createService(
             SUM(status != 'down') AS good, COUNT(*) AS total
      FROM results WHERE check_id = ? AND timestamp >= ? AND timestamp <= ?
      GROUP BY day`,
+  );
+  const deleteExpired = db.prepare(
+    `DELETE FROM results WHERE id IN (
+       SELECT r.id FROM results r
+       WHERE r.timestamp < ? AND EXISTS (
+         SELECT 1 FROM results n
+         WHERE n.check_id = r.check_id AND n.location = r.location
+           AND (n.timestamp > r.timestamp OR (n.timestamp = r.timestamp AND n.id > r.id)))
+       LIMIT ?)`,
   );
   const updateState = db.prepare(
     `UPDATE checks SET state = ?, consecutive_down = ?, last_result_at = ?, last_reason = ? WHERE id = ?`,
@@ -364,6 +375,10 @@ export function createService(
         }
         return { checkId: id, days, uptime: total === 0 ? null : (good / total) * 100 };
       });
+    },
+
+    deleteExpiredResults(cutoff, limit) {
+      return Number(deleteExpired.run(cutoff, limit).changes);
     },
 
     hasCheck(id) {

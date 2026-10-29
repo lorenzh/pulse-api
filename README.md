@@ -33,11 +33,20 @@ Biome formats and lints the code (`biome.json`). SonarJS recommended rules run t
 
 ## Settings
 
-| Env                 | Default         | Meaning           |
-| ------------------- | --------------- | ----------------- |
-| `PORT`              | `3000`          | HTTP port         |
-| `PULSE_DB`          | `./pulse.db`    | SQLite file       |
-| `PULSE_CHECKS_FILE` | `./checks.json` | Checks definition |
+| Env                    | Default         | Meaning                     |
+| ---------------------- | --------------- | --------------------------- |
+| `PORT`                 | `3000`          | HTTP port                   |
+| `PULSE_DB`             | `./pulse.db`    | SQLite file                 |
+| `PULSE_CHECKS_FILE`    | `./checks.json` | Checks definition           |
+| `PULSE_RETENTION_DAYS` | `90`            | Days of raw results to keep |
+
+`PULSE_RETENTION_DAYS` must be an integer of at least 90 (the `/uptime` window); anything else stops startup with an error. Retention is counted in whole UTC days including today, so results before the start of the UTC day `PULSE_RETENTION_DAYS - 1` days ago are deleted. The newest result of each check and location is always kept, and incidents are never deleted. Cleanup runs at startup and then hourly, in batches of 1000 rows, and logs the number of deleted rows when it is above 0.
+
+## Disk usage
+
+Rows per check per day = `86400 / interval_s x locations`. A row takes roughly 100 bytes with its three indexes in a measured database of minimal rows (129,600 rows, 60 s interval, about 13 MB); allow about 250 bytes for rows with reasons. Example: 60 s interval, 1 location, 90 days = 129,600 rows, roughly 30 MB per check.
+
+The database file does not shrink after deletes; SQLite reuses the freed pages. Run `VACUUM` manually (with the API stopped) to reclaim space.
 
 ## Checks file
 

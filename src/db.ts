@@ -76,4 +76,5 @@ function migrate(db: DatabaseSync): void {
   db.exec(
     "CREATE INDEX IF NOT EXISTS results_by_location ON results (check_id, location, timestamp)",
   );
+  db.exec("CREATE INDEX IF NOT EXISTS results_by_time ON results (timestamp)");
 }
