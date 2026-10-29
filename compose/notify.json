@@ -1,0 +1,3 @@
+{
+  "channels": [{ "id": "log", "type": "file", "path": "/data/incidents.jsonl" }]
+}

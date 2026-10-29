@@ -1,0 +1,11 @@
+{
+  "checks": [
+    {
+      "id": "status-page",
+      "name": "Status page",
+      "url": "http://status:8080/",
+      "intervalMs": 10000,
+      "timeoutMs": 2000
+    }
+  ]
+}

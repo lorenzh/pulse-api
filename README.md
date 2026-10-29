@@ -27,6 +27,60 @@ npm start
 
 `node:sqlite` prints an experimental warning on start; this is expected.
 
+## Docker and Compose
+
+`compose.yaml` runs the whole stack: api, one probe, status and notify. It needs Docker Compose >= 2.23 and access to github.com (the probe, status and notify images are built from `main` of their repositories, so in-flight branches are not used).
+
+```sh
+cp .env.example .env
+docker compose up --build
+```
+
+Open http://localhost:8080. The example check (`compose/checks.json`) probes the status page itself, so the stack works offline; its state leaves `unknown` after the first 10 s interval. Stop with `docker compose down`; the `api-data` and `notify-data` volumes keep the database and the notify ledger for the next `docker compose up`. `docker compose down -v` deletes them.
+
+| Service  | Image                | Port                          | Healthcheck   |
+| -------- | -------------------- | ----------------------------- | ------------- |
+| `api`    | `pulse-api:local`    | `127.0.0.1:3000` (not public) | `GET /checks` |
+| `probe`  | `pulse-probe:local`  | none                          | none          |
+| `status` | `pulse-status:local` | `8080` (the status page)      | `GET /`       |
+| `notify` | `pulse-notify:local` | none                          | none          |
+
+All images run as the non-root `node` user. `status`, `probe` and `notify` wait for `api` to be healthy.
+
+### Token
+
+`.env` holds `PULSE_PROBE_TOKEN` and `PULSE_LOCATION`. The example token in `.env.example` is public: replace it (`openssl rand -hex 32`) before you expose the stack. Compose generates the API's tokens file from these two variables (a `configs:` entry with `content:`) and gives the same two variables to the probe, so the location matches the token. Without a `.env`, Compose stops with an error.
+
+### Adding checks
+
+Edit `compose/checks.json` (format: [Checks file](#checks-file)), then recreate the API and restart the probe, which reads its checks once at startup:
+
+```sh
+docker compose up -d
+docker compose restart probe
+```
+
+One probe is one location, and the API opens an incident only when at least two locations report a check down. With the single probe of this Compose file a check can be `down`, but no incident opens, and notify has nothing to send. Add a second probe service with its own `PULSE_LOCATION`, a matching entry in the tokens config and its own token to get incidents.
+
+### Settings
+
+Every service reads its settings from the environment; set them in `compose.yaml` or `.env`. The tables are the single source: api [Settings](#settings) (image defaults `PULSE_DB=/data/pulse.db`, `PORT=3000`), [probe](https://github.com/lorenzh/pulse-probe#settings), [status](https://github.com/lorenzh/pulse-status#settings) and [notify](https://github.com/lorenzh/pulse-notify#configuration). The notify config is `compose/notify.json`: one `file` channel writing `/data/incidents.jsonl`.
+
+### API image alone
+
+```sh
+docker build --tag pulse-api:local .
+docker run --rm -p 3000:3000 \
+  -v "$PWD/checks.json:/config/checks.json:ro" \
+  -v "$PWD/tokens.json:/config/tokens.json:ro" \
+  -v pulse-api-data:/data \
+  -e PULSE_CHECKS_FILE=/config/checks.json \
+  -e PULSE_TOKENS_FILE=/config/tokens.json \
+  pulse-api:local
+```
+
+The image runs as the non-root `node` user with `node src/main.ts`, owns `/data` (database at `PULSE_DB=/data/pulse.db`), exposes 3000 and has a healthcheck on `GET /checks`. It contains no checks or tokens file; mount them.
+
 ## Formatting and linting
 
 Biome formats and lints the code (`biome.json`). SonarJS recommended rules run through ESLint with cognitive complexity limited to 15; the ESLint setup comes from `@lorenzh/pulse-config`, which installs it nested with TypeScript 6 while the repository uses TypeScript 7 (`.npmrc` sets `install-strategy=nested`; `eslint.config.js` also ignores `.repos/`). Line coverage must be at least 80 %. Checks: Biome, SonarJS via ESLint (cognitive complexity ≤ 15), line coverage ≥ 80 % — run `npm run lint` and `npm test`. `npm run format` applies Biome fixes. `npm ci` installs a Lefthook pre-commit hook (`lefthook.yml`) that runs Biome and ESLint on staged files and rejects the commit on failure.
