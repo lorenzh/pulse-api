@@ -196,7 +196,6 @@ jq '.checks += [{id: "e2e-api", name: "E2E api", url: "http://api:3000/checks", 
   "$checks_backup" >"$checks_file"
 docker compose restart api
 wait_for "$T_UP" "api answers" api /checks
-docker compose restart probe
 wait_for "$T_RELOAD" "GET /checks lists e2e-api" has_check e2e-api
 cp "$checks_backup" "$checks_file"
 

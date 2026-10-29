@@ -23,7 +23,7 @@ repository. Node 24+ with native type stripping, ESM, npm, strict TypeScript (`t
 
 ## Repository boundaries
 
-- `pulse-contract` holds shared types only. It has no runtime code and depends on no other repo.
+- `pulse-contract` holds shared types and the runtime validators for them. It depends on no other repo.
 - Import contract types with `import type` only. A service never imports another service.
 - Services talk to each other only over HTTP at run time, in the shapes the contract defines.
 - Pin the contract dependency to a full commit SHA on its `main`; update the pin when the spec needs a newer contract.
