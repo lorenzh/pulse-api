@@ -100,8 +100,8 @@ test("server: POST degraded is 204, unknown is 400, GET /checks serves the objec
     const checks = (await (await fetch(`${url}/checks`)).json()) as (HttpCheck & {
       state: string;
     })[];
-    assert.equal(checks[0].latencyObjectiveMs, 500);
-    assert.equal(checks[0].state, "degraded");
+    assert.equal(checks[0]?.latencyObjectiveMs, 500);
+    assert.equal(checks[0]?.state, "degraded");
   } finally {
     await new Promise<void>((r) => {
       server.close(() => r());

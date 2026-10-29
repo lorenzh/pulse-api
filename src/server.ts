@@ -123,6 +123,7 @@ function parseLocation(v: unknown): string {
 }
 
 /** Validate a POST /results body against the clock `now` (epoch ms); returns an error message or the Result. */
+// eslint-disable-next-line sonarjs/function-return-type -- the result is a deliberate Result-or-message union
 export function validateResult(body: unknown, now: number): Result | string {
   const shape = validatePostResultRequest(body);
   if (!shape.ok) return shape.error;
