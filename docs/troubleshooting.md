@@ -47,7 +47,7 @@ The checks file is invalid. The API prints one line `pulse-api: <path>: <message
 - `checks file <path> is not valid JSON: ...`
 - `config must be an object with a "checks" array`
 - `unknown key "<key>" in checks[<i>]` (also `maintenance[<i>]` and `the top level`): a key the API does not know, often a typo such as `keywrod`. Fix or remove it.
-- `checks[<i>].intervalMs must be a positive integer (milliseconds)`
+- `checks[<i>].intervalMs must be an integer from 1 to 2147483647 (milliseconds)`
 - `checks[<i>]: worst case <n> ms ((retries + 1) * timeoutMs + retries * retryDelayMs) exceeds intervalMs <n>`: lower `retries`, `retryDelayMs` or `timeoutMs`, or raise `intervalMs`.
 - `maintenance[<i>].checkId must reference a configured check`
 - `maintenance[<i>].start must be an ISO 8601 string with an explicit offset (Z or ±hh:mm)`
@@ -67,7 +67,7 @@ The API exits with code 2. Port 3000 (or `PORT`) is in use. Choose another `PORT
 
 The body is invalid. The message names the field. `body is not valid JSON` comes first. Then the contract validator checks the shape, and its messages start with a path, for example `result: must be an object`, `result.checkId: must be a non-empty string`, `result.timestamp: must be an integer`, `result.status: must be one of "up", "degraded", "down"`, `result.statusCode: must be an integer 100..599` (or null), `result.latencyMs: must be a finite number >= 0`, `result.reason: must be a string`, `result.attempts: must be an integer >= 1` or `result.location: must be a string`. The api bound checks below run after it:
 
-- `timestamp is more than 60000 ms in the future`: the probe's clock is more than 60 s ahead of the API's. The probe does not fix this by itself; the result is rejected on every post until the clocks agree. Synchronise the clock (NTP). The probe drops a result the API answers with HTTP 400, logs `dropping result for <check>: API answered HTTP 400`, and does not retry it. Network errors are also logged as dropped.
+- `timestamp is more than <limit> ms in the future`: the probe's clock is more than the limit ahead (the check's interval, at most 60 s) of the API's. The probe does not fix this by itself; the result is rejected on every post until the clocks agree. Synchronise the clock (NTP). The probe drops a result the API answers with HTTP 400, logs `dropping result for <check>: API answered HTTP 400`, and does not retry it. Network errors are also logged as dropped.
 - `timestamp is older than 7 days`
 - `latencyMs must be a number from 0 to 86400000`
 - `reason must be at most 1000 characters`

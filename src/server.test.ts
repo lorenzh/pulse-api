@@ -191,10 +191,17 @@ test("validateResult: attempts defaults to 1 and must be an integer >= 1", () =>
   const base = result("c1", 1, "up");
   // eslint-disable-next-line sonarjs/no-unused-vars -- rest destructuring omits a property to build the test input
   const { attempts: _a, ...noAttempts } = base;
-  assert.equal((validateResult(noAttempts, 1) as Result).attempts, 1);
-  assert.equal((validateResult({ ...base, attempts: 3 }, 1) as Result).attempts, 3);
+  assert.equal((validateResult(noAttempts, 1, () => undefined) as Result).attempts, 1);
+  assert.equal(
+    (validateResult({ ...base, attempts: 3 }, 1, () => undefined) as Result).attempts,
+    3,
+  );
   for (const v of [0, -1, 1.5, "2", null]) {
-    assert.equal(typeof validateResult({ ...base, attempts: v }, 1), "string", String(v));
+    assert.equal(
+      typeof validateResult({ ...base, attempts: v }, 1, () => undefined),
+      "string",
+      String(v),
+    );
   }
 });
 

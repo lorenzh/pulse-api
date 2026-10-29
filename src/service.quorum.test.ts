@@ -165,7 +165,7 @@ test("locations: empty without results; results listing carries location", () =>
 test("validateResult: location normalisation", () => {
   const base = { ...r(1, "x", "up") } as Record<string, unknown>;
   const loc = (v: unknown) => {
-    const out = validateResult({ ...base, location: v }, 1);
+    const out = validateResult({ ...base, location: v }, 1, () => undefined);
     return typeof out === "string" ? out : out.location;
   };
   assert.equal(loc("  eu  "), "eu");
@@ -178,7 +178,7 @@ test("validateResult: location normalisation", () => {
   assert.match(String(loc(null)), /location/);
   // eslint-disable-next-line sonarjs/no-unused-vars -- rest destructuring omits a property to build the test input
   const { location: _l, ...noLoc } = base;
-  assert.equal((validateResult(noLoc, 1) as Result).location, "default");
+  assert.equal((validateResult(noLoc, 1, () => undefined) as Result).location, "default");
 });
 
 test("migration: old database without location column", (t) => {

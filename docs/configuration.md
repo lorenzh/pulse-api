@@ -36,19 +36,19 @@ Before this version the tokens file error exited with code 1, and other configur
 
 ## checks.json
 
-The file is `{"checks": [...], "maintenance": [...]}`. `maintenance` is optional. The checks are validated and upserted into the database at start. Existing state and results are kept. An invalid or unreadable file stops the start with one line `pulse-api: <path>: <message>` and exit code 2. A key that is not documented below is rejected, at the top level, in a check and in a `maintenance` window: `<path>: unknown key "keywrod" in checks[2]`. A `tls` check accepts only its own keys (`host`, `port`, `warnDays`, `intervalMs` and the common ones). Probes read the same checks from `GET /checks`.
+The file is `{"checks": [...], "maintenance": [...]}`. `maintenance` is optional. The checks are validated and upserted into the database at start. Existing state and results are kept. An invalid or unreadable file stops the start with one line `pulse-api: <path>: <message>` and exit code 2. A key that is not documented below is rejected, at the top level, in a check and in a `maintenance` window: `<path>: unknown key "keywrod" in checks[2]`. A `tls` check accepts only its own keys (`host`, `port`, `warnDays`, `intervalMs` and the common ones). Probes read the same checks from `GET /checks`. Values outside the documented ranges are rejected, with the cap 2147483647 (2^31-1, the largest timer delay) for `intervalMs`, `timeoutMs` and `latencyObjectiveMs`. A checks file that held out-of-range values before now fails to load.
 
 See `checks.example.json` for a complete example.
 
 ### Fields of every check
 
-| Field        | Required | Meaning                                                                              |
-| ------------ | -------- | ------------------------------------------------------------------------------------ |
-| `id`         | yes      | Non-empty string, unique in the file.                                                |
-| `name`       | yes      | Non-empty string.                                                                    |
-| `type`       | no       | `"http"` (default) or `"tls"`. Any other value is rejected.                          |
-| `intervalMs` | yes      | Positive integer, milliseconds between probes.                                       |
-| `timeoutMs`  | no       | Positive integer, milliseconds. When omitted, the probe uses its own default (5000). |
+| Field        | Required | Meaning                                                                                     |
+| ------------ | -------- | ------------------------------------------------------------------------------------------- |
+| `id`         | yes      | Non-empty string, unique in the file.                                                       |
+| `name`       | yes      | Non-empty string.                                                                           |
+| `type`       | no       | `"http"` (default) or `"tls"`. Any other value is rejected.                                 |
+| `intervalMs` | yes      | Integer 1 to 2147483647, milliseconds between probes.                                       |
+| `timeoutMs`  | no       | Integer 1 to 2147483647, milliseconds. When omitted, the probe uses its own default (5000). |
 
 ### HTTP checks
 
@@ -59,7 +59,7 @@ An HTTP check has `type` absent or `"http"` and these fields besides the common 
 | `url`                | yes      | `http` or `https` URL to probe.                                                                                                                                         |
 | `retries`            | no       | Integer 0 to 10, default 0. Extra attempts the probe makes after a failed one before it reports `down`.                                                                 |
 | `retryDelayMs`       | no       | Integer 0 to 60000, default 1000. Wait between attempts.                                                                                                                |
-| `latencyObjectiveMs` | no       | Positive integer, milliseconds. A successful (2xx) result slower than this is `degraded`. Absent means no objective.                                                    |
+| `latencyObjectiveMs` | no       | Integer 1 to 2147483647, milliseconds. A successful (2xx) result slower than this is `degraded`. Absent means no objective.                                             |
 | `keyword`            | no       | Non-empty string, case-sensitive substring. A 2xx answer whose body does not contain it is `down` with the reason `keyword "<text>" not found`. Rejected on TLS checks. |
 
 Notes:
@@ -75,11 +75,11 @@ Notes:
 
 A TLS check (`"type": "tls"`) watches the expiry of the leaf certificate of a server. It takes no `url`.
 
-| Field      | Required | Meaning                                                                                |
-| ---------- | -------- | -------------------------------------------------------------------------------------- |
-| `host`     | yes      | Host name or IP without scheme, port or path.                                          |
-| `port`     | no       | Integer 1 to 65535, default 443.                                                       |
-| `warnDays` | no       | Positive integer, default 14. The check is down when this many days or fewer are left. |
+| Field      | Required | Meaning                                                                                 |
+| ---------- | -------- | --------------------------------------------------------------------------------------- |
+| `host`     | yes      | Host name or IP without scheme, port or path.                                           |
+| `port`     | no       | Integer 1 to 65535, default 443.                                                        |
+| `warnDays` | no       | Integer 0 or more, default 14. The check is down when this many days or fewer are left. |
 
 Only the expiry of the leaf certificate is judged. The chain and the host name are not verified. Results carry `certDaysLeft`. `GET /checks` shows the latest value and `GET /checks/:id/results` includes it. A TLS check ignores `retries`, `retryDelayMs` and `latencyObjectiveMs`.
 
@@ -106,7 +106,7 @@ The secret is kept in memory only. `GET /checks`, `/metrics`, incident reasons a
 | `end`     | yes      | Same format, exclusive, must be after `start`.                        |
 | `note`    | yes      | Non-empty string shown with the maintenance state.                    |
 
-Windows are read at start only. See [Maintenance windows](concepts.md#maintenance-windows) for the rules.
+`start` and `end` must be real calendar dates (`2030-02-30` is rejected, `2028-02-29` is fine), and `end` must be after `start`. Windows are read at start only. See [Maintenance windows](concepts.md#maintenance-windows) for the rules.
 
 ## tokens.json
 

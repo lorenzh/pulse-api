@@ -55,7 +55,7 @@ test("config: rejects invalid tls checks and unknown types", () => {
     { ...tls, port: 0 },
     { ...tls, port: 65536 },
     { ...tls, port: 1.5 },
-    { ...tls, warnDays: 0 },
+    { ...tls, warnDays: -1 },
     { ...tls, warnDays: 1.5 },
     { ...tls, intervalMs: undefined },
     { ...tls, timeoutMs: 0 },
@@ -146,16 +146,22 @@ test("service: tls results work with maintenance windows", () => {
 
 test("server: validateResult accepts and checks certDaysLeft", () => {
   const body = { ...res(1, "down") };
-  assert.deepEqual(validateResult(body, 1), body);
-  assert.deepEqual(validateResult({ ...body, certDaysLeft: null }, 1), {
-    ...body,
-    certDaysLeft: null,
-  });
-  assert.equal(typeof validateResult({ ...body, certDaysLeft: "5" }, 1), "string");
-  assert.equal(typeof validateResult({ ...body, certDaysLeft: 1.5 }, 1), "string");
+  assert.deepEqual(
+    validateResult(body, 1, () => undefined),
+    body,
+  );
+  assert.deepEqual(
+    validateResult({ ...body, certDaysLeft: null }, 1, () => undefined),
+    {
+      ...body,
+      certDaysLeft: null,
+    },
+  );
+  assert.equal(typeof validateResult({ ...body, certDaysLeft: "5" }, 1, () => undefined), "string");
+  assert.equal(typeof validateResult({ ...body, certDaysLeft: 1.5 }, 1, () => undefined), "string");
   // eslint-disable-next-line sonarjs/no-unused-vars -- rest destructuring omits a property to build the test input
   const { certDaysLeft: _omit, ...legacy } = body;
-  assert.equal("certDaysLeft" in (validateResult(legacy, 1) as object), false);
+  assert.equal("certDaysLeft" in (validateResult(legacy, 1, () => undefined) as object), false);
 });
 
 test("migration: old database without cert_days_left or tls columns", (t) => {

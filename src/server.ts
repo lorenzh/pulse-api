@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import {
+  type Check,
   type ErrorResponse,
   type Result,
   validatePostResultRequest,
@@ -88,11 +89,16 @@ function isIntegerIn(v: unknown, min: number, max: number): v is number {
   return typeof v === "number" && Number.isInteger(v) && v >= min && v <= max;
 }
 
-function checkTimestamp(v: unknown, now: number): string | undefined {
+/** How far ahead of the clock a result may be: the check's interval, at most 60 s. Heartbeat and unknown checks get 60 s. */
+export function maxFutureSkewMs(check: Check | undefined): number {
+  if (check === undefined || check.type === "heartbeat") return MAX_FUTURE_SKEW_MS;
+  return Math.min(check.intervalMs, MAX_FUTURE_SKEW_MS);
+}
+
+function checkTimestamp(v: unknown, now: number, limit: number): string | undefined {
   if (typeof v !== "number" || !Number.isInteger(v))
     return "timestamp must be an integer (epoch ms)";
-  if (v > now + MAX_FUTURE_SKEW_MS)
-    return `timestamp is more than ${MAX_FUTURE_SKEW_MS} ms in the future`;
+  if (v > now + limit) return `timestamp is more than ${limit} ms in the future`;
   if (v < now - MAX_RESULT_AGE_MS) return "timestamp is older than 7 days";
   return undefined;
 }
@@ -128,7 +134,11 @@ function parseLocation(v: unknown): string {
 
 /** Validate a POST /results body against the clock `now` (epoch ms); returns an error message or the Result. */
 // eslint-disable-next-line sonarjs/function-return-type -- the result is a deliberate Result-or-message union
-export function validateResult(body: unknown, now: number): Result | string {
+export function validateResult(
+  body: unknown,
+  now: number,
+  findCheck: (id: string) => Check | undefined,
+): Result | string {
   const shape = validatePostResultRequest(body);
   if (!shape.ok) return shape.error;
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
@@ -137,7 +147,7 @@ export function validateResult(body: unknown, now: number): Result | string {
   const b = body as Record<string, unknown>;
   if (typeof b.checkId !== "string" || b.checkId === "")
     return "checkId must be a non-empty string";
-  const timestampError = checkTimestamp(b.timestamp, now);
+  const timestampError = checkTimestamp(b.timestamp, now, maxFutureSkewMs(findCheck(b.checkId)));
   if (timestampError !== undefined) return timestampError;
   if (b.status !== "up" && b.status !== "degraded" && b.status !== "down") {
     return 'status must be "up", "degraded" or "down"';
@@ -325,7 +335,9 @@ async function handle(
       if (err instanceof HttpError) throw err;
       throw new HttpError(400, "body is not valid JSON");
     }
-    const result = validateResult(parsed, now());
+    const result = validateResult(parsed, now(), (id) =>
+      service.listChecks().find((c) => c.id === id),
+    );
     if (typeof result === "string") throw new HttpError(400, result);
     // validateResult maps an omitted or blank location to the default: the token decides then.
     const sent = (parsed as { location?: unknown }).location;
