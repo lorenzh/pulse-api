@@ -16,7 +16,7 @@ services:
       - api-data:/data
       - ./compose/checks.json:/config/checks.json:ro
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:${PULSE_API_PORT:-3000}:3000"
 
   probe:
     build: https://github.com/lorenzh/pulse-probe.git#main
@@ -28,6 +28,8 @@ services:
     depends_on:
       api:
         condition: service_healthy
+      status:
+        condition: service_healthy
 
   status:
     build: https://github.com/lorenzh/pulse-status.git#main
@@ -35,7 +37,9 @@ services:
     environment:
       PULSE_API_URL: http://api:3000
     ports:
-      - "8080:8080"
+      - "${PULSE_STATUS_PORT:-8080}:8080"
+    healthcheck:
+      interval: 5s
     depends_on:
       api:
         condition: service_healthy

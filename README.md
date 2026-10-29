@@ -33,10 +33,10 @@ npm start
 
 ```sh
 cp .env.example .env
-docker compose up --build
+docker compose up -d --build
 ```
 
-Open http://localhost:8080. The example check (`compose/checks.json`) probes the status page itself, so the stack works offline; its state leaves `unknown` after the first 10 s interval. Stop with `docker compose down`; the `api-data` and `notify-data` volumes keep the database and the notify ledger for the next `docker compose up`. `docker compose down -v` deletes them.
+`up -d` runs the stack in the background. Open http://localhost:8080 (the configured status port). The example check (`compose/checks.json`) probes the status page itself, so the stack works offline; its state leaves `unknown` after the first 10 s interval. Stop with `docker compose down`; the `api-data` and `notify-data` volumes keep the database and the notify ledger for the next `docker compose up`. `docker compose down -v` deletes them.
 
 | Service  | Image                | Port                          | Healthcheck   |
 | -------- | -------------------- | ----------------------------- | ------------- |
@@ -45,7 +45,17 @@ Open http://localhost:8080. The example check (`compose/checks.json`) probes the
 | `status` | `pulse-status:local` | `8080` (the status page)      | `GET /`       |
 | `notify` | `pulse-notify:local` | none                          | none          |
 
-All images run as the non-root `node` user. `status`, `probe` and `notify` wait for `api` to be healthy.
+All images run as the non-root `node` user. `status` and `notify` wait for `api` to be healthy; `probe` waits for `api` and `status` to be healthy.
+
+### Ports
+
+Change the host ports in `.env` (`PULSE_API_PORT`, default 3000; `PULSE_STATUS_PORT`, default 8080) or per command:
+
+```sh
+PULSE_STATUS_PORT=8090 docker compose up -d --build
+```
+
+The status page is then on http://localhost:8090. The api port stays bound to 127.0.0.1.
 
 ### Token
 

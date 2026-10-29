@@ -24,3 +24,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: docker build --tag pulse-api:local .
       - run: cp .env.example .env && docker compose config --quiet
+      - name: Image holds no test files
+        run: |
+          found=$(docker run --rm --entrypoint sh pulse-api:local -c "find /app -type f \( -name '*.test.ts' -o -name '*.spec.ts' \) -not -path '*/node_modules/*'")
+          if [ -n "$found" ]; then echo "$found"; exit 1; fi
+      - name: Status port override
+        run: PULSE_STATUS_PORT=8090 docker compose config | grep 'published: "8090"'
