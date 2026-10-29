@@ -29,4 +29,5 @@ jobs:
           found=$(docker run --rm --entrypoint sh pulse-api:local -c "find /app -type f \( -name '*.test.ts' -o -name '*.spec.ts' \) -not -path '*/node_modules/*'")
           if [ -n "$found" ]; then echo "$found"; exit 1; fi
       - name: Status port override
-        run: PULSE_STATUS_PORT=8090 docker compose config | grep 'published: "8090"'
+        run: |
+          PULSE_STATUS_PORT=8090 docker compose config | grep 'published: "8090"'
