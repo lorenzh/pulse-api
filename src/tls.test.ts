@@ -179,12 +179,18 @@ test("migration: old database without cert_days_left or tls columns", (t) => {
     const db = openDb(path);
     const s = createService(db);
     assert.equal("certDaysLeft" in s.listResults("h", 1)[0]!, false);
-    assert.equal(s.listChecks()[0]!.id, "h");
+    assert.equal(
+      s.listChecks().some((c) => c.id === "h"),
+      i === 0,
+    );
     s.upsertChecks([check]);
     s.ingest(res(2, "down"));
     const tlsCheck = s.listChecks().find((c) => c.id === "t")!;
     assert.equal(tlsCheck.certDaysLeft, 5);
-    assert.equal(s.listChecks().find((c) => c.id === "h")!.type, undefined);
+    assert.equal(
+      s.listChecks().some((c) => c.id === "h"),
+      false,
+    );
     db.close();
   }
 });

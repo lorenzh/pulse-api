@@ -14,7 +14,7 @@ const retentionDays = parseRetentionDays(process.env.PULSE_RETENTION_DAYS);
 const tokensFile = process.env.PULSE_TOKENS_FILE ?? "./tokens.json";
 
 const { checks, maintenance } = loadConfig(checksFile);
-const service = createService(openDb(dbPath), { maintenance });
+const service = createService(openDb(dbPath), { maintenance, log: console.log });
 service.upsertChecks(checks);
 
 startRetention({
