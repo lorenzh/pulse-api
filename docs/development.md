@@ -1,0 +1,58 @@
+# Development
+
+This page holds what is specific to pulse-api. For how the repositories fit together and how a change goes from spec to pull request, see [architecture](https://github.com/lorenzh/pulse-meta/blob/main/docs/architecture.md) and [factory](https://github.com/lorenzh/pulse-meta/blob/main/docs/factory.md). The rules for code and tests are in [AGENTS.md](../AGENTS.md).
+
+## Run
+
+You need Node 24 or newer.
+
+```sh
+npm ci
+cp checks.example.json checks.json
+cp tokens.example.json tokens.json   # edit the tokens first
+npm start
+```
+
+`npm ci` also installs the Lefthook pre-commit hook. Tests use a database in a `mkdtemp` directory, never `./pulse.db`.
+
+## Code layout
+
+| File               | Job                                                                      |
+| ------------------ | ------------------------------------------------------------------------ |
+| `src/main.ts`      | Reads the environment, wires the parts and starts the server.            |
+| `src/server.ts`    | HTTP routes, request validation and error mapping.                       |
+| `src/service.ts`   | All SQL, row mapping to contract types, quorum evaluation.               |
+| `src/state.ts`     | Pure rules: `applyResult` and `quorumStatus`.                            |
+| `src/db.ts`        | Schema and migrations.                                                   |
+| `src/config.ts`    | Parsing of the checks file, the maintenance windows and the tokens file. |
+| `src/tokens.ts`    | Token rules and bearer authentication.                                   |
+| `src/retention.ts` | Retention setting and the hourly cleanup.                                |
+
+Types come from `@lorenzh/pulse-contract` (a Git dependency pinned to a full commit SHA). Import them with `import type` only.
+
+## Test
+
+```sh
+npm run check                     # lint, typecheck and tests, as CI does
+node --test src/state.test.ts     # one file
+node --test --test-name-pattern "<text>"
+```
+
+`npm test` fails below 80 % line coverage. Tests sit next to the code as `src/<module>.test.ts`. Each service has a test that starts its real server on port `0` and drives it over HTTP. Write the failing test first. A change to an endpoint or a response shape gets such a test, typed by the contract.
+
+## Lint and format
+
+Biome formats and lints (`npm run lint` to check, `npm run format` to fix). SonarJS runs through ESLint and limits cognitive complexity to 15 per function. The configuration comes from [pulse-config](https://github.com/lorenzh/pulse-config) (Biome, TypeScript, Lefthook and the ESLint setup) and is installed nested with TypeScript 6, while this repository uses TypeScript 7 (`.npmrc` sets `install-strategy=nested`). `eslint.config.js` also ignores `.repos/`. Never weaken the shared configuration to pass a check.
+
+The Lefthook pre-commit hook (`lefthook.yml`) runs Biome and ESLint on staged files and rejects the commit on failure.
+
+## CI
+
+`.github/workflows/ci.yml` has two jobs:
+
+- `check` uses the shared `check.yml` workflow of pulse-config (lint, typecheck, tests).
+- `docker` builds the image, validates `compose.yaml` with `.env.example`, checks that the image holds no test files, and checks that `PULSE_STATUS_PORT=8090` is published.
+
+## Documentation
+
+These pages describe `main`. When behavior, a setting, an endpoint or a type changes, update the page in the same change. Every setting, key and route in the code must appear in the docs, and the docs must not name anything the code lacks. `README.md` keeps only the quick start and the links to these pages.
