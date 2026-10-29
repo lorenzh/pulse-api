@@ -130,7 +130,7 @@ Open http://localhost:8081. The `demo-` services have their own volumes and port
 | Scheduled upgrade | `/up`           | up, upcoming maintenance window in 30 to 90 min   | within 10 s                                                           |
 | TLS certificate   | `demo-tls:8443` | up, certificate valid for 5 days, `warnDays` 3    | within 10 s                                                           |
 
-Times count from the start of `demo-targets`. `demo-init` computes the maintenance windows when it runs, and the API reads them at start only. The windows go stale after 15 minutes. To refresh them, run `docker compose --profile demo down -v` and start again.
+Times count from the start of `demo-targets`. `demo-init` computes the maintenance windows when it runs, and the API reads them at start only. The windows go stale after 15 minutes. To refresh them, remove the demo containers and volumes as described under cleanup below and start again.
 
 The file `compose/demo/theme-white-label.json` is an example theme for the status page. It is not mounted by default. To use it, add this to `demo-status` in a `compose.override.yaml` and restart the service. The theme format is described in the [pulse-status theming docs](https://github.com/lorenzh/pulse-status/blob/main/docs/theming.md).
 
@@ -143,7 +143,14 @@ services:
       - ./compose/demo/theme-white-label.json:/config/theme.json:ro
 ```
 
-Clean up with `docker compose --profile demo down -v`. The two demo tokens in `compose.yaml` are public example values. Never use them for a real deployment.
+Clean up with these two commands. They remove only the demo containers and the `demo-api-data` and `demo-config` volumes, and keep the regular stack and its volumes. Do not use `docker compose --profile demo down -v`: the profile includes every service, so `-v` also deletes `api-data` and `notify-data`. The volume names start with the project name `pulse`.
+
+```sh
+docker compose --profile demo rm -sf demo-init demo-api demo-targets demo-tls demo-probe-a demo-probe-b demo-status
+docker volume rm pulse_demo-api-data pulse_demo-config
+```
+
+The two demo tokens in `compose.yaml` are public example values. Never use them for a real deployment.
 
 ## Next steps
 
