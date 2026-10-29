@@ -1,5 +1,5 @@
 # Needs Docker Compose >= 2.23 (configs with `content:`).
-# Setup: cp .env.example .env
+# Setup: cp .env.example .env (the regular stack needs it; the demo profile does not).
 name: pulse
 
 services:
@@ -24,7 +24,7 @@ services:
     environment:
       PULSE_API_URL: http://api:3000
       PULSE_LOCATION: ${PULSE_LOCATION:-default}
-      PULSE_PROBE_TOKEN: ${PULSE_PROBE_TOKEN:?copy .env.example to .env}
+      PULSE_PROBE_TOKEN: ${PULSE_PROBE_TOKEN:-}
     depends_on:
       api:
         condition: service_healthy
@@ -57,11 +57,117 @@ services:
       api:
         condition: service_healthy
 
+  # Demo profile: docker compose --profile demo up demo-status
+  demo-init:
+    profiles: [demo]
+    image: node:24-alpine
+    restart: "no"
+    command: ["node", "/demo/init.mjs"]
+    volumes:
+      - demo-config:/shared
+      - ./compose/demo/init.mjs:/demo/init.mjs:ro
+
+  demo-api:
+    profiles: [demo]
+    build: .
+    image: pulse-api:local
+    environment:
+      PULSE_CHECKS_FILE: /shared/checks.json
+      PULSE_TOKENS_FILE: /run/pulse/tokens.json
+    configs:
+      - source: demo-tokens
+        target: /run/pulse/tokens.json
+    volumes:
+      - demo-api-data:/data
+      - demo-config:/shared:ro
+    ports:
+      - "127.0.0.1:${PULSE_DEMO_API_PORT:-3001}:3000"
+    depends_on:
+      demo-init:
+        condition: service_completed_successfully
+
+  demo-targets:
+    profiles: [demo]
+    image: node:24-alpine
+    command: ["node", "/demo/targets.mjs"]
+    volumes:
+      - ./compose/demo/targets.mjs:/demo/targets.mjs:ro
+
+  demo-tls:
+    profiles: [demo]
+    image: alpine/openssl@sha256:1c361a204e9791bec6202bccbd1065eafaa65cb5a1a9a06ae000238569fba6a2
+    entrypoint: ["sh", "/demo/tls.sh"]
+    volumes:
+      - ./compose/demo/tls.sh:/demo/tls.sh:ro
+
+  demo-probe-a:
+    profiles: [demo]
+    build: https://github.com/lorenzh/pulse-probe.git#main
+    image: pulse-probe:local
+    environment:
+      PULSE_API_URL: http://demo-api:3000
+      PULSE_LOCATION: eu
+      PULSE_PROBE_TOKEN: demo-public-token-eu-0001
+    depends_on:
+      demo-init:
+        condition: service_completed_successfully
+      demo-api:
+        condition: service_healthy
+      demo-targets:
+        condition: service_started
+      demo-tls:
+        condition: service_started
+
+  demo-probe-b:
+    profiles: [demo]
+    build: https://github.com/lorenzh/pulse-probe.git#main
+    image: pulse-probe:local
+    environment:
+      PULSE_API_URL: http://demo-api:3000
+      PULSE_LOCATION: us
+      PULSE_PROBE_TOKEN: demo-public-token-us-0002
+    depends_on:
+      demo-init:
+        condition: service_completed_successfully
+      demo-api:
+        condition: service_healthy
+      demo-targets:
+        condition: service_started
+      demo-tls:
+        condition: service_started
+
+  demo-status:
+    profiles: [demo]
+    build: https://github.com/lorenzh/pulse-status.git#main
+    image: pulse-status:local
+    environment:
+      PULSE_API_URL: http://demo-api:3000
+    ports:
+      - "${PULSE_DEMO_STATUS_PORT:-8081}:8080"
+    healthcheck:
+      interval: 5s
+    depends_on:
+      demo-api:
+        condition: service_healthy
+      demo-probe-a:
+        condition: service_started
+      demo-probe-b:
+        condition: service_started
+
 configs:
   tokens:
     content: |
-      {"tokens": [{"location": "${PULSE_LOCATION:-default}", "token": "${PULSE_PROBE_TOKEN:?copy .env.example to .env}"}]}
+      {"tokens": [{"location": "${PULSE_LOCATION:-default}", "token": "${PULSE_PROBE_TOKEN:-}"}]}
+  # Public example tokens for the demo only. Never use them for a real deployment.
+  demo-tokens:
+    content: |
+      {"tokens": [
+        {"location": "eu", "token": "demo-public-token-eu-0001"},
+        {"location": "us", "token": "demo-public-token-us-0002"}
+      ]}
 
 volumes:
   api-data:
   notify-data:
+  demo-api-data:
+  demo-config:
