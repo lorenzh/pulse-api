@@ -22,7 +22,7 @@ Every accepted result triggers one evaluation of its check. The evaluation works
 2. Each location counts by its latest result in the window.
 3. With one location in the window, it decides alone. A single probe can open an incident.
 4. With two or more locations in the window, the combined status is `down` only when at least two of them are down. Otherwise it is `degraded` if any is degraded, else `up`.
-5. The combined status feeds a counter. The third consecutive `down` evaluation opens an incident, if none is open. A combined `up` or `degraded` evaluation resets the counter and resolves an open incident. A single `up` or `degraded` result does not resolve it by itself: only the combined quorum status does.
+5. The combined status feeds a counter. The third consecutive `down` evaluation opens an incident, if none is open. A combined `up` or `degraded` evaluation resets the counter and resolves an open incident. A single `up` or `degraded` result resolves it only when it makes the combined status `up` or `degraded`. With one location in the window that is always the case. With more locations it is not: two `down` locations keep the combined status `down`, even when a third reports `up`.
 
 "Locations in the window" are the locations that sent a result in the window. They are not the locations configured in `tokens.json`. If one of two probes stops sending, its last result falls out of the window and the other probe decides alone.
 

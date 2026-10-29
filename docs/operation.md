@@ -84,7 +84,7 @@ The API writes to stdout and stderr. It has no log levels and no log file.
 | `retention: deleted <n> results`                                                                                                                                  | A cleanup deleted rows. Silent when it deletes none.                     |
 | `retention failed: <message>`                                                                                                                                     | A cleanup failed. The next run is still scheduled.                       |
 | `pulse-api: <message>`                                                                                                                                            | The tokens file is invalid. Exit code 1.                                 |
-| An error stack that starts with `Error:` (checks file) or `RetentionConfigError:`                                                                                 | The checks file or `PULSE_RETENTION_DAYS` is invalid. The process exits. |
+| An error stack that starts with `ConfigError:` (checks file) or `RetentionConfigError:`                                                                           | The checks file or `PULSE_RETENTION_DAYS` is invalid. The process exits. |
 | An error stack on stderr                                                                                                                                          | An unexpected failure in a request (`500`).                              |
 
 The log never prints token values.
