@@ -30,17 +30,17 @@ A probe posts one result. The body is a `Result` (`PostResultRequest`).
 
 Headers: `Authorization: Bearer <token>` (the word `Bearer` is case-insensitive, then one space and a non-empty token).
 
-| Field          | Type                           | Rule                                                                                                                                        |
-| -------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `checkId`      | string                         | Non-empty. Must be a configured check.                                                                                                      |
-| `timestamp`    | integer                        | Epoch ms, set by the probe. At most 60000 ms (`MAX_FUTURE_SKEW_MS`) after the API clock and at most 7 days (`MAX_RESULT_AGE_MS`) before it. |
-| `status`       | `"up"`, `"degraded"`, `"down"` | Required.                                                                                                                                   |
-| `statusCode`   | integer or `null`              | Required. `null` when no response arrived, else 100 to 599.                                                                                 |
-| `latencyMs`    | number                         | Finite, from 0 to 86400000 (`MAX_LATENCY_MS`).                                                                                              |
-| `reason`       | string or `null`               | Required. At most 1000 UTF-16 code units (`MAX_REASON_LENGTH`).                                                                             |
-| `location`     | string                         | Optional. Trimmed, at most 64 characters. Blank means the token's location.                                                                 |
-| `attempts`     | integer                        | Optional, 1 to 100 (`MAX_ATTEMPTS`). A missing value is stored as 1.                                                                        |
-| `certDaysLeft` | integer or `null`              | Optional. For TLS checks.                                                                                                                   |
+| Field          | Type                           | Rule                                                                                                                                                                                              |
+| -------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `checkId`      | string                         | Non-empty. Must be a configured check.                                                                                                                                                            |
+| `timestamp`    | integer                        | Epoch ms, set by the probe. At most `min(intervalMs of the check, 60000)` ms after the API clock (60000 for heartbeat checks and unknown ids) and at most 7 days (`MAX_RESULT_AGE_MS`) before it. |
+| `status`       | `"up"`, `"degraded"`, `"down"` | Required.                                                                                                                                                                                         |
+| `statusCode`   | integer or `null`              | Required. `null` when no response arrived, else 100 to 599.                                                                                                                                       |
+| `latencyMs`    | number                         | Finite, from 0 to 86400000 (`MAX_LATENCY_MS`).                                                                                                                                                    |
+| `reason`       | string or `null`               | Required. At most 1000 UTF-16 code units (`MAX_REASON_LENGTH`).                                                                                                                                   |
+| `location`     | string                         | Optional. Trimmed, at most 64 characters. Blank means the token's location.                                                                                                                       |
+| `attempts`     | integer                        | Optional, 1 to 100 (`MAX_ATTEMPTS`). A missing value is stored as 1.                                                                                                                              |
+| `certDaysLeft` | integer or `null`              | Optional. For TLS checks.                                                                                                                                                                         |
 
 The checks run in this order:
 

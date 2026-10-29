@@ -1,5 +1,11 @@
 import { readFileSync } from "node:fs";
-import type { Check, HttpCheck, MaintenanceWindow, TlsCheck } from "@lorenzh/pulse-contract";
+import {
+  type Check,
+  type HttpCheck,
+  MAX_TIMER_MS,
+  type MaintenanceWindow,
+  type TlsCheck,
+} from "@lorenzh/pulse-contract";
 import { type ProbeToken, parseTokens, TokensError } from "./tokens.ts";
 
 export class ConfigError extends Error {
@@ -14,9 +20,12 @@ function nonEmptyString(v: unknown): v is string {
   return typeof v === "string" && v.trim() !== "";
 }
 
-function positiveInt(v: unknown): v is number {
-  return typeof v === "number" && Number.isInteger(v) && v > 0;
+/** An integer from 1 to MAX_TIMER_MS: the largest delay a timer takes. */
+function timerMs(v: unknown): v is number {
+  return typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= MAX_TIMER_MS;
 }
+
+const TIMER_RANGE = `an integer from 1 to ${MAX_TIMER_MS} (milliseconds)`;
 
 function intIn(v: unknown, min: number, max: number): v is number {
   return typeof v === "number" && Number.isInteger(v) && v >= min && v <= max;
@@ -66,11 +75,11 @@ function parseTls(raw: Record<string, unknown>, where: string, id: string, name:
     throw new ConfigError(`${where}.port must be an integer from 1 to 65535`);
   }
   const warnDays = raw.warnDays ?? DEFAULT_WARN_DAYS;
-  if (!positiveInt(warnDays)) {
-    throw new ConfigError(`${where}.warnDays must be a positive integer (days)`);
+  if (!(typeof warnDays === "number" && Number.isInteger(warnDays) && warnDays >= 0)) {
+    throw new ConfigError(`${where}.warnDays must be an integer of 0 or more (days)`);
   }
-  if (!positiveInt(raw.intervalMs)) {
-    throw new ConfigError(`${where}.intervalMs must be a positive integer (milliseconds)`);
+  if (!timerMs(raw.intervalMs)) {
+    throw new ConfigError(`${where}.intervalMs must be ${TIMER_RANGE}`);
   }
   return { id, name, type: "tls", host, port, warnDays, intervalMs: raw.intervalMs };
 }
@@ -174,8 +183,8 @@ export function parseChecksWithSecrets(data: unknown): ParsedChecks {
       if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
         throw new ConfigError(`${where}.url must be http or https`);
       }
-      if (!positiveInt(raw.intervalMs)) {
-        throw new ConfigError(`${where}.intervalMs must be a positive integer (milliseconds)`);
+      if (!timerMs(raw.intervalMs)) {
+        throw new ConfigError(`${where}.intervalMs must be ${TIMER_RANGE}`);
       }
       const retries = raw.retries ?? 0;
       if (!intIn(retries, 0, MAX_RETRIES)) {
@@ -187,8 +196,8 @@ export function parseChecksWithSecrets(data: unknown): ParsedChecks {
           `${where}.retryDelayMs must be an integer from 0 to ${MAX_RETRY_DELAY_MS} (milliseconds)`,
         );
       }
-      if (raw.timeoutMs !== undefined && !positiveInt(raw.timeoutMs)) {
-        throw new ConfigError(`${where}.timeoutMs must be a positive integer (milliseconds)`);
+      if (raw.timeoutMs !== undefined && !timerMs(raw.timeoutMs)) {
+        throw new ConfigError(`${where}.timeoutMs must be ${TIMER_RANGE}`);
       }
       if (retries > 0) {
         const timeout = (raw.timeoutMs as number | undefined) ?? DEFAULT_TIMEOUT_MS;
@@ -199,17 +208,15 @@ export function parseChecksWithSecrets(data: unknown): ParsedChecks {
           );
         }
       }
-      if (raw.latencyObjectiveMs !== undefined && !positiveInt(raw.latencyObjectiveMs)) {
-        throw new ConfigError(
-          `${where}.latencyObjectiveMs must be a positive integer (milliseconds)`,
-        );
+      if (raw.latencyObjectiveMs !== undefined && !timerMs(raw.latencyObjectiveMs)) {
+        throw new ConfigError(`${where}.latencyObjectiveMs must be ${TIMER_RANGE}`);
       }
       check = { id, name, url, intervalMs: raw.intervalMs, retries, retryDelayMs };
       if (raw.latencyObjectiveMs !== undefined) check.latencyObjectiveMs = raw.latencyObjectiveMs;
       if (raw.type === "http") check.type = "http";
     }
-    if (raw.timeoutMs !== undefined && !positiveInt(raw.timeoutMs)) {
-      throw new ConfigError(`${where}.timeoutMs must be a positive integer (milliseconds)`);
+    if (raw.timeoutMs !== undefined && !timerMs(raw.timeoutMs)) {
+      throw new ConfigError(`${where}.timeoutMs must be ${TIMER_RANGE}`);
     }
     if (raw.keyword !== undefined) {
       if (check.type === "tls") {
@@ -230,6 +237,33 @@ export function parseChecksWithSecrets(data: unknown): ParsedChecks {
 
 const ISO_WITH_OFFSET = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
 
+/** Date.parse rolls 02-30 over to 03-02; check the components against the real calendar. */
+function isRealCalendarTime(v: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/.exec(v);
+  if (m === null) return false;
+  const [year, month, day, hour, minute, second] = m.slice(1).map((x) => Number(x ?? 0)) as [
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
+  // Not Date.UTC: it maps years 0-99 to 1900-1999.
+  const isLeap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const februaryDays = isLeap ? 29 : 28;
+  const daysInMonth = month === 2 ? februaryDays : 30 + ((month + Math.floor(month / 8)) % 2);
+  return (
+    month >= 1 &&
+    month <= 12 &&
+    day >= 1 &&
+    day <= daysInMonth &&
+    hour <= 23 &&
+    minute <= 59 &&
+    second <= 59
+  );
+}
+
 function parseInstant(v: unknown, where: string): number {
   if (typeof v !== "string" || !ISO_WITH_OFFSET.test(v)) {
     throw new ConfigError(
@@ -237,7 +271,9 @@ function parseInstant(v: unknown, where: string): number {
     );
   }
   const ms = Date.parse(v);
-  if (Number.isNaN(ms)) throw new ConfigError(`${where} is not a valid date`);
+  if (Number.isNaN(ms) || !isRealCalendarTime(v)) {
+    throw new ConfigError(`${where} is not a valid date`);
+  }
   return ms;
 }
 

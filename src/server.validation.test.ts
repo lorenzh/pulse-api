@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { Result } from "@lorenzh/pulse-contract";
+import type { Check, Result } from "@lorenzh/pulse-contract";
 import {
   MAX_ATTEMPTS,
   MAX_FUTURE_SKEW_MS,
   MAX_LATENCY_MS,
   MAX_REASON_LENGTH,
   MAX_RESULT_AGE_MS,
+  maxFutureSkewMs,
   validateResult,
 } from "./server.ts";
 
@@ -23,13 +24,13 @@ const base = {
 };
 
 function rejected(patch: Record<string, unknown>, field: string): void {
-  const out = validateResult({ ...base, ...patch }, NOW);
+  const out = validateResult({ ...base, ...patch }, NOW, () => undefined);
   assert.equal(typeof out, "string", JSON.stringify(patch));
   assert.match(String(out), new RegExp(`^(result\\.)?${field}\\b`), JSON.stringify(patch));
 }
 
 function accepted(patch: Record<string, unknown>): void {
-  const out = validateResult({ ...base, ...patch }, NOW);
+  const out = validateResult({ ...base, ...patch }, NOW, () => undefined);
   assert.equal(typeof out, "object", `${JSON.stringify(patch)}: ${String(out)}`);
 }
 
@@ -62,14 +63,46 @@ test("validateResult: latencyMs bounds", () => {
 test("validateResult: statusCode is null or an integer 100-599", () => {
   for (const v of [99, 600, 200.5, "200", undefined]) rejected({ statusCode: v }, "statusCode");
   for (const v of [null, 100, 599]) accepted({ statusCode: v });
-  const out = validateResult({ ...base, statusCode: null }, NOW) as Result;
+  const out = validateResult({ ...base, statusCode: null }, NOW, () => undefined) as Result;
   assert.equal(out.statusCode, null);
 });
 
 test("validateResult: a body the contract rejects gets a message naming the path", () => {
   assert.equal(
-    validateResult({ ...base, latencyMs: "fast" }, NOW),
+    validateResult({ ...base, latencyMs: "fast" }, NOW, () => undefined),
     "result.latencyMs: must be a finite number >= 0",
   );
-  assert.equal(typeof validateResult([], NOW), "string");
+  assert.equal(typeof validateResult([], NOW, () => undefined), "string");
+});
+
+const http = (intervalMs: number): Check => ({
+  id: "c1",
+  name: "c1",
+  url: "https://x",
+  intervalMs,
+});
+
+test("maxFutureSkewMs: the interval, capped at 60 s; 60 s for heartbeat and unknown checks", () => {
+  assert.equal(maxFutureSkewMs(http(10_000)), 10_000);
+  assert.equal(maxFutureSkewMs(http(60_000)), 60_000);
+  assert.equal(maxFutureSkewMs(http(300_000)), 60_000);
+  assert.equal(
+    maxFutureSkewMs({ id: "h", name: "h", type: "heartbeat", period: 5000, grace: 0 }),
+    60_000,
+  );
+  assert.equal(maxFutureSkewMs(undefined), 60_000);
+});
+
+test("validateResult: a 10 s check rejects a timestamp 30 s ahead and names the limit", () => {
+  const find = (): Check => http(10_000);
+  const out = validateResult({ ...base, timestamp: NOW + 30_000 }, NOW, find);
+  assert.match(String(out), /^timestamp is more than 10000 ms in the future/);
+  assert.equal(typeof validateResult({ ...base, timestamp: NOW + 10_000 }, NOW, find), "object");
+  const slow = (): Check => http(300_000);
+  assert.equal(typeof validateResult({ ...base, timestamp: NOW + 60_000 }, NOW, slow), "object");
+  assert.equal(typeof validateResult({ ...base, timestamp: NOW + 60_001 }, NOW, slow), "string");
+  assert.equal(
+    typeof validateResult({ ...base, timestamp: NOW + 60_000 }, NOW, () => undefined),
+    "object",
+  );
 });

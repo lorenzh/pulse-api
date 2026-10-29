@@ -191,10 +191,17 @@ test("validateResult: attempts defaults to 1 and must be an integer >= 1", () =>
   const base = result("c1", 1, "up");
   // eslint-disable-next-line sonarjs/no-unused-vars -- rest destructuring omits a property to build the test input
   const { attempts: _a, ...noAttempts } = base;
-  assert.equal((validateResult(noAttempts, 1) as Result).attempts, 1);
-  assert.equal((validateResult({ ...base, attempts: 3 }, 1) as Result).attempts, 3);
+  assert.equal((validateResult(noAttempts, 1, () => undefined) as Result).attempts, 1);
+  assert.equal(
+    (validateResult({ ...base, attempts: 3 }, 1, () => undefined) as Result).attempts,
+    3,
+  );
   for (const v of [0, -1, 1.5, "2", null]) {
-    assert.equal(typeof validateResult({ ...base, attempts: v }, 1), "string", String(v));
+    assert.equal(
+      typeof validateResult({ ...base, attempts: v }, 1, () => undefined),
+      "string",
+      String(v),
+    );
   }
 });
 
@@ -224,5 +231,32 @@ test("server: attempts is stored, served, and defaults to 1; checks serve retry 
     );
   } finally {
     await close();
+  }
+});
+
+test("server: POST /results reads only the posted check, not every check's results", async () => {
+  const real = createService(openDb(":memory:"));
+  real.upsertChecks([
+    // eslint-disable-next-line sonarjs/no-clear-text-protocols -- plain http/ftp literal is a local test fixture, never requested over a network
+    { id: "c1", name: "C1", url: "http://x/", intervalMs: 1000 },
+  ]);
+  const service = {
+    ...real,
+    listChecks: () => assert.fail("POST /results must not load every check with its results"),
+  };
+  const server = createApiServer(service, {
+    tokens: [{ location: "default", token: TOKEN }],
+    now: () => 1000,
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    assert.equal((await post(base, result("c1", 1000, "up"))).status, 204);
+    // The 1 s interval still caps the future skew.
+    assert.equal((await post(base, result("c1", 2001, "up"))).status, 400);
+    assert.equal((await post(base, result("nope", 1000, "up"))).status, 404);
+  } finally {
+    server.close();
+    server.closeAllConnections();
   }
 });

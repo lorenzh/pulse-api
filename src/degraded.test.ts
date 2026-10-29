@@ -69,9 +69,13 @@ test("db: old database migrates; objective is served and can be cleared", (t) =>
 
 test("validateResult: degraded accepted, unknown rejected naming all three", () => {
   for (const status of ["up", "degraded", "down"]) {
-    assert.equal(typeof validateResult({ ...res(1, "up"), status }, 1), "object", status);
+    assert.equal(
+      typeof validateResult({ ...res(1, "up"), status }, 1, () => undefined),
+      "object",
+      status,
+    );
   }
-  const err = validateResult({ ...res(1, "up"), status: "slow" }, 1);
+  const err = validateResult({ ...res(1, "up"), status: "slow" }, 1, () => undefined);
   assert.equal(err, 'result.status: must be one of "up", "degraded", "down"');
 });
 
