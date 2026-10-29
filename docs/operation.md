@@ -7,9 +7,11 @@ The API reads `checks.json`, the tokens file and its environment once at start. 
 When you run the whole stack, restart in this order: the API first, then the probes. Probes read their checks from the API once at start.
 
 ```sh
-docker compose up -d
+docker compose restart api
 docker compose restart probe
 ```
+
+Use `restart`, not `docker compose up -d`: `up -d` does not recreate the API when only the mounted checks file changed, so the API keeps the checks it loaded at start (`src/main.ts` reads the file once).
 
 Everything else is kept in the database, so a restart loses no state. The check counter and open incidents survive restarts.
 
@@ -82,7 +84,7 @@ The API writes to stdout and stderr. It has no log levels and no log file.
 | `retention: deleted <n> results`                                                                                                                                  | A cleanup deleted rows. Silent when it deletes none.                     |
 | `retention failed: <message>`                                                                                                                                     | A cleanup failed. The next run is still scheduled.                       |
 | `pulse-api: <message>`                                                                                                                                            | The tokens file is invalid. Exit code 1.                                 |
-| An error stack that starts with `ConfigError` or `RetentionConfigError`                                                                                           | The checks file or `PULSE_RETENTION_DAYS` is invalid. The process exits. |
+| An error stack that starts with `ConfigError:` (checks file) or `RetentionConfigError:`                                                                           | The checks file or `PULSE_RETENTION_DAYS` is invalid. The process exits. |
 | An error stack on stderr                                                                                                                                          | An unexpected failure in a request (`500`).                              |
 
 The log never prints token values.
