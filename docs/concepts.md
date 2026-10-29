@@ -33,6 +33,11 @@ Details:
 - `lastReason` of a check is the reason of the latest ingested result.
 - Incidents can open sooner than three intervals, because every location in the window adds results.
 - The counter is stored in the database and survives restarts.
+- `resolvedAt` is never earlier than `openedAt`. If the resolving result carries an older timestamp (another location's clock), the API stores `openedAt` instead.
+
+### Late results
+
+A result is late when its timestamp is strictly older than the newest stored result of the same check and the same location. A late result is stored and appears in the results history. It does not change the state, `consecutiveDown`, incidents, `lastResultAt` or `lastReason`. Results of other locations keep their role in the quorum. A result with a timestamp equal to the newest one is not late; the higher row id wins the tie.
 - The counter is `consecutiveDown` in `GET /checks`.
 
 Example: a check has `intervalMs` 10000 and one probe. Three `down` results in a row open an incident. The next `up` result resolves it.

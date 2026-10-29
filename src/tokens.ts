@@ -4,6 +4,12 @@ import { MAX_LOCATION_LENGTH } from "./service.ts";
 export const MIN_TOKEN_LENGTH = 16;
 const PLACEHOLDER_PREFIX = "replace-with-";
 
+/** Tokens printed in the repository's examples. They are public, so they never authenticate. */
+export const EXAMPLE_TOKENS: readonly string[] = [
+  "example-token-change-me-0000",
+  "example-token-0123456789abcdef",
+];
+
 export type ProbeToken = { location: string; token: string };
 
 export class TokensError extends Error {
@@ -32,6 +38,14 @@ function parseEntry(raw: unknown, index: number): ProbeToken {
   if (raw.token.startsWith(PLACEHOLDER_PREFIX)) {
     throw new TokensError(
       `${where} (location "${location}") still has the example placeholder token`,
+    );
+  }
+  if (/\s/.test(raw.token)) {
+    throw new TokensError(`${where} (location "${location}") token must not contain whitespace`);
+  }
+  if (EXAMPLE_TOKENS.includes(raw.token)) {
+    throw new TokensError(
+      `${where} (location "${location}") uses a public example token: generate your own`,
     );
   }
   return { location, token: raw.token };

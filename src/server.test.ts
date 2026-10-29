@@ -17,7 +17,10 @@ async function start() {
     // eslint-disable-next-line sonarjs/no-clear-text-protocols -- plain http/ftp literal is a local test fixture, never requested over a network
     { id: "c2", name: "C2", url: "http://y/", intervalMs: 1000, timeoutMs: 200 },
   ]);
-  const server = createApiServer(service, { tokens: [{ location: "default", token: TOKEN }] });
+  const server = createApiServer(service, {
+    tokens: [{ location: "default", token: TOKEN }],
+    now: () => 1000,
+  });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   return {
@@ -187,10 +190,10 @@ test("validateResult: attempts defaults to 1 and must be an integer >= 1", () =>
   const base = result("c1", 1, "up");
   // eslint-disable-next-line sonarjs/no-unused-vars -- rest destructuring omits a property to build the test input
   const { attempts: _a, ...noAttempts } = base;
-  assert.equal((validateResult(noAttempts) as Result).attempts, 1);
-  assert.equal((validateResult({ ...base, attempts: 3 }) as Result).attempts, 3);
+  assert.equal((validateResult(noAttempts, 1) as Result).attempts, 1);
+  assert.equal((validateResult({ ...base, attempts: 3 }, 1) as Result).attempts, 3);
   for (const v of [0, -1, 1.5, "2", null]) {
-    assert.equal(typeof validateResult({ ...base, attempts: v }), "string", String(v));
+    assert.equal(typeof validateResult({ ...base, attempts: v }, 1), "string", String(v));
   }
 });
 

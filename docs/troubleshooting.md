@@ -6,11 +6,19 @@ Each entry quotes a message from the code.
 
 ### `token must be a string of at least 16 characters`
 
-Full text: `pulse-api: tokens[0] (location "<name>") token must be a string of at least 16 characters`. The token is too short or empty. With Compose, `.env` is missing, so `PULSE_PROBE_TOKEN` is empty. Copy `.env.example` to `.env`, or create a token with `openssl rand -hex 32`.
+Full text: `pulse-api: tokens[0] (location "<name>") token must be a string of at least 16 characters`. The token is too short or empty. With Compose, `.env` is missing, so `PULSE_PROBE_TOKEN` is empty. Copy `.env.example` to `.env` and set a token with `openssl rand -hex 32`.
 
 ### `still has the example placeholder token`
 
-A token starts with `replace-with-`. You copied `tokens.example.json` without editing it. Replace every token.
+A token starts with `replace-with-`. You copied `tokens.example.json` or `.env.example` without editing it. Replace every token, for example with `openssl rand -hex 32`.
+
+### `uses a public example token: generate your own`
+
+The token is one of the example tokens from earlier versions of the docs and `.env.example`. They are public. Replace the token in `.env` or the tokens file, and in the probe.
+
+### `token must not contain whitespace`
+
+The token has a space, tab or newline, often a trailing newline from a copy. Remove it.
 
 ### `cannot read tokens file <path>`
 
@@ -61,13 +69,16 @@ The body is invalid. The message names the field:
 - `body is not valid JSON`
 - `body must be a JSON object`
 - `checkId must be a non-empty string`
-- `timestamp must be a number`
+- `timestamp must be an integer (epoch ms)`
+- `timestamp is more than 60000 ms in the future`: the probe's clock is more than 60 s ahead of the API's. The probe does not fix this by itself; the result is rejected on every post until the clocks agree. Synchronise the clock (NTP). I could not read the probe source when this entry was written: check the probe's log to see whether it drops or retries a rejected result.
+- `timestamp is older than 7 days`
 - `status must be "up", "degraded" or "down"`
-- `statusCode must be an integer or null`
-- `latencyMs must be a non-negative number`
+- `statusCode must be null or an integer from 100 to 599`
+- `latencyMs must be a number from 0 to 86400000`
 - `reason must be a string or null`
+- `reason must be at most 1000 characters`
 - `certDaysLeft must be an integer or null`
-- `attempts must be an integer >= 1`
+- `attempts must be an integer from 1 to 100`
 - `location must be a string`
 - `location must be at most 64 characters`: a location longer than 64 characters after trim. Use a shorter `PULSE_LOCATION`.
 

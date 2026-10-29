@@ -70,9 +70,9 @@ test("db: old database migrates; objective is served and can be cleared", (t) =>
 
 test("validateResult: degraded accepted, unknown rejected naming all three", () => {
   for (const status of ["up", "degraded", "down"]) {
-    assert.equal(typeof validateResult({ ...res(1, "up"), status }), "object", status);
+    assert.equal(typeof validateResult({ ...res(1, "up"), status }, 1), "object", status);
   }
-  const err = validateResult({ ...res(1, "up"), status: "slow" });
+  const err = validateResult({ ...res(1, "up"), status: "slow" }, 1);
   assert.equal(err, 'status must be "up", "degraded" or "down"');
 });
 
@@ -81,6 +81,7 @@ test("server: POST degraded is 204, unknown is 400, GET /checks serves the objec
   service.upsertChecks([{ ...check, latencyObjectiveMs: 500 }]);
   const server = createApiServer(service, {
     tokens: [{ location: "default", token: "test-token-default-0123456789" }],
+    now: () => 1000,
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;

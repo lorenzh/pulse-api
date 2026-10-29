@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
-import { authenticate, parseTokens, TokensError } from "./tokens.ts";
+import { authenticate, EXAMPLE_TOKENS, parseTokens, TokensError } from "./tokens.ts";
 
 const A = "token-a-0123456789abcdef";
 const B = "token-b-0123456789abcdef";
@@ -80,4 +81,55 @@ test("authenticate: strict header parsing", () => {
   ]) {
     assert.equal(authenticate(tokens, header), undefined, String(header));
   }
+});
+
+test("parseTokens: rejects example tokens and whitespace without printing the token", () => {
+  for (const token of EXAMPLE_TOKENS) {
+    rejects({ tokens: [{ location: "east", token }] }, /tokens\[0\] \(location "east"\)/);
+  }
+  for (const bad of [`${A} x`, `${A}\t`, `${A}\n`, ` ${A}`, `${A} `, `${A}\tz`]) {
+    assert.throws(
+      () => parseTokens({ tokens: [{ location: "east", token: bad }] }),
+      (err: unknown) =>
+        err instanceof TokensError && /whitespace/.test(err.message) && !err.message.includes(A),
+    );
+  }
+  for (const token of EXAMPLE_TOKENS) {
+    assert.throws(
+      () => parseTokens({ tokens: [{ location: "east", token }] }),
+      (err: unknown) => err instanceof TokensError && !err.message.includes(token),
+    );
+  }
+});
+
+test("docs and .env.example only show tokens that the API accepts", () => {
+  const files = [
+    ".env.example",
+    ...readdirSync("docs")
+      .filter((f) => f.endsWith(".md"))
+      .map((f) => `docs/${f}`),
+  ];
+  const patterns = [
+    /example-token-[\w-]+/g,
+    /Bearer ([A-Za-z0-9_-]{16,})/g,
+    /PULSE_PROBE_TOKEN=([^\s"']+)/g,
+  ];
+  let checked = 0;
+  for (const file of files) {
+    const text = readFileSync(file, "utf8");
+    for (const pattern of patterns) {
+      for (const m of text.matchAll(pattern)) {
+        const token = m[1] ?? m[0];
+        // Placeholders and shell variables are not literal tokens.
+        if (/^(replace-with-|\$|<)/.test(token)) continue;
+        // Every literal token shown must work, so a copied example starts the API.
+        assert.doesNotThrow(
+          () => parseTokens({ tokens: [{ location: "x", token }] }),
+          `${file} shows a token the API rejects`,
+        );
+        checked++;
+      }
+    }
+  }
+  assert.ok(checked > 0);
 });

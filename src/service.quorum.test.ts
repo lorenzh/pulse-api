@@ -119,9 +119,19 @@ test("quorum: results newer than the ingested one are ignored", () => {
   s.ingest(r(200, "b", "down"));
   s.ingest(r(300, "c", "down"));
   assert.equal(s.listChecks()[0]!.state, "down");
-  // late result at t=150: window sees a up, only; b and c are newer
+  // t=150 is newer than a's t=100, so it counts: the window sees a up, only; b and c are newer
   s.ingest(r(150, "a", "up"));
   assert.equal(s.listChecks()[0]!.state, "up");
+});
+
+test("quorum: a late result of a location is history only and the state stays down", () => {
+  const s = setup();
+  s.ingest(r(100, "a", "up"));
+  s.ingest(r(200, "b", "down"));
+  s.ingest(r(300, "c", "down"));
+  s.ingest(r(50, "a", "up")); // older than a's t=100
+  assert.equal(s.listChecks()[0]!.state, "down");
+  assert.equal(s.listResults("c1", 10).length, 4);
 });
 
 test("quorum: per-location latest uses the highest timestamp, ties by id", () => {
@@ -155,7 +165,7 @@ test("locations: empty without results; results listing carries location", () =>
 test("validateResult: location normalisation", () => {
   const base = { ...r(1, "x", "up") } as Record<string, unknown>;
   const loc = (v: unknown) => {
-    const out = validateResult({ ...base, location: v });
+    const out = validateResult({ ...base, location: v }, 1);
     return typeof out === "string" ? out : out.location;
   };
   assert.equal(loc("  eu  "), "eu");
@@ -168,7 +178,7 @@ test("validateResult: location normalisation", () => {
   assert.match(String(loc(null)), /location/);
   // eslint-disable-next-line sonarjs/no-unused-vars -- rest destructuring omits a property to build the test input
   const { location: _l, ...noLoc } = base;
-  assert.equal((validateResult(noLoc) as Result).location, "default");
+  assert.equal((validateResult(noLoc, 1) as Result).location, "default");
 });
 
 test("migration: old database without location column", (t) => {
