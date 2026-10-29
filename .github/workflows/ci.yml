@@ -42,4 +42,4 @@ jobs:
       - run: bash scripts/compose-e2e.sh
       - name: Remove leftover containers and volumes
         if: always()
-        run: docker compose --profile demo down -v --remove-orphans
+        run: docker compose --project-name pulse-e2e --profile demo down -v --remove-orphans

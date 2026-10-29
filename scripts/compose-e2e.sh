@@ -5,7 +5,9 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-pulse-e2e}"
+# Always our own project: the teardown runs `down -v`, so an inherited
+# COMPOSE_PROJECT_NAME such as `pulse` would delete real volumes.
+export COMPOSE_PROJECT_NAME=pulse-e2e
 project="$COMPOSE_PROJECT_NAME"
 
 # Timeouts in seconds. Override them with environment variables.
@@ -54,7 +56,9 @@ cleanup() {
     rm -f "$checks_backup"
   fi
   printf '\n==> Teardown\n'
-  docker compose --profile demo down -v --remove-orphans
+  if ! docker compose --profile demo down -v --remove-orphans && ((code == 0)); then
+    code=1
+  fi
   if ((created_env == 1)); then
     rm -f .env
   fi
