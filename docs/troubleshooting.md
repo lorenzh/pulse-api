@@ -64,22 +64,13 @@ Port 3000 (or `PORT`) is in use. Choose another `PORT`. With Compose, change `PU
 
 ## 400 on POST /results
 
-The body is invalid. The message names the field. The contract validator runs first and its messages start with a path, for example `result.status: must be one of "up", "degraded", "down"` or `result.latencyMs: must be a finite number >= 0`. The api checks below run after it:
+The body is invalid. The message names the field. `body is not valid JSON` comes first. Then the contract validator checks the shape, and its messages start with a path, for example `result: must be an object`, `result.checkId: must be a non-empty string`, `result.timestamp: must be an integer`, `result.status: must be one of "up", "degraded", "down"`, `result.statusCode: must be an integer 100..599` (or null), `result.latencyMs: must be a finite number >= 0`, `result.reason: must be a string`, `result.attempts: must be an integer >= 1` or `result.location: must be a string`. The api bound checks below run after it:
 
-- `body is not valid JSON`
-- `body must be a JSON object`
-- `checkId must be a non-empty string`
-- `timestamp must be an integer (epoch ms)`
 - `timestamp is more than 60000 ms in the future`: the probe's clock is more than 60 s ahead of the API's. The probe does not fix this by itself; the result is rejected on every post until the clocks agree. Synchronise the clock (NTP). The probe drops a result the API answers with HTTP 400, logs `dropping result for <check>: API answered HTTP 400`, and does not retry it. Network errors are also logged as dropped.
 - `timestamp is older than 7 days`
-- `status must be "up", "degraded" or "down"`
-- `statusCode must be null or an integer from 100 to 599`
 - `latencyMs must be a number from 0 to 86400000`
-- `reason must be a string or null`
 - `reason must be at most 1000 characters`
-- `certDaysLeft must be an integer or null`
 - `attempts must be an integer from 1 to 100`
-- `location must be a string`
 - `location must be at most 64 characters`: a location longer than 64 characters after trim. Use a shorter `PULSE_LOCATION`.
 
 ## 401 on POST /results

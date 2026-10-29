@@ -73,6 +73,10 @@ test("retention still prunes the results of an inactive check", () => {
   s.ingest({ ...res(1, "up"), checkId: "c2" });
   s.ingest({ ...res(2, "up"), checkId: "c2" });
   s.upsertChecks([a]);
+  assert.deepEqual(
+    s.listChecks().map((c) => c.id),
+    ["c1"],
+  );
   assert.equal(s.deleteExpiredResults(100, 10), 1);
   assert.equal(s.listResults("c2", 10).length, 1);
 });
