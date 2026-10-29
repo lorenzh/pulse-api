@@ -6,6 +6,9 @@ import { openDb } from "./db.ts";
 import { createApiServer, validateResult } from "./server.ts";
 import { createService } from "./service.ts";
 
+const TOKEN = "test-token-east-0123456789abcdef";
+const AUTH = { authorization: `Bearer ${TOKEN}` };
+
 async function start() {
   const service = createService(openDb(":memory:"));
   service.upsertChecks([
@@ -14,7 +17,7 @@ async function start() {
     // eslint-disable-next-line sonarjs/no-clear-text-protocols -- plain http/ftp literal is a local test fixture, never requested over a network
     { id: "c2", name: "C2", url: "http://y/", intervalMs: 1000, timeoutMs: 200 },
   ]);
-  const server = createApiServer(service);
+  const server = createApiServer(service, { tokens: [{ location: "default", token: TOKEN }] });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   return {
@@ -43,7 +46,7 @@ function result(checkId: string, timestamp: number, status: "up" | "down"): Resu
 const post = (base: string, body: unknown, raw = false) =>
   fetch(`${base}/results`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...AUTH },
     body: raw ? (body as string) : JSON.stringify(body),
   });
 

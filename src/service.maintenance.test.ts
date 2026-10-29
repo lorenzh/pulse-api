@@ -119,7 +119,7 @@ test("maintenance: listMaintenance lists current and upcoming, excludes past, fi
 test("maintenance: GET /maintenance over HTTP", async () => {
   const { s, clock } = setup([W, { checkId: "c2", start: 300, end: 400, note: "n" }]);
   clock.t = 150;
-  const server = createApiServer(s);
+  const server = createApiServer(s, { tokens: [] });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   try {

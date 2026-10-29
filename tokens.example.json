@@ -1,0 +1,6 @@
+{
+  "tokens": [
+    { "location": "east", "token": "replace-with-openssl-rand-hex-32" },
+    { "location": "west", "token": "replace-with-another-openssl-rand-hex-32" }
+  ]
+}
