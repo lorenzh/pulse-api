@@ -128,6 +128,15 @@ export function parseChecks(data: unknown): Check[] {
     if (raw.timeoutMs !== undefined && !positiveInt(raw.timeoutMs)) {
       throw new ConfigError(`${where}.timeoutMs must be a positive integer (milliseconds)`);
     }
+    if (raw.keyword !== undefined) {
+      if (check.type === "tls") {
+        throw new ConfigError(`${where}.keyword is not allowed on a tls check`);
+      }
+      if (typeof raw.keyword !== "string" || raw.keyword === "") {
+        throw new ConfigError(`${where}.keyword must be a non-empty string`);
+      }
+      check.keyword = raw.keyword;
+    }
     if (seen.has(id)) throw new ConfigError(`duplicate check id "${id}"`);
     seen.add(id);
     if (raw.timeoutMs !== undefined) check.timeoutMs = raw.timeoutMs as number;
