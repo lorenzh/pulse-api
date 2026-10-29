@@ -1,0 +1,269 @@
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { DatabaseSync } from "node:sqlite";
+import { after, before, test } from "node:test";
+import type { ChecksResponse } from "@lorenzh/pulse-contract";
+import { openDb } from "./db.ts";
+import type { LogLevel } from "./log.ts";
+import { type StartDeps, StartupError, startApi } from "./start.ts";
+
+const TOKEN = "test-token-east-0123456789abcdef";
+const SECRET_URL = "https://user:hunter2@internal.example/path";
+const KEYWORD = "s3cret-keyword";
+const NOW = Date.parse("2026-10-28T12:00:00Z");
+
+let dir: string;
+let checksFile: string;
+let tokensFile: string;
+
+before(() => {
+  dir = mkdtempSync(join(tmpdir(), "pulse-start-"));
+  mkdirSync(dir, { recursive: true });
+  checksFile = join(dir, "checks.json");
+  tokensFile = join(dir, "tokens.json");
+  writeFileSync(
+    checksFile,
+    JSON.stringify({
+      checks: [{ id: "c1", name: "C1", url: SECRET_URL, intervalMs: 1000, keyword: KEYWORD }],
+    }),
+  );
+  writeFileSync(tokensFile, JSON.stringify({ tokens: [{ location: "eu", token: TOKEN }] }));
+});
+after(() => rmSync(dir, { recursive: true, force: true }));
+
+function deps(env: Record<string, string>, extra: Partial<StartDeps> = {}) {
+  const lines: { line: string; level: LogLevel }[] = [];
+  const base: StartDeps = {
+    env: {
+      PORT: "0",
+      PULSE_DB: join(dir, "t.db"),
+      PULSE_CHECKS_FILE: checksFile,
+      PULSE_TOKENS_FILE: tokensFile,
+      ...env,
+    },
+    now: () => NOW,
+    sleep: () => new Promise<void>(() => undefined),
+    setTimeout: () => undefined,
+    clearTimeout: () => undefined,
+    write: (line, level) => lines.push({ line, level }),
+    openDb: (path) => openDb(path),
+    ...extra,
+  };
+  return { base, lines };
+}
+
+async function startupMessage(env: Record<string, string>): Promise<string> {
+  const { base } = deps(env, { openDb: () => openDb(":memory:") });
+  try {
+    await startApi(base);
+  } catch (err) {
+    assert.ok(err instanceof StartupError, `expected StartupError, got ${String(err)}`);
+    return err.message;
+  }
+  throw new Error("expected a startup error");
+}
+
+test("startup errors are one-line StartupErrors that name the setting", async () => {
+  const bad = join(dir, "bad.json");
+  writeFileSync(bad, "{not json");
+  assert.match(await startupMessage({ PULSE_RETENTION_DAYS: "abc" }), /PULSE_RETENTION_DAYS/);
+  assert.match(await startupMessage({ PULSE_LOG_LEVEL: "loud" }), /PULSE_LOG_LEVEL/);
+  assert.match(await startupMessage({ PORT: "99999" }), /PORT/);
+  assert.match(await startupMessage({ PORT: "x" }), /PORT/);
+  assert.match(await startupMessage({ PULSE_CHECKS_FILE: bad }), /bad\.json/);
+  assert.match(await startupMessage({ PULSE_CHECKS_FILE: join(dir, "missing") }), /missing/);
+  assert.match(await startupMessage({ PULSE_TOKENS_FILE: bad }), /bad\.json/);
+  const msg = await startupMessage({ PULSE_TOKENS_FILE: join(dir, "missing.json") });
+  assert.doesNotMatch(msg, /\n/);
+});
+
+test("an unknown key in the checks file is a startup error naming file, key and path", async () => {
+  const typo = join(dir, "typo.json");
+  writeFileSync(
+    typo,
+    JSON.stringify({
+      checks: [
+        { id: "a", name: "A", url: "https://a.example/", intervalMs: 1000 },
+        { id: "b", name: "B", url: "https://b.example/", intervalMs: 1000, keywrod: "x" },
+      ],
+    }),
+  );
+  const msg = await startupMessage({ PULSE_CHECKS_FILE: typo });
+  assert.equal(msg, `${typo}: unknown key "keywrod" in checks[1]`);
+});
+
+test("a database that cannot be opened is a startup error", async () => {
+  const { base } = deps(
+    {},
+    {
+      openDb: () => {
+        throw new Error("unable to open");
+      },
+    },
+  );
+  await assert.rejects(startApi(base), (err: Error) => {
+    assert.ok(err instanceof StartupError);
+    assert.match(err.message, /PULSE_DB/);
+    return true;
+  });
+});
+
+test("a port in use is a startup error and the database is closed", async () => {
+  const first = await startApi(deps({}).base);
+  let db: DatabaseSync | undefined;
+  const second = deps(
+    { PORT: String(first.port) },
+    {
+      openDb: (path) => {
+        db = openDb(path);
+        return db;
+      },
+    },
+  );
+  try {
+    await assert.rejects(startApi(second.base), (err: Error) => {
+      assert.ok(err instanceof StartupError);
+      assert.match(err.message, /PORT/);
+      return true;
+    });
+    assert.throws(() => db?.prepare("SELECT 1"));
+  } finally {
+    await first.close();
+  }
+});
+
+test("healthz answers without a checks query, then 503 while shutting down; shutdown closes the db", async () => {
+  let db: DatabaseSync | undefined;
+  const { base, lines } = deps(
+    {},
+    {
+      openDb: (path) => {
+        db = openDb(path);
+        return db;
+      },
+    },
+  );
+  const api = await startApi(base);
+  const url = `http://127.0.0.1:${api.port}`;
+  const ok = await fetch(`${url}/healthz`);
+  assert.equal(ok.status, 200);
+  assert.equal(await ok.text(), "ok\n");
+  assert.match(ok.headers.get("content-type") ?? "", /^text\/plain/);
+
+  const first = api.close();
+  const second = api.close();
+  assert.equal(first, second);
+  await first;
+  assert.throws(() => db?.prepare("SELECT 1"));
+  const levels = lines.map(
+    (l) => JSON.parse(l.line) as { time: string; level: string; msg: string },
+  );
+  assert.ok(levels.every((l) => !Number.isNaN(Date.parse(l.time)) && l.level.length > 0));
+  assert.equal(levels.at(-1)?.msg, "stopped");
+});
+
+test("healthz does not read the checks table", async () => {
+  let db: DatabaseSync | undefined;
+  const { base } = deps(
+    {},
+    {
+      openDb: (path) => {
+        db = openDb(path);
+        return db;
+      },
+    },
+  );
+  const api = await startApi(base);
+  try {
+    // Dropping the table would make any query on it fail.
+    db?.exec("ALTER TABLE checks RENAME TO checks_gone");
+    const res = await fetch(`http://127.0.0.1:${api.port}/healthz`);
+    assert.equal(res.status, 200);
+  } finally {
+    db?.exec("ALTER TABLE checks_gone RENAME TO checks");
+    await api.close();
+  }
+});
+
+test("shutdown during an open connection hits the bound, warns and still closes", async () => {
+  let release: () => void = () => undefined;
+  let db: DatabaseSync | undefined;
+  const { base, lines } = deps(
+    {},
+    {
+      sleep: () => new Promise<void>((r) => (release = r)),
+      openDb: (path) => {
+        db = openDb(path);
+        return db;
+      },
+    },
+  );
+  const api = await startApi(base);
+  const { connect } = await import("node:net");
+  const socket = connect(api.port, "127.0.0.1");
+  await new Promise<void>((r) => socket.once("connect", r));
+  // A request that never finishes keeps the connection busy.
+  socket.write("POST /results HTTP/1.1\r\nhost: x\r\ncontent-length: 10\r\n\r\n");
+  await new Promise((r) => setImmediate(r));
+  const closing = api.close();
+  release();
+  await closing;
+  assert.ok(lines.some((l) => l.level === "warn" && l.line.includes("shutdown bound")));
+  assert.throws(() => db?.prepare("SELECT 1"));
+  socket.destroy();
+});
+
+test("metrics: series appear, and no url, keyword or token", async () => {
+  const api = await startApi(deps({}).base);
+  const url = `http://127.0.0.1:${api.port}`;
+  try {
+    const send = async (offset: number, status: "up" | "down", latencyMs: number) => {
+      const res = await fetch(`${url}/results`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          checkId: "c1",
+          timestamp: NOW + offset,
+          status,
+          statusCode: status === "up" ? 200 : 500,
+          latencyMs,
+          reason: status === "up" ? null : `failed ${SECRET_URL} ${KEYWORD}`,
+          location: "eu",
+        }),
+      });
+      assert.equal(res.status, 204);
+    };
+    // Three downs open an incident; an up resolves it.
+    for (const offset of [0, 1, 2]) await send(offset, "down", 300);
+    await send(3, "up", 20);
+    const checks = (await (await fetch(`${url}/checks`)).json()) as ChecksResponse;
+    assert.equal(checks.length, 1);
+    await fetch(`${url}/checks/c1/results`);
+    await fetch(`${url}/nope/secret-id`);
+
+    const res = await fetch(`${url}/metrics`);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type") ?? "", /^text\/plain/);
+    const text = await res.text();
+    assert.match(text, /^pulse_up 1$/m);
+    assert.match(text, /^pulse_api_check_state\{check="c1",state="up"\} 1$/m);
+    assert.match(text, /^pulse_api_check_state\{check="c1",state="down"\} 0$/m);
+    assert.match(text, /^pulse_api_results_ingested_total\{location="eu"\} 4$/m);
+    assert.match(text, /^pulse_api_result_latency_seconds_bucket\{check="c1",le="0.05"\} 1$/m);
+    assert.match(text, /^pulse_api_result_latency_seconds_bucket\{check="c1",le="0.5"\} 4$/m);
+    assert.match(text, /^pulse_api_result_latency_seconds_bucket\{check="c1",le="\+Inf"\} 4$/m);
+    assert.match(text, /^pulse_api_result_latency_seconds_count\{check="c1"\} 4$/m);
+    assert.match(text, /^pulse_api_incidents_opened_total 1$/m);
+    assert.match(text, /^pulse_api_incidents_resolved_total 1$/m);
+    assert.match(text, /^pulse_api_http_requests_total\{route="\/results",code="204"\} 4$/m);
+    assert.match(text, /route="\/checks\/:id\/results",code="200"/);
+    assert.match(text, /route="unmatched",code="404"/);
+    for (const secret of [SECRET_URL, "hunter2", "internal.example", KEYWORD, TOKEN, "secret-id"]) {
+      assert.ok(!text.includes(secret), `metrics leak ${secret}`);
+    }
+  } finally {
+    await api.close();
+  }
+});

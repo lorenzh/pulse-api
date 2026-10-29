@@ -4,13 +4,14 @@ The API is configured by environment variables and two JSON files. It reads all 
 
 ## Environment variables
 
-| Variable               | Default         | Meaning                                                      |
-| ---------------------- | --------------- | ------------------------------------------------------------ |
-| `PORT`                 | `3000`          | HTTP port.                                                   |
-| `PULSE_DB`             | `./pulse.db`    | Path of the SQLite file. It is created if it does not exist. |
-| `PULSE_CHECKS_FILE`    | `./checks.json` | Path of the [checks file](#checksjson).                      |
-| `PULSE_TOKENS_FILE`    | `./tokens.json` | Path of the [tokens file](#tokensjson).                      |
-| `PULSE_RETENTION_DAYS` | `90`            | Days of raw results to keep. An integer of at least 90.      |
+| Variable               | Default         | Meaning                                                            |
+| ---------------------- | --------------- | ------------------------------------------------------------------ |
+| `PORT`                 | `3000`          | HTTP port. An integer from 0 to 65535.                             |
+| `PULSE_DB`             | `./pulse.db`    | Path of the SQLite file. It is created if it does not exist.       |
+| `PULSE_CHECKS_FILE`    | `./checks.json` | Path of the [checks file](#checksjson).                            |
+| `PULSE_TOKENS_FILE`    | `./tokens.json` | Path of the [tokens file](#tokensjson).                            |
+| `PULSE_RETENTION_DAYS` | `90`            | Days of raw results to keep. An integer of at least 90.            |
+| `PULSE_LOG_LEVEL`      | `info`          | `debug`, `info`, `warn` or `error`. Another value stops the start. |
 
 The Docker image sets `NODE_ENV=production` and `PULSE_DB=/data/pulse.db`.
 
@@ -23,9 +24,19 @@ PORT=3100 PULSE_DB=/var/lib/pulse/pulse.db PULSE_CHECKS_FILE=/etc/pulse/checks.j
   PULSE_TOKENS_FILE=/etc/pulse/tokens.json PULSE_RETENTION_DAYS=180 npm start
 ```
 
+## Exit codes
+
+| Code | Meaning                                                                                                                                                                               |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`  | Clean stop after `SIGINT` or `SIGTERM`.                                                                                                                                               |
+| `2`  | Configuration or startup error: a setting, the checks file, the tokens file, the database cannot be opened or the port is taken. One line `pulse-api: <message>` on stderr, no stack. |
+| `1`  | Unexpected failure. A JSON error log line with the stack.                                                                                                                             |
+
+Before this version the tokens file error exited with code 1, and other configuration errors printed a stack. Update scripts that test for code 1.
+
 ## checks.json
 
-The file is `{"checks": [...], "maintenance": [...]}`. `maintenance` is optional. The checks are validated and upserted into the database at start. Existing state and results are kept. An invalid or unreadable file stops the start with an `Error` that names the problem. Probes read the same checks from `GET /checks`.
+The file is `{"checks": [...], "maintenance": [...]}`. `maintenance` is optional. The checks are validated and upserted into the database at start. Existing state and results are kept. An invalid or unreadable file stops the start with one line `pulse-api: <path>: <message>` and exit code 2. A key that is not documented below is rejected, at the top level, in a check and in a `maintenance` window: `<path>: unknown key "keywrod" in checks[2]`. A `tls` check accepts only its own keys (`host`, `port`, `warnDays`, `intervalMs` and the common ones). Probes read the same checks from `GET /checks`.
 
 See `checks.example.json` for a complete example.
 
@@ -95,7 +106,7 @@ The file is `{"tokens": [{"location": "east", "token": "<secret>"}]}`. Keep it o
 | `location` | Non-empty string, at most 64 characters after trim.                                                                              |
 | `token`    | String of at least 16 characters, unique across the file. A value that starts with `replace-with-` is rejected as a placeholder. |
 
-A token must not contain whitespace, must not start with `replace-with-` and must not be one of the public example tokens. A location may have several tokens. Create a token with `openssl rand -hex 32`. If the file is missing, not valid JSON or invalid, the API prints `pulse-api: <message>` and exits with code 1. The messages never print token values, and the start log only counts tokens and locations. See [Locations and tokens](concepts.md#locations-and-tokens).
+A token must not contain whitespace, must not start with `replace-with-` and must not be one of the public example tokens. A location may have several tokens. Create a token with `openssl rand -hex 32`. If the file is missing, not valid JSON or invalid, the API prints `pulse-api: <message>` and exits with code 2. The messages never print token values, and the start log only counts tokens and locations. See [Locations and tokens](concepts.md#locations-and-tokens).
 
 ## Compose variables
 

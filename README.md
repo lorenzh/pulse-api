@@ -40,6 +40,10 @@ docker compose up -d --build
 
 Open http://localhost:8080. Stop with `docker compose down`. The demo profile (`docker compose --profile demo up demo-status`) shows every status page state; it needs no `.env`.
 
+## Health and metrics
+
+`GET /healthz` answers `200 ok` when the API is ready. `GET /metrics` serves Prometheus text with check ids only: keep it on a private network. Logs are JSON lines (`PULSE_LOG_LEVEL`). The API stops cleanly on `SIGINT` and `SIGTERM` (exit 0). A configuration error prints one line `pulse-api: <message>` and exits with 2. See [Operation](docs/operation.md).
+
 ## Documentation
 
 Start at [docs/index.md](docs/index.md):

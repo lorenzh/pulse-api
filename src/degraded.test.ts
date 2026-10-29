@@ -36,9 +36,8 @@ function res(t: number, status: CheckStatus, location = "default"): Result {
 }
 
 test("config: latencyObjectiveMs accepted, copied and validated", () => {
-  const [c] = parseChecks({ checks: [{ ...base, latencyObjectiveMs: 500, extra: 1 }] });
+  const [c] = parseChecks({ checks: [{ ...base, latencyObjectiveMs: 500 }] });
   assert.equal((c as HttpCheck).latencyObjectiveMs, 500);
-  assert.equal("extra" in c!, false);
   assert.equal("latencyObjectiveMs" in parseChecks({ checks: [base] })[0]!, false);
   for (const v of [0, -1, 1.5, "5", null]) {
     assert.throws(

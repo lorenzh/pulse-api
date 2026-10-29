@@ -39,13 +39,14 @@ Fix the JSON. The message does not quote the file, so that no token leaks.
 
 See [tokens.json](configuration.md#tokensjson).
 
-### `ConfigError: ...` and a stack trace (checks file)
+### `pulse-api: <path>: ...` (checks file)
 
-The checks file is invalid. The first line starts with `ConfigError:`. The message names the entry, for example `checks[0].url is not a valid URL` or `duplicate check id "example"`. Fix the file. Messages you may see:
+The checks file is invalid. The API prints one line `pulse-api: <path>: <message>` and exits with code 2. The message names the entry, for example `checks[0].url is not a valid URL` or `duplicate check id "example"`. Fix the file. Messages you may see:
 
 - `cannot read checks file <path>: ...`: wrong `PULSE_CHECKS_FILE`, or the file is not mounted.
 - `checks file <path> is not valid JSON: ...`
 - `config must be an object with a "checks" array`
+- `unknown key "<key>" in checks[<i>]` (also `maintenance[<i>]` and `the top level`): a key the API does not know, often a typo such as `keywrod`. Fix or remove it.
 - `checks[<i>].intervalMs must be a positive integer (milliseconds)`
 - `checks[<i>]: worst case <n> ms ((retries + 1) * timeoutMs + retries * retryDelayMs) exceeds intervalMs <n>`: lower `retries`, `retryDelayMs` or `timeoutMs`, or raise `intervalMs`.
 - `maintenance[<i>].checkId must reference a configured check`
@@ -54,13 +55,13 @@ The checks file is invalid. The first line starts with `ConfigError:`. The messa
 
 See [checks.json](configuration.md#checksjson).
 
-### `RetentionConfigError: PULSE_RETENTION_DAYS must be an integer >= 90, got "<value>"`
+### `pulse-api: PULSE_RETENTION_DAYS must be an integer >= 90, got "<value>"`
 
-Set `PULSE_RETENTION_DAYS` to an integer of at least 90, or unset it.
+The API exits with code 2. Set `PULSE_RETENTION_DAYS` to an integer of at least 90, or unset it.
 
-### `EADDRINUSE`
+### `pulse-api: cannot listen on port <n> (PORT): ...`
 
-Port 3000 (or `PORT`) is in use. Choose another `PORT`. With Compose, change `PULSE_API_PORT`.
+The API exits with code 2. Port 3000 (or `PORT`) is in use. Choose another `PORT`. With Compose, change `PULSE_API_PORT`.
 
 ## 400 on POST /results
 

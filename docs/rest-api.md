@@ -4,14 +4,16 @@ The API serves JSON over HTTP. The types come from [pulse-contract](https://gith
 
 ## Overview
 
-| Method | Path                  | Auth         | Response                                      |
-| ------ | --------------------- | ------------ | --------------------------------------------- |
-| `POST` | `/results`            | Bearer token | `204`, no body                                |
-| `GET`  | `/checks`             | none         | `ChecksResponse` (`CheckWithState[]`)         |
-| `GET`  | `/checks/:id/results` | none         | `ResultsResponse` (`Result[]`)                |
-| `GET`  | `/uptime`             | none         | `UptimeResponse` (`CheckUptime[]`)            |
-| `GET`  | `/incidents`          | none         | `IncidentsResponse` (`Incident[]`)            |
-| `GET`  | `/maintenance`        | none         | `MaintenanceResponse` (`MaintenanceWindow[]`) |
+| Method | Path                  | Auth         | Response                                       |
+| ------ | --------------------- | ------------ | ---------------------------------------------- |
+| `POST` | `/results`            | Bearer token | `204`, no body                                 |
+| `GET`  | `/checks`             | none         | `ChecksResponse` (`CheckWithState[]`)          |
+| `GET`  | `/checks/:id/results` | none         | `ResultsResponse` (`Result[]`)                 |
+| `GET`  | `/uptime`             | none         | `UptimeResponse` (`CheckUptime[]`)             |
+| `GET`  | `/incidents`          | none         | `IncidentsResponse` (`Incident[]`)             |
+| `GET`  | `/maintenance`        | none         | `MaintenanceResponse` (`MaintenanceWindow[]`)  |
+| `GET`  | `/healthz`            | none         | `200 ok` or `503` with a reason (`text/plain`) |
+| `GET`  | `/metrics`            | none         | Prometheus text                                |
 
 General rules:
 
@@ -183,3 +185,23 @@ curl 'http://localhost:3000/maintenance?checkId=example'
   }
 ]
 ```
+
+## GET /healthz
+
+Returns `200` with the body `ok` when the API is ready: the database is open and the checks are loaded. While the API shuts down it returns `503` with `shutting down`. It reads only an in-memory flag, so it is cheap and the Docker `HEALTHCHECK` uses it.
+
+## GET /metrics
+
+Prometheus text format, no authentication. Counters live in memory and reset at restart.
+
+| Series                               | Type      | Labels                                                                                  |
+| ------------------------------------ | --------- | --------------------------------------------------------------------------------------- |
+| `pulse_up`                           | gauge     | none. Always `1`.                                                                       |
+| `pulse_api_check_state`              | gauge     | `check`, `state`. `1` for the current state of each check, `0` for the others.          |
+| `pulse_api_results_ingested_total`   | counter   | `location`                                                                              |
+| `pulse_api_result_latency_seconds`   | histogram | `check`. The latency the probe reported. Buckets 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10 s. |
+| `pulse_api_incidents_opened_total`   | counter   | none                                                                                    |
+| `pulse_api_incidents_resolved_total` | counter   | none                                                                                    |
+| `pulse_api_http_requests_total`      | counter   | `route` (a pattern such as `/checks/:id/results`, or `unmatched`), `code`               |
+
+The labels hold check ids and locations only. Check URLs, hosts, keywords, reasons and tokens never appear. The check ids are still configuration, so do not publish `/metrics` on a public network: scrape it from the private network, as with the read routes above.
