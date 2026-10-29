@@ -111,6 +111,43 @@ has_incident() {
   api /incidents | jq -e --arg id "$1" '.[] | select((.id | tostring) == $id)'
 }
 
+hb_secret="e2e-throwaway-heartbeat-secret"
+
+hb_state_is() { # hb_state_is <state>
+  [[ "$(api /checks | jq -r '.[] | select(.id == "heartbeat-e2e") | .state')" == "$1" ]]
+}
+
+hb_has_open_incident() {
+  api /incidents | jq -e '[.[] | select(.checkId == "heartbeat-e2e" and .resolvedAt == null)] | length == 1'
+}
+
+hb_has_no_open_incident() {
+  api /incidents | jq -e '[.[] | select(.checkId == "heartbeat-e2e" and .resolvedAt == null)] | length == 0'
+}
+
+hb_open_incident_id() {
+  api /incidents | jq -re '[.[] | select(.checkId == "heartbeat-e2e" and .resolvedAt == null)] | first.id'
+}
+
+# Ping, then check at once: without pings the check goes down again after period + grace.
+hb_ping_resolves() {
+  curl -fsS --max-time 5 -o /dev/null -H "Authorization: Bearer ${hb_secret}" \
+    "http://127.0.0.1:${api_port}/heartbeat/heartbeat-e2e" &&
+    hb_state_is up && hb_has_no_open_incident
+}
+
+hb_metric_positive() { # hb_metric_positive <series>
+  api /metrics | awk -v s="$1" '$1 == s"{check=\"heartbeat-e2e\"}" && $2 > 0 { found = 1 } END { exit !found }'
+}
+
+hb_status() { # hb_status <curl args...>: print the HTTP status
+  curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$@"
+}
+
+hb_page_has_check() {
+  curl -fsS --max-time 5 "http://127.0.0.1:${status_port}/api/checks" | grep -qF 'Heartbeat e2e'
+}
+
 notify_has() {
   docker compose exec -T notify cat /data/incidents.jsonl | grep -qF -- "$1"
 }
@@ -207,6 +244,29 @@ wait_for "$T_FIRST_RESULT" "status-page has a state other than unknown" check_st
 
 step "Status page"
 wait_for "$T_PAGE" "GET / on port ${status_port} returns the page and /api/checks lists 'Status page'" page_has_title
+
+step "Heartbeat check"
+wait_for "$T_INCIDENT_OPEN" "heartbeat-e2e is down without a ping" hb_state_is down
+wait_for "$T_INCIDENT_OPEN" "heartbeat-e2e has one open incident" hb_has_open_incident
+wait_for "$T_INCIDENT_OPEN" "pulse_heartbeat_missed_total is above 0" hb_metric_positive pulse_heartbeat_missed_total
+[[ -z "$(api /metrics | awk '$1 == "pulse_heartbeat_pings_total{check=\"heartbeat-e2e\"}" && $2 > 0')" ]] ||
+  fail "pulse_heartbeat_pings_total is above 0 before a ping"
+echo "ok: pulse_heartbeat_pings_total is 0 before a ping"
+api /checks | grep -qF "$hb_secret" && fail "GET /checks shows the heartbeat secret"
+echo "ok: the secret is absent from GET /checks"
+wait_for "$T_PAGE" "the status page lists the heartbeat check" hb_page_has_check
+[[ "$(hb_status -H 'Authorization: Bearer wrong-secret-0123456789' "http://127.0.0.1:${api_port}/heartbeat/heartbeat-e2e")" == "401" ]] ||
+  fail "a wrong secret did not answer 401"
+[[ "$(hb_status "http://127.0.0.1:${api_port}/heartbeat/no-such-check/${hb_secret}")" == "401" ]] ||
+  fail "an unknown id did not answer 401"
+echo "ok: a wrong secret and an unknown id answer 401"
+hb_incident_id=$(hb_open_incident_id)
+wait_for "$T_NOTIFY" "notify ledger has ${hb_incident_id}:opened" notify_has "${hb_incident_id}:opened"
+wait_for "$T_INCIDENT_RESOLVE" "a ping with the header secret brings the check up and resolves the incident" hb_ping_resolves
+wait_for "$T_INCIDENT_OPEN" "pulse_heartbeat_pings_total is above 0" hb_metric_positive pulse_heartbeat_pings_total
+[[ "$(hb_status -X POST "http://127.0.0.1:${api_port}/heartbeat/heartbeat-e2e/${hb_secret}")" == "204" ]] ||
+  fail "a ping with the path secret did not answer 204"
+echo "ok: both ping forms answer 204"
 
 step "Incident"
 docker compose stop status

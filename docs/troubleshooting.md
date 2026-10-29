@@ -109,6 +109,14 @@ An incident opens at the third consecutive `down` evaluation. Check these points
 - With two or more locations in the window, at least two must be down. One failing location is not enough. See [Quorum and incidents](concepts.md#quorum-and-incidents).
 - `down` results inside a [maintenance window](concepts.md#maintenance-windows) do not count.
 
+## 401 on /heartbeat/:id
+
+The secret is wrong or missing, or the id is not in the checks file. The answer is the same for all three. Compare the id and `secret` in `checks.json`; the API reads the file at start only. A probe token is not a ping secret. A check that was removed from the file has no secret and also answers `401`.
+
+## A heartbeat check is down
+
+No ping arrived within `period + grace`. Run the job's `curl` by hand and look for `204`. The first wait counts from the start of the API, so a restart delays the first `down`. A heartbeat incident has the reason `no ping within <ms>ms`.
+
 ## A check stays `unknown`
 
 No probe has posted a result yet. Check that the probe runs, that it reaches the API, and that it logs no `401` or `403`. After you add a check, restart the API; the probe picks the check up at its next reload.

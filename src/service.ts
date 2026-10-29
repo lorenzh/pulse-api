@@ -11,7 +11,7 @@ import type {
   Result,
   UptimeDay,
 } from "@lorenzh/pulse-contract";
-import { applyResult, quorumStatus } from "./state.ts";
+import { applyResult, DOWNS_TO_OPEN, quorumStatus } from "./state.ts";
 
 export const DEFAULT_LOCATION = "default";
 export const MAX_LOCATION_LENGTH = 64;
@@ -23,12 +23,29 @@ export const UPTIME_DAYS = 90;
 
 export class UnknownCheckError extends Error {}
 
+/** The location of ping results and of the down result the evaluator writes. */
+export const HEARTBEAT_LOCATION = "heartbeat";
+
+/** What the heartbeat evaluator needs to judge one active heartbeat check. */
+export interface HeartbeatInfo {
+  id: string;
+  period: number;
+  grace: number;
+  /** The last ping (the evaluator's own down results do not move it). */
+  lastPingAt: number | null;
+  /** The stored state, without the maintenance override. */
+  state: CheckState;
+  isInMaintenance: boolean;
+}
+
 export interface Service {
   upsertChecks(checks: Check[]): void;
   ingest(result: Result): void;
   listChecks(): CheckWithState[];
   /** The id and displayed state of every active check, without results. */
   listCheckStates(): { id: string; state: CheckState }[];
+  /** Every active heartbeat check, for the evaluator. */
+  listHeartbeats(): HeartbeatInfo[];
   hasCheck(id: string): boolean;
   listResults(checkId: string, limit: number): Result[];
   listIncidents(status?: "open" | "resolved"): Incident[];
@@ -53,6 +70,8 @@ interface CheckRow {
   retries: number | null;
   retry_delay_ms: number | null;
   keyword: string | null;
+  period_ms: number | null;
+  grace_ms: number | null;
   state: CheckState;
   consecutive_down: number;
   last_result_at: number | null;
@@ -117,14 +136,15 @@ export function createService(
     "UPDATE checks SET last_result_at = ?, last_reason = ? WHERE id = ?",
   );
   const upsert = db.prepare(`
-    INSERT INTO checks (id, name, url, type, host, port, warn_days, interval_ms, timeout_ms, latency_objective_ms, retries, retry_delay_ms, keyword)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO checks (id, name, url, type, host, port, warn_days, interval_ms, timeout_ms, latency_objective_ms, retries, retry_delay_ms, keyword, period_ms, grace_ms)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET name = excluded.name, url = excluded.url, type = excluded.type,
       host = excluded.host, port = excluded.port, warn_days = excluded.warn_days,
       interval_ms = excluded.interval_ms, timeout_ms = excluded.timeout_ms,
       latency_objective_ms = excluded.latency_objective_ms,
       retries = excluded.retries, retry_delay_ms = excluded.retry_delay_ms,
-      keyword = excluded.keyword, active = 1`);
+      keyword = excluded.keyword, period_ms = excluded.period_ms, grace_ms = excluded.grace_ms,
+      active = 1`);
   const clearKeywords = db.prepare("UPDATE checks SET keyword = NULL WHERE keyword IS NOT NULL");
   const getCheck = db.prepare("SELECT * FROM checks WHERE id = ?");
   const getActiveCheck = db.prepare("SELECT * FROM checks WHERE id = ? AND active = 1");
@@ -214,6 +234,16 @@ export function createService(
       lastReason: r.last_reason,
       locations: [] as LocationResult[],
     };
+    if (r.type === "heartbeat") {
+      return {
+        id: r.id,
+        name: r.name,
+        type: "heartbeat",
+        period: r.period_ms ?? r.interval_ms,
+        grace: r.grace_ms ?? 0,
+        ...state,
+      };
+    }
     const c: CheckWithState =
       r.type === "tls"
         ? {
@@ -243,6 +273,25 @@ export function createService(
     return c;
   }
 
+  /** Combined status of the latest result per location in the window [T - 2*interval, T]. */
+  function quorumOf(
+    row: CheckRow,
+    result: Result,
+  ): { combined: CheckStatus; downReason: string | null } {
+    // Rows are newest first, so the first row per location is its latest.
+    const rows = windowResults.all(
+      result.checkId,
+      result.timestamp - WINDOW_INTERVALS * row.interval_ms,
+      result.timestamp,
+    ) as unknown as ResultRow[];
+    const latest = new Map<string, ResultRow>();
+    for (const r of rows) if (!latest.has(r.location)) latest.set(r.location, r);
+    return {
+      combined: quorumStatus([...latest.values()].map((r) => r.status)),
+      downReason: rows.find((r) => r.status === "down")?.reason ?? result.reason,
+    };
+  }
+
   function transaction(fn: () => void): void {
     db.exec("BEGIN");
     try {
@@ -262,6 +311,27 @@ export function createService(
         clearKeywords.run();
         deactivateAll.run();
         for (const c of checks) {
+          if (c.type === "heartbeat") {
+            // url and interval_ms are NOT NULL: the period stands in as the interval.
+            upsert.run(
+              c.id,
+              c.name,
+              "",
+              "heartbeat",
+              null,
+              null,
+              null,
+              c.period,
+              null,
+              null,
+              null,
+              null,
+              null,
+              c.period,
+              c.grace,
+            );
+            continue;
+          }
           const timeout = c.timeoutMs ?? null;
           if (c.type === "tls") {
             upsert.run(
@@ -274,6 +344,8 @@ export function createService(
               c.warnDays,
               c.intervalMs,
               timeout,
+              null,
+              null,
               null,
               null,
               null,
@@ -294,6 +366,8 @@ export function createService(
               c.retries ?? 0,
               c.retryDelayMs ?? 1000,
               c.keyword ?? null,
+              null,
+              null,
             );
           }
         }
@@ -318,7 +392,10 @@ export function createService(
         const newest = (
           newestStored.get(result.checkId, result.location) as { t: number | null } | undefined
         )?.t;
-        const isLate = newest !== null && newest !== undefined && result.timestamp < newest;
+        const isHeartbeat = row.type === "heartbeat";
+        // Heartbeat timestamps come from the api clock, so lateness does not apply.
+        const isLate =
+          !isHeartbeat && newest !== null && newest !== undefined && result.timestamp < newest;
         insertResult.run(
           result.checkId,
           result.timestamp,
@@ -337,26 +414,24 @@ export function createService(
           updateLast.run(result.timestamp, result.reason, result.checkId);
           return;
         }
-        // Window [T - 2*interval, T]; rows are newest first, so the first row per location is its latest.
-        const rows = windowResults.all(
-          result.checkId,
-          result.timestamp - WINDOW_INTERVALS * row.interval_ms,
-          result.timestamp,
-        ) as unknown as ResultRow[];
-        const latest = new Map<string, ResultRow>();
-        for (const r of rows) if (!latest.has(r.location)) latest.set(r.location, r);
-        const combined = quorumStatus([...latest.values()].map((r) => r.status));
-        const latestDown = rows.find((r) => r.status === "down");
+        const { combined, downReason } = isHeartbeat
+          ? { combined: result.status, downReason: result.reason }
+          : quorumOf(row, result);
+        // One source, no quorum: a single down heartbeat result opens the incident.
+        const consecutiveDown =
+          isHeartbeat && result.status === "down"
+            ? Math.max(row.consecutive_down, DOWNS_TO_OPEN - 1)
+            : row.consecutive_down;
         const { next, action } = applyResult(
           {
             state: row.state,
-            consecutiveDown: row.consecutive_down,
+            consecutiveDown,
             incidentOpen: hasOpen.get(result.checkId) !== undefined,
           },
           combined,
         );
         if (action === "open") {
-          openIncident.run(result.checkId, result.timestamp, latestDown?.reason ?? result.reason);
+          openIncident.run(result.checkId, result.timestamp, downReason);
           incidentEvent = "opened";
         }
         if (action === "resolve") {
@@ -365,10 +440,12 @@ export function createService(
           const opened = openedAtOf.get(result.checkId) as { opened_at: number } | undefined;
           resolveIncident.run(Math.max(result.timestamp, opened?.opened_at ?? 0), result.checkId);
         }
+        // For a heartbeat check lastResultAt is the last ping: the evaluator's down result keeps it.
+        const keepsPing = isHeartbeat && result.status === "down";
         updateState.run(
           next.state,
           next.consecutiveDown,
-          result.timestamp,
+          keepsPing ? row.last_result_at : result.timestamp,
           result.reason,
           result.checkId,
         );
@@ -402,6 +479,7 @@ export function createService(
       ).map((r) => {
         const c = toCheck(r);
         const tls = c.type === "tls";
+        const intervalMs = c.type === "heartbeat" ? c.period : c.intervalMs;
         const latest = (latestPerLocation.all(c.id) as unknown as ResultRow[]).map((l) =>
           toResult(l, tls),
         );
@@ -414,7 +492,7 @@ export function createService(
           (result): LocationResult => ({
             location: result.location,
             result,
-            stale: result.timestamp < newest - WINDOW_INTERVALS * c.intervalMs,
+            stale: result.timestamp < newest - WINDOW_INTERVALS * intervalMs,
           }),
         );
         const active = windows.find((w) => w.checkId === c.id && w.start <= t && t < w.end);
@@ -424,6 +502,22 @@ export function createService(
         }
         return c;
       });
+    },
+
+    listHeartbeats() {
+      const t = now();
+      return (
+        db
+          .prepare("SELECT * FROM checks WHERE active = 1 AND type = 'heartbeat' ORDER BY rowid")
+          .all() as unknown as CheckRow[]
+      ).map((r) => ({
+        id: r.id,
+        period: r.period_ms ?? r.interval_ms,
+        grace: r.grace_ms ?? 0,
+        lastPingAt: r.last_result_at,
+        state: r.state,
+        isInMaintenance: inWindow(r.id, t),
+      }));
     },
 
     listMaintenance(checkId) {

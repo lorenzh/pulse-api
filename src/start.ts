@@ -1,6 +1,7 @@
 import type { AddressInfo } from "node:net";
 import type { DatabaseSync } from "node:sqlite";
 import { ConfigError, loadConfig, loadTokens } from "./config.ts";
+import { createHeartbeatEvaluator, startHeartbeatEvaluator } from "./heartbeat.ts";
 import { createLogger, type LogLevel, LogLevelError, parseLogLevel } from "./log.ts";
 import { createMetrics } from "./metrics.ts";
 import { parseRetentionDays, RetentionConfigError, startRetention } from "./retention.ts";
@@ -85,7 +86,7 @@ async function run(deps: StartDeps, onDb: (db: DatabaseSync) => void): Promise<R
   const checksFile = env.PULSE_CHECKS_FILE ?? "./checks.json";
   const tokensFile = env.PULSE_TOKENS_FILE ?? "./tokens.json";
   const retentionDays = parseRetentionDays(env.PULSE_RETENTION_DAYS);
-  const { checks, maintenance } = loadConfig(checksFile);
+  const { checks, secrets, maintenance } = loadConfig(checksFile);
   const tokens = loadTokens(tokensFile);
 
   let db: DatabaseSync;
@@ -116,9 +117,17 @@ async function run(deps: StartDeps, onDb: (db: DatabaseSync) => void): Promise<R
     log: (line) => logger.info(line),
   });
 
+  const heartbeat = startHeartbeatEvaluator({
+    evaluator: createHeartbeatEvaluator({ service, metrics, now: deps.now }),
+    setTimeout: deps.setTimeout,
+    clearTimeout: deps.clearTimeout,
+    log: (line) => logger.warn(line),
+  });
+
   let isShuttingDown = false;
   const server = createApiServer(service, {
     tokens,
+    heartbeatSecrets: secrets,
     now: deps.now,
     metrics,
     notReadyReason: () => (isShuttingDown ? "shutting down" : undefined),
@@ -132,6 +141,7 @@ async function run(deps: StartDeps, onDb: (db: DatabaseSync) => void): Promise<R
     });
   } catch (err) {
     retention.stop();
+    heartbeat.stop();
     throw new StartupError(`cannot listen on port ${port} (PORT): ${errorText(err)}`, {
       cause: err,
     });
@@ -153,6 +163,7 @@ async function run(deps: StartDeps, onDb: (db: DatabaseSync) => void): Promise<R
   const shutdown = async (): Promise<void> => {
     isShuttingDown = true;
     retention.stop();
+    heartbeat.stop();
     const drained = new Promise<void>((resolve) => {
       server.close(() => resolve());
       server.closeIdleConnections();

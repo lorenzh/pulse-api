@@ -6,13 +6,17 @@ A check is in one state. The state comes from the results that probes send.
 
 | State         | Meaning                                                                                                  |
 | ------------- | -------------------------------------------------------------------------------------------------------- |
-| `unknown`     | The check has no results yet.                                                                            |
+| `unknown`     | The check has no results yet (a heartbeat check: no ping yet and `period + grace` has not passed).       |
 | `up`          | The check answers and is fast enough.                                                                    |
 | `degraded`    | The check answers (2xx), but slower than its `latencyObjectiveMs`.                                       |
 | `down`        | The check fails, a 2xx body lacks the `keyword`, or a TLS certificate has `warnDays` days or fewer left. |
 | `maintenance` | `now` is inside a [maintenance window](#maintenance-windows). Never stored.                              |
 
 A probe reports each result as `up`, `degraded` or `down`. The API computes the other states.
+
+## Heartbeat checks
+
+A heartbeat check has one source, the job that pings. There is no quorum and no late-result logic: a ping is an `up` result, stamped by the API clock. The API ticks every second. A check is overdue when more than `period + grace` passed since the later of its last ping and the time this API process first saw the check. The state is `unknown` until then. When it is overdue, the API stores one `down` result (`no ping within <period+grace>ms`) and opens an incident at once, not after three results. It stores no more results during the same outage. The next ping resolves the incident. Because the wait counts from the start of the process, the downtime of the API itself never opens an incident. In a maintenance window pings are stored but no `down` result is written. `lastResultAt` is the time of the last ping.
 
 ## Quorum and incidents
 
