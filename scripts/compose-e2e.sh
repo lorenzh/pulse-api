@@ -233,6 +233,10 @@ assert_volume notify-data
 docker compose up -d
 wait_for "$T_UP" "api answers after up" api /checks
 wait_for "$T_PAGE" "incident ${incident_id} is still listed" has_incident "$incident_id"
+# The probe starts only after the api is healthy; a SIGTERM before its handlers exist would be ignored.
+for service in api probe status notify; do
+  wait_for "$T_UP" "$service is healthy after up" is_healthy "$service"
+done
 
 step "Clean stop"
 # docker stop sends SIGTERM and kills after the timeout: exit 0 means the service stopped by itself.
