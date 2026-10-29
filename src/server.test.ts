@@ -98,7 +98,8 @@ test("server: GET /checks reflects state", async () => {
         ["c2", "unknown"],
       ],
     );
-    assert.equal(checks[1]?.timeoutMs, 200);
+    const second = checks[1];
+    assert.equal(second !== undefined && second.type !== "heartbeat" ? second.timeoutMs : -1, 200);
     await post(base, result("c1", 10, "down"));
     checks = (await (await fetch(`${base}/checks`)).json()) as ChecksResponse;
     assert.deepEqual(

@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import type { Check, MaintenanceWindow } from "@lorenzh/pulse-contract";
+import type { Check, HttpCheck, MaintenanceWindow, TlsCheck } from "@lorenzh/pulse-contract";
 import { type ProbeToken, parseTokens, TokensError } from "./tokens.ts";
 
 export class ConfigError extends Error {
@@ -33,6 +33,7 @@ const HTTP_CHECK_KEYS = [
   "latencyObjectiveMs",
 ];
 const TLS_CHECK_KEYS = [...COMMON_CHECK_KEYS, "host", "port", "warnDays", "intervalMs"];
+const HEARTBEAT_CHECK_KEYS = ["id", "name", "type", "period", "grace", "secret"];
 const MAINTENANCE_KEYS = ["checkId", "start", "end", "note"];
 
 /** Reject a key a typo or a stale option leaves behind: `unknown key "keywrod" in checks[2]`. */
@@ -48,7 +49,7 @@ const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_TLS_PORT = 443;
 const DEFAULT_WARN_DAYS = 14;
 
-function parseTls(raw: Record<string, unknown>, where: string, id: string, name: string): Check {
+function parseTls(raw: Record<string, unknown>, where: string, id: string, name: string): TlsCheck {
   const host = raw.host;
   if (
     !nonEmptyString(host) ||
@@ -74,14 +75,64 @@ function parseTls(raw: Record<string, unknown>, where: string, id: string, name:
   return { id, name, type: "tls", host, port, warnDays, intervalMs: raw.intervalMs };
 }
 
+const MIN_HEARTBEAT_PERIOD_MS = 1000;
+const MAX_HEARTBEAT_MS = 86_400_000;
+const MIN_SECRET_LENGTH = 16;
+const MAX_SECRET_LENGTH = 128;
+const SECRET_PATTERN = /^[A-Za-z0-9._~-]+$/;
+
+/** Messages never contain the secret value. */
+function parseHeartbeat(
+  raw: Record<string, unknown>,
+  where: string,
+  id: string,
+  name: string,
+): { check: Check; secret: string } {
+  if (!intIn(raw.period, MIN_HEARTBEAT_PERIOD_MS, MAX_HEARTBEAT_MS)) {
+    throw new ConfigError(
+      `${where}.period must be an integer from ${MIN_HEARTBEAT_PERIOD_MS} to ${MAX_HEARTBEAT_MS} (milliseconds)`,
+    );
+  }
+  const grace = raw.grace ?? 0;
+  if (!intIn(grace, 0, MAX_HEARTBEAT_MS)) {
+    throw new ConfigError(
+      `${where}.grace must be an integer from 0 to ${MAX_HEARTBEAT_MS} (milliseconds)`,
+    );
+  }
+  const secret = raw.secret;
+  if (
+    typeof secret !== "string" ||
+    secret.length < MIN_SECRET_LENGTH ||
+    secret.length > MAX_SECRET_LENGTH ||
+    !SECRET_PATTERN.test(secret)
+  ) {
+    throw new ConfigError(
+      `${where}.secret is required: ${MIN_SECRET_LENGTH} to ${MAX_SECRET_LENGTH} characters from A-Z a-z 0-9 . _ ~ -`,
+    );
+  }
+  return { check: { id, name, type: "heartbeat", period: raw.period, grace }, secret };
+}
+
+export interface ParsedChecks {
+  checks: Check[];
+  /** Ping secret per heartbeat check id. Kept apart from the checks: it is never served. */
+  secrets: Map<string, string>;
+}
+
 /** Validate a parsed checks file; throws ConfigError. */
 export function parseChecks(data: unknown): Check[] {
+  return parseChecksWithSecrets(data).checks;
+}
+
+/** Validate a parsed checks file and return the heartbeat secrets with it; throws ConfigError. */
+export function parseChecksWithSecrets(data: unknown): ParsedChecks {
   if (!isRecord(data) || !Array.isArray(data.checks)) {
     throw new ConfigError('config must be an object with a "checks" array');
   }
   rejectUnknownKeys(data, TOP_KEYS, "the top level");
   const seen = new Set<string>();
   const checks: Check[] = [];
+  const secrets = new Map<string, string>();
   // eslint-disable-next-line sonarjs/cognitive-complexity -- splitting this validator/handler would be a behaviour-risking refactor
   data.checks.forEach((raw: unknown, i: number) => {
     const where = `checks[${i}]`;
@@ -93,11 +144,20 @@ export function parseChecks(data: unknown): Check[] {
     }
     const { id, name } = raw as { id: string; name: string };
     const type = raw.type ?? "http";
-    if (type !== "http" && type !== "tls") {
-      throw new ConfigError(`${where}.type must be "http" or "tls"`);
+    if (type !== "http" && type !== "tls" && type !== "heartbeat") {
+      throw new ConfigError(`${where}.type must be "http", "tls" or "heartbeat"`);
+    }
+    if (type === "heartbeat") {
+      rejectUnknownKeys(raw, HEARTBEAT_CHECK_KEYS, where);
+      const parsed = parseHeartbeat(raw, where, id, name);
+      if (seen.has(id)) throw new ConfigError(`duplicate check id "${id}"`);
+      seen.add(id);
+      secrets.set(id, parsed.secret);
+      checks.push(parsed.check);
+      return;
     }
     rejectUnknownKeys(raw, type === "tls" ? TLS_CHECK_KEYS : HTTP_CHECK_KEYS, where);
-    let check: Check;
+    let check: HttpCheck | TlsCheck;
     if (type === "tls") {
       check = parseTls(raw, where, id, name);
     } else {
@@ -165,7 +225,7 @@ export function parseChecks(data: unknown): Check[] {
     if (raw.timeoutMs !== undefined) check.timeoutMs = raw.timeoutMs as number;
     checks.push(check);
   });
-  return checks;
+  return { checks, secrets };
 }
 
 const ISO_WITH_OFFSET = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
@@ -183,14 +243,16 @@ function parseInstant(v: unknown, where: string): number {
 
 export interface Config {
   checks: Check[];
+  /** Ping secret per heartbeat check id. */
+  secrets: Map<string, string>;
   maintenance: MaintenanceWindow[];
 }
 
 /** Validate a parsed config (checks plus optional maintenance windows); throws ConfigError. */
 export function parseConfig(data: unknown): Config {
-  const checks = parseChecks(data);
+  const { checks, secrets } = parseChecksWithSecrets(data);
   const raw = (data as Record<string, unknown>).maintenance;
-  if (raw === undefined) return { checks, maintenance: [] };
+  if (raw === undefined) return { checks, secrets, maintenance: [] };
   if (!Array.isArray(raw)) throw new ConfigError('"maintenance" must be an array');
   const ids = new Set(checks.map((c) => c.id));
   const maintenance = raw.map((w: unknown, i: number): MaintenanceWindow => {
@@ -208,7 +270,7 @@ export function parseConfig(data: unknown): Config {
     }
     return { checkId: w.checkId, start, end, note: w.note };
   });
-  return { checks, maintenance };
+  return { checks, secrets, maintenance };
 }
 
 function readJson(path: string): unknown {

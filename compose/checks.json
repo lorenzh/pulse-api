@@ -6,6 +6,14 @@
       "url": "http://status:8080/",
       "intervalMs": 10000,
       "timeoutMs": 2000
+    },
+    {
+      "id": "heartbeat-e2e",
+      "name": "Heartbeat e2e",
+      "type": "heartbeat",
+      "period": 2000,
+      "grace": 1000,
+      "secret": "e2e-throwaway-heartbeat-secret"
     }
   ]
 }

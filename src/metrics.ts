@@ -15,6 +15,11 @@ export interface Metrics {
   recordResult(checkId: string, location: string, latencyMs: number): void;
   recordIncident(event: "opened" | "resolved"): void;
   recordRequest(route: string, code: number): void;
+  /** Start both heartbeat counters of a check at 0, so they show before the first event. */
+  trackHeartbeat(checkId: string): void;
+  recordHeartbeatPing(checkId: string): void;
+  /** Add `count` missed periods to a check. */
+  recordHeartbeatMissed(checkId: string, count: number): void;
   /** Prometheus text exposition. Only check ids, locations, states and route patterns appear. */
   render(states: readonly { id: string; state: CheckState }[]): string;
 }
@@ -39,6 +44,8 @@ export function createMetrics(): Metrics {
   const ingested = new Map<string, number>();
   const histograms = new Map<string, Histogram>();
   const requests = new Map<string, number>();
+  const heartbeatPings = new Map<string, number>();
+  const heartbeatMissed = new Map<string, number>();
   const incidents = { opened: 0, resolved: 0 };
 
   return {
@@ -64,6 +71,19 @@ export function createMetrics(): Metrics {
 
     recordRequest(route, code) {
       bump(requests, JSON.stringify([route, code]));
+    },
+
+    trackHeartbeat(checkId) {
+      heartbeatPings.set(checkId, heartbeatPings.get(checkId) ?? 0);
+      heartbeatMissed.set(checkId, heartbeatMissed.get(checkId) ?? 0);
+    },
+
+    recordHeartbeatPing(checkId) {
+      bump(heartbeatPings, checkId);
+    },
+
+    recordHeartbeatMissed(checkId, count) {
+      heartbeatMissed.set(checkId, (heartbeatMissed.get(checkId) ?? 0) + count);
     },
 
     render(states) {
@@ -110,6 +130,14 @@ export function createMetrics(): Metrics {
       for (const [key, n] of requests) {
         const [route, code] = JSON.parse(key) as [string, number];
         out.push(`pulse_api_http_requests_total${labels({ route, code })} ${n}`);
+      }
+      out.push("# TYPE pulse_heartbeat_pings_total counter");
+      for (const [check, n] of heartbeatPings) {
+        out.push(`pulse_heartbeat_pings_total${labels({ check })} ${n}`);
+      }
+      out.push("# TYPE pulse_heartbeat_missed_total counter");
+      for (const [check, n] of heartbeatMissed) {
+        out.push(`pulse_heartbeat_missed_total${labels({ check })} ${n}`);
       }
       return `${out.join("\n")}\n`;
     },

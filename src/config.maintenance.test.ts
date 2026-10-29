@@ -16,6 +16,7 @@ const win = {
 test("config: missing maintenance key means no windows", () => {
   assert.deepEqual(parseConfig({ checks: [check] }), {
     checks: [{ ...check, retries: 0, retryDelayMs: 1000 }],
+    secrets: new Map(),
     maintenance: [],
   });
 });

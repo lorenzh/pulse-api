@@ -75,6 +75,27 @@ Edit `checks.json` and restart the API. The probes follow within their reload in
 
 An inactive check is left out of `GET /checks` and `GET /uptime`, and `POST /results` for it answers `404 unknown check`. Its results and incidents stay readable. At the restart, an open incident of a removed check is resolved (`resolvedAt` is the startup time, one log line per incident) and the check state is reset, so `notify` may send a "resolved" notification. If you add the check again, it becomes active with its history.
 
+## Heartbeat checks
+
+Configure a [heartbeat check](configuration.md#heartbeat-checks) and let the job ping it. Add the probe change first: a probe that does not know the type would run it as HTTP. Example for cron, every 5 minutes (use `period` 300000):
+
+```cron
+*/5 * * * * curl -fsS -m 10 --retry 3 -H "Authorization: Bearer $PULSE_HB_SECRET" https://pulse.example.com/heartbeat/nightly-backup >/dev/null
+```
+
+Path form, for a plain `curl` where a header is awkward:
+
+```sh
+curl -fsS -m 10 --retry 3 https://pulse.example.com/heartbeat/nightly-backup/<secret>
+```
+
+Secret handling:
+
+- Prefer the header form. The path form puts the secret in the URL, and reverse proxies, cron mail and shell history can log a URL. Redact `/heartbeat/*/` in proxy access logs.
+- The API has no access log and never logs the path of a request. Its metrics label the route `/heartbeat/:id`.
+- Use `curl -fsS` without `-v`.
+- To rotate a secret, edit `checks.json` and restart the API. The last ping is kept in the database. The secret is not stored there.
+
 ## Logs
 
 The API writes JSON lines: `{"time":"<ISO 8601>","level":"info","msg":"...", ...fields}`. `info` and `debug` go to stdout, `warn` and `error` to stderr. `PULSE_LOG_LEVEL` (`debug`, `info`, `warn`, `error`; default `info`) sets the lowest level that is written. There is no log file.

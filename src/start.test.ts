@@ -267,3 +267,52 @@ test("metrics: series appear, and no url, keyword or token", async () => {
     await api.close();
   }
 });
+
+test("heartbeat e2e: the started api goes down without a ping and a ping resolves it", async () => {
+  const file = join(dir, "hb-checks.json");
+  const secret = "hb-secret-0123456789abcdef";
+  writeFileSync(
+    file,
+    JSON.stringify({
+      checks: [{ id: "job", name: "Job", type: "heartbeat", period: 2000, grace: 1000, secret }],
+    }),
+  );
+  let now = NOW;
+  const timers: (() => void)[] = [];
+  const { base, lines } = deps(
+    { PULSE_CHECKS_FILE: file, PULSE_DB: join(dir, "hb.db") },
+    {
+      now: () => now,
+      setTimeout: (fn) => {
+        timers.push(fn);
+        return timers.length;
+      },
+    },
+  );
+  const api = await startApi(base);
+  try {
+    const url = `http://127.0.0.1:${api.port}`;
+    const checks = async (): Promise<ChecksResponse> =>
+      (await (await fetch(`${url}/checks`)).json()) as ChecksResponse;
+    // The first tick starts the wait; the second comes after period + grace.
+    for (const fn of timers.splice(0)) fn();
+    now += 3001;
+    for (const fn of timers.splice(0)) fn();
+    assert.equal((await checks())[0]?.state, "down");
+    const open = await (await fetch(`${url}/incidents?status=open`)).json();
+    assert.equal((open as unknown[]).length, 1);
+    const ping = await fetch(`${url}/heartbeat/job`, {
+      headers: { authorization: `Bearer ${secret}` },
+    });
+    assert.equal(ping.status, 204);
+    assert.equal((await checks())[0]?.state, "up");
+    const resolved = await (await fetch(`${url}/incidents?status=open`)).json();
+    assert.equal((resolved as unknown[]).length, 0);
+    assert.equal(
+      lines.some((l) => l.line.includes(secret)),
+      false,
+    );
+  } finally {
+    await api.close();
+  }
+});

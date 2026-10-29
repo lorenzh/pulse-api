@@ -186,6 +186,21 @@ curl 'http://localhost:3000/maintenance?checkId=example'
 ]
 ```
 
+## GET|POST /heartbeat/:id[/:secret]
+
+Ping of a [heartbeat check](configuration.md#heartbeat-checks). Authenticate with the check's `secret`, either as `Authorization: Bearer <secret>` (preferred) or in the path as `/heartbeat/<id>/<secret>`. There is no query-string form. The `id` is URL-decoded as in `/checks/:id/results`.
+
+| Status | Meaning                                                                                         |
+| ------ | ----------------------------------------------------------------------------------------------- |
+| `204`  | Ping accepted, no body. For an inactive check the answer is `204` too, but nothing is recorded. |
+| `401`  | Wrong or missing secret, or unknown id. All three answer alike (see below).                     |
+| `405`  | Any method other than `GET` and `POST`.                                                         |
+| `413`  | The request body is over 1 KB. A body is read and ignored.                                      |
+
+The `401` body is always `{"error":"unauthorized"}` with `www-authenticate: Bearer`, so the existence of an id is not revealed.
+
+A ping stores an `up` result with `location` `heartbeat`, `statusCode` null, `latencyMs` 0 and the API clock as `timestamp`. `lastResultAt` of the check is the time of the last ping. The path form puts the secret in the URL; see [Heartbeat checks](operation.md#heartbeat-checks).
+
 ## GET /healthz
 
 Returns `200` with the body `ok` when the API is ready: the database is open and the checks are loaded. While the API shuts down it returns `503` with `shutting down`. It reads only an in-memory flag, so it is cheap and the Docker `HEALTHCHECK` uses it.
@@ -194,14 +209,16 @@ Returns `200` with the body `ok` when the API is ready: the database is open and
 
 Prometheus text format, no authentication. Counters live in memory and reset at restart.
 
-| Series                               | Type      | Labels                                                                                  |
-| ------------------------------------ | --------- | --------------------------------------------------------------------------------------- |
-| `pulse_up`                           | gauge     | none. Always `1`.                                                                       |
-| `pulse_api_check_state`              | gauge     | `check`, `state`. `1` for the current state of each check, `0` for the others.          |
-| `pulse_api_results_ingested_total`   | counter   | `location`                                                                              |
-| `pulse_api_result_latency_seconds`   | histogram | `check`. The latency the probe reported. Buckets 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10 s. |
-| `pulse_api_incidents_opened_total`   | counter   | none                                                                                    |
-| `pulse_api_incidents_resolved_total` | counter   | none                                                                                    |
-| `pulse_api_http_requests_total`      | counter   | `route` (a pattern such as `/checks/:id/results`, or `unmatched`), `code`               |
+| Series                               | Type      | Labels                                                                                      |
+| ------------------------------------ | --------- | ------------------------------------------------------------------------------------------- |
+| `pulse_up`                           | gauge     | none. Always `1`.                                                                           |
+| `pulse_api_check_state`              | gauge     | `check`, `state`. `1` for the current state of each check, `0` for the others.              |
+| `pulse_api_results_ingested_total`   | counter   | `location`                                                                                  |
+| `pulse_api_result_latency_seconds`   | histogram | `check`. The latency the probe reported. Buckets 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10 s.     |
+| `pulse_api_incidents_opened_total`   | counter   | none                                                                                        |
+| `pulse_api_incidents_resolved_total` | counter   | none                                                                                        |
+| `pulse_api_http_requests_total`      | counter   | `route` (a pattern such as `/checks/:id/results`, `/heartbeat/:id`, or `unmatched`), `code` |
+| `pulse_heartbeat_pings_total`        | counter   | `check`. Accepted pings. Failed pings are only in the request counter, with code 401.       |
+| `pulse_heartbeat_missed_total`       | counter   | `check`. One per `period` elapsed after the deadline `period + grace`.                      |
 
 The labels hold check ids and locations only. Check URLs, hosts, keywords, reasons and tokens never appear. The check ids are still configuration, so do not publish `/metrics` on a public network: scrape it from the private network, as with the read routes above.

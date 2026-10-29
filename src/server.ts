@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import {
   type ErrorResponse,
@@ -9,6 +10,7 @@ import {
 import { createMetrics, type Metrics } from "./metrics.ts";
 import {
   DEFAULT_LOCATION,
+  HEARTBEAT_LOCATION,
   MAX_LOCATION_LENGTH,
   type Service,
   UnknownCheckError,
@@ -16,6 +18,7 @@ import {
 import { authenticate, type ProbeToken } from "./tokens.ts";
 
 const MAX_BODY = 1_000_000;
+const MAX_PING_BODY = 1024;
 export const MAX_FUTURE_SKEW_MS = 60_000;
 export const MAX_RESULT_AGE_MS = 7 * 86_400_000;
 export const MAX_REASON_LENGTH = 1000;
@@ -66,12 +69,12 @@ function sendError(
   sendJson(res, status, body, headers);
 }
 
-async function readBody(req: IncomingMessage): Promise<string> {
+async function readBody(req: IncomingMessage, maxBytes = MAX_BODY): Promise<string> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     size += (chunk as Buffer).length;
-    if (size > MAX_BODY) throw new HttpError(413, "request body too large");
+    if (size > maxBytes) throw new HttpError(413, "request body too large");
     chunks.push(chunk as Buffer);
   }
   return Buffer.concat(chunks).toString("utf8");
@@ -162,6 +165,7 @@ export function validateResult(body: unknown, now: number): Result | string {
 }
 
 const RESULTS_PATH = /^\/checks\/([^/]+)\/results$/;
+const HEARTBEAT_PATH = /^\/heartbeat\/([^/]+)(?:\/([^/]+))?$/;
 const ROUTES = [
   "/results",
   "/checks",
@@ -182,6 +186,7 @@ function routeOf(rawUrl: string | undefined): string {
     return "unmatched";
   }
   if (RESULTS_PATH.test(path)) return "/checks/:id/results";
+  if (HEARTBEAT_PATH.test(path)) return "/heartbeat/:id";
   return ROUTES.find((r) => r === path) ?? "unmatched";
 }
 
@@ -193,7 +198,76 @@ function sendText(res: ServerResponse, status: number, text: string, type = "tex
   res.end(text);
 }
 
-type Ops = { service: Service; metrics: Metrics; notReadyReason: () => string | undefined };
+type Ops = {
+  service: Service;
+  metrics: Metrics;
+  notReadyReason: () => string | undefined;
+  heartbeatSecrets: ReadonlyMap<string, string>;
+};
+
+function digest(text: string): Buffer {
+  return createHash("sha256").update(text).digest();
+}
+
+/** The secret from the path form, else from the Bearer header; undefined when neither is sent. */
+function pingSecret(
+  pathSecret: string | undefined,
+  authorization: string | undefined,
+): string | undefined {
+  if (pathSecret !== undefined) return pathSecret;
+  const match = /^Bearer (.+)$/i.exec(authorization ?? "");
+  return match?.[1];
+}
+
+/**
+ * Handle `/heartbeat/<id>[/<secret>]`. An unknown id and a wrong secret answer alike, so the
+ * existence of an id is not revealed. The path and the secret are never logged or echoed.
+ */
+async function servePing(
+  ops: Ops,
+  now: () => number,
+  req: IncomingMessage,
+  res: ServerResponse,
+  match: RegExpExecArray,
+): Promise<void> {
+  const method = req.method ?? "GET";
+  if (method !== "GET" && method !== "POST") throw new HttpError(405, "method not allowed");
+  let id: string | undefined;
+  try {
+    id = decodeURIComponent(match[1] ?? "");
+  } catch {
+    // A malformed escape cannot name a check: it answers like an unknown id.
+    id = undefined;
+  }
+  const expected = id === undefined ? undefined : ops.heartbeatSecrets.get(id);
+  const given = pingSecret(match[2], req.headers.authorization);
+  // Digests of equal length keep the comparison constant-time; a missing side compares as empty.
+  const isValid =
+    timingSafeEqual(digest(expected ?? ""), digest(given ?? "")) &&
+    expected !== undefined &&
+    given !== undefined;
+  if (!isValid || id === undefined) {
+    throw new HttpError(401, "unauthorized", { "www-authenticate": "Bearer" });
+  }
+  await readBody(req, MAX_PING_BODY);
+  try {
+    ops.service.ingest({
+      checkId: id,
+      timestamp: now(),
+      status: "up",
+      statusCode: null,
+      latencyMs: 0,
+      reason: null,
+      location: HEARTBEAT_LOCATION,
+      attempts: 1,
+    });
+    ops.metrics.recordHeartbeatPing(id);
+  } catch (err) {
+    // An inactive check records nothing, but the job keeps working.
+    if (!(err instanceof UnknownCheckError)) throw err;
+  }
+  res.writeHead(204).end();
+}
 
 /** Serve `/healthz` and `/metrics`. Returns false for any other path. Neither needs auth. */
 function serveOps(ops: Ops, path: string, method: string, res: ServerResponse): boolean {
@@ -227,6 +301,8 @@ async function handle(
   const path = url.pathname;
   const method = req.method ?? "GET";
   if (serveOps(ops, path, method, res)) return;
+  const ping = HEARTBEAT_PATH.exec(path);
+  if (ping) return servePing(ops, now, req, res, ping);
   const known =
     path === "/results" ||
     path === "/checks" ||
@@ -325,6 +401,8 @@ export type ApiServerOptions = {
   notReadyReason?: () => string | undefined;
   /** Receives unexpected request failures. */
   logError?: (message: string, err: unknown) => void;
+  /** Ping secret per heartbeat check id. Without it every ping is refused. */
+  heartbeatSecrets?: ReadonlyMap<string, string>;
 };
 
 export function createApiServer(service: Service, options: ApiServerOptions): Server {
@@ -333,6 +411,7 @@ export function createApiServer(service: Service, options: ApiServerOptions): Se
     service,
     metrics: options.metrics ?? createMetrics(),
     notReadyReason: options.notReadyReason ?? (() => undefined),
+    heartbeatSecrets: options.heartbeatSecrets ?? new Map(),
   };
   const logError = options.logError ?? ((_message, err) => console.error(err));
   return createServer((req, res) => {

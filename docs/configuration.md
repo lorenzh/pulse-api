@@ -83,6 +83,18 @@ A TLS check (`"type": "tls"`) watches the expiry of the leaf certificate of a se
 
 Only the expiry of the leaf certificate is judged. The chain and the host name are not verified. Results carry `certDaysLeft`. `GET /checks` shows the latest value and `GET /checks/:id/results` includes it. A TLS check ignores `retries`, `retryDelayMs` and `latencyObjectiveMs`.
 
+### Heartbeat checks
+
+A heartbeat check (`"type": "heartbeat"`) is for cron jobs and workers. The job pings the API; the check is `down` when no ping arrives within `period + grace`. The probe never runs it. It takes no `url`, `host`, `intervalMs`, `timeoutMs` or `keyword`.
+
+| Field    | Required | Meaning                                                                                                 |
+| -------- | -------- | ------------------------------------------------------------------------------------------------------- |
+| `period` | yes      | Expected time between pings in ms, integer 1000 to 86400000.                                            |
+| `grace`  | no       | Extra wait in ms before the check is down, integer 0 to 86400000, default 0.                            |
+| `secret` | yes      | 16 to 128 characters from `A-Z a-z 0-9 . _ ~ -`. The credential of the ping. Allowed on this type only. |
+
+The secret is kept in memory only. `GET /checks`, `/metrics`, incident reasons and error messages never contain it. It is not a probe token: a probe token cannot ping, and the secret cannot post to `/results`. See [Heartbeat checks](operation.md#heartbeat-checks) for use and [GET|POST /heartbeat/:id](rest-api.md#getpost-heartbeatidsecret) for the endpoint.
+
 ### maintenance
 
 `maintenance` is an array of windows. A missing key means no windows.
