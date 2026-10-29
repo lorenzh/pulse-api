@@ -114,6 +114,7 @@ export function createService(
       latency_objective_ms = excluded.latency_objective_ms,
       retries = excluded.retries, retry_delay_ms = excluded.retry_delay_ms,
       keyword = excluded.keyword`);
+  const clearKeywords = db.prepare("UPDATE checks SET keyword = NULL WHERE keyword IS NOT NULL");
   const getCheck = db.prepare("SELECT * FROM checks WHERE id = ?");
   const insertResult = db.prepare(
     `INSERT INTO results (check_id, timestamp, status, status_code, latency_ms, reason, location, cert_days_left, attempts)
@@ -225,6 +226,8 @@ export function createService(
   return {
     upsertChecks(checks) {
       transaction(() => {
+        // Clear first, then upsert: checks removed from the file lose their keyword without a long NOT IN list.
+        clearKeywords.run();
         for (const c of checks) {
           const timeout = c.timeoutMs ?? null;
           if (c.type === "tls") {

@@ -97,3 +97,37 @@ test("server: GET /checks serves the keyword only for checks that have one", asy
     await new Promise<void>((r) => server.close(() => r()));
   }
 });
+
+test("service: keyword of a check removed from the file is cleared, results stay", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "pulse-keyword-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "k.db");
+  const kept: Check = { ...base, id: "kept", keyword: "stay" };
+  const removed: Check = { ...base, id: "gone", keyword: "bye" };
+  const s1 = createService(openDb(path));
+  s1.upsertChecks([kept, removed]);
+  s1.ingest({
+    checkId: "gone",
+    timestamp: 1,
+    status: "up",
+    statusCode: 200,
+    latencyMs: 5,
+    location: "default",
+    reason: null,
+    attempts: 1,
+  });
+  const s2 = createService(openDb(path));
+  s2.upsertChecks([kept]);
+  const list = s2.listChecks();
+  assert.equal((list.find((c) => c.id === "kept") as HttpCheck).keyword, "stay");
+  const gone = list.find((c) => c.id === "gone");
+  assert.ok(gone);
+  assert.equal("keyword" in gone, false);
+  assert.equal(s2.listResults("gone", 10).length, 1);
+  s2.upsertChecks([]);
+  assert.equal(
+    s2.listChecks().some((c) => "keyword" in c),
+    false,
+  );
+  assert.equal(s2.listChecks().length, 2);
+});
