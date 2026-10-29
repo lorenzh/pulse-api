@@ -141,7 +141,7 @@ test("scheduler: runs at startup and hourly, errors do not stop it", async () =>
 
 test("GET /uptime is identical before and after cleanup", async (t) => {
   const { service } = setup();
-  const server = createApiServer(service);
+  const server = createApiServer(service, { tokens: [] });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => server.close());
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/uptime`;
