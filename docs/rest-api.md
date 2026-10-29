@@ -46,7 +46,7 @@ The checks run in this order:
 2. `401` `{"error":"unauthorized"}` with header `WWW-Authenticate: Bearer` for a missing, malformed or unknown token.
 3. `413` if the body is too large.
 4. `400` `body is not valid JSON`.
-5. `400` with the first failing field message, for example `status must be "up", "degraded" or "down"`. The messages are listed in [Troubleshooting](troubleshooting.md#400-on-post-results).
+5. `400` with the first failing field message. The body is first checked by the contract validator `validatePostResultRequest`, whose messages name the path, for example `result.status: must be one of "up", "degraded", "down"`. Then the api checks run: timestamp window, `latencyMs`, `reason` length, `attempts` and `location`. The messages are listed in [Troubleshooting](troubleshooting.md#400-on-post-results).
 6. `403` `location does not match token` if the body has a `location` that differs from the token's location (after trim).
 7. `404` `unknown check "<id>"` (also for a check removed from the checks file).
 8. `204` and the result is stored. The stored location is always the token's.
@@ -55,7 +55,7 @@ Every message names the field, for example `timestamp is more than 60000 ms in t
 
 A result older than the newest stored result of the same check and location is a late result. It is stored and listed in the results history, but it does not change the state, the counter, the incidents or `lastResultAt` (see [Late results](concepts.md#late-results)). Rows stored earlier with a future timestamp are not cleaned up; an operator can delete them from the `results` table.
 
-Every response carries the headers `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` and `Referrer-Policy: no-referrer`. The result triggers one evaluation (see [Quorum and incidents](concepts.md#quorum-and-incidents)).
+Every response carries the headers `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` `Referrer-Policy: no-referrer` and `x-pulse-contract: <WIRE_VERSION>` (the wire-format version of the contract, `1` today). The result triggers one evaluation (see [Quorum and incidents](concepts.md#quorum-and-incidents)).
 
 Example (`PULSE_PROBE_TOKEN` holds the token of the `tokens.json` entry `east`, and `checks.json` has a check `example`):
 

@@ -1,5 +1,11 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import type { ErrorResponse, Result } from "@lorenzh/pulse-contract";
+import {
+  type ErrorResponse,
+  type Result,
+  validatePostResultRequest,
+  WIRE_VERSION,
+  WIRE_VERSION_HEADER,
+} from "@lorenzh/pulse-contract";
 import {
   DEFAULT_LOCATION,
   MAX_LOCATION_LENGTH,
@@ -21,6 +27,7 @@ const SECURITY_HEADERS: Record<string, string> = {
   "x-content-type-options": "nosniff",
   "content-security-policy": "default-src 'none'; frame-ancestors 'none'",
   "referrer-policy": "no-referrer",
+  [WIRE_VERSION_HEADER]: String(WIRE_VERSION),
 };
 
 class HttpError extends Error {
@@ -117,6 +124,8 @@ function parseLocation(v: unknown): string {
 
 /** Validate a POST /results body against the clock `now` (epoch ms); returns an error message or the Result. */
 export function validateResult(body: unknown, now: number): Result | string {
+  const shape = validatePostResultRequest(body);
+  if (!shape.ok) return shape.error;
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
     return "body must be a JSON object";
   }

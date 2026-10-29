@@ -19,12 +19,12 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.3",
+    "@lorenzh/pulse-config": "github:lorenzh/pulse-config#a3432e0451bb24397e77e48a5ee2e9d46913bd05",
     "@types/node": "^26.6.5",
     "lefthook": "2.2.2",
-    "typescript": "^7.0.2",
-    "@lorenzh/pulse-config": "github:lorenzh/pulse-config#a3432e0451bb24397e77e48a5ee2e9d46913bd05"
+    "typescript": "^7.0.2"
   },
   "dependencies": {
-    "@lorenzh/pulse-contract": "github:lorenzh/pulse-contract#a1c166e46375796b4f70f8499cfb38a55338eb77"
+    "@lorenzh/pulse-contract": "github:lorenzh/pulse-contract#d7eaa1b955a0c84a5f8d67580cfe7882c9a47d83"
   }
 }

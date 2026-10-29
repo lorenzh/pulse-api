@@ -25,7 +25,7 @@ const base = {
 function rejected(patch: Record<string, unknown>, field: string): void {
   const out = validateResult({ ...base, ...patch }, NOW);
   assert.equal(typeof out, "string", JSON.stringify(patch));
-  assert.match(String(out), new RegExp(`^${field}\\b`), JSON.stringify(patch));
+  assert.match(String(out), new RegExp(`^(result\\.)?${field}\\b`), JSON.stringify(patch));
 }
 
 function accepted(patch: Record<string, unknown>): void {
@@ -64,4 +64,12 @@ test("validateResult: statusCode is null or an integer 100-599", () => {
   for (const v of [null, 100, 599]) accepted({ statusCode: v });
   const out = validateResult({ ...base, statusCode: null }, NOW) as Result;
   assert.equal(out.statusCode, null);
+});
+
+test("validateResult: a body the contract rejects gets a message naming the path", () => {
+  assert.equal(
+    validateResult({ ...base, latencyMs: "fast" }, NOW),
+    "result.latencyMs: must be a finite number >= 0",
+  );
+  assert.equal(typeof validateResult([], NOW), "string");
 });

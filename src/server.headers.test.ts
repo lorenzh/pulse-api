@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import { after, before, test } from "node:test";
+import { WIRE_VERSION, WIRE_VERSION_HEADER } from "@lorenzh/pulse-contract";
 import { openDb } from "./db.ts";
 import { createApiServer } from "./server.ts";
 import { createService } from "./service.ts";
@@ -71,4 +72,21 @@ test("security headers are on 200, 204, 400, 401, 404, 405, 413 and OPTIONS resp
   }
   assert.equal(cases[1]?.[1].status, 204);
   assert.equal(cases[3]?.[1].headers.get("www-authenticate"), "Bearer");
+});
+
+test("x-pulse-contract carries the wire version on 200, 204, 400 and 404 responses", async () => {
+  const cases: Response[] = [
+    await fetch(`${base}/checks`),
+    await post(JSON.stringify(good)),
+    await post("{"),
+    await fetch(`${base}/nope`),
+  ];
+  assert.deepEqual(
+    cases.map((r) => r.status),
+    [200, 204, 400, 404],
+  );
+  for (const res of cases) {
+    await res.arrayBuffer();
+    assert.equal(res.headers.get(WIRE_VERSION_HEADER), String(WIRE_VERSION));
+  }
 });

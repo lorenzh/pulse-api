@@ -64,7 +64,7 @@ Port 3000 (or `PORT`) is in use. Choose another `PORT`. With Compose, change `PU
 
 ## 400 on POST /results
 
-The body is invalid. The message names the field:
+The body is invalid. The message names the field. The contract validator runs first and its messages start with a path, for example `result.status: must be one of "up", "degraded", "down"` or `result.latencyMs: must be a finite number >= 0`. The api checks below run after it:
 
 - `body is not valid JSON`
 - `body must be a JSON object`

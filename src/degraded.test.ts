@@ -73,7 +73,7 @@ test("validateResult: degraded accepted, unknown rejected naming all three", () 
     assert.equal(typeof validateResult({ ...res(1, "up"), status }, 1), "object", status);
   }
   const err = validateResult({ ...res(1, "up"), status: "slow" }, 1);
-  assert.equal(err, 'status must be "up", "degraded" or "down"');
+  assert.equal(err, 'result.status: must be one of "up", "degraded", "down"');
 });
 
 test("server: POST degraded is 204, unknown is 400, GET /checks serves the objective", async () => {
