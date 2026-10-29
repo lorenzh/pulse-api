@@ -52,4 +52,8 @@ test("config bounds: maintenance dates reject calendar rollover", () => {
   rejects(win("2030-03-05T00:00:00Z", "2030-03-05T00:00:00Z"), "maintenance[0].end");
   const leap = parseConfig(win("2028-02-29T00:00:00Z", "2028-03-01T00:00:00Z"));
   assert.equal(leap.maintenance[0]?.start, Date.parse("2028-02-29T00:00:00Z"));
+  // Years 0-99 are real years, not 1900-1999: year 0 is a leap year, 1900 is not.
+  const yearZero = parseConfig(win("0000-02-29T00:00:00Z", "0000-03-01T00:00:00Z"));
+  assert.equal(yearZero.maintenance[0]?.start, Date.parse("0000-02-29T00:00:00Z"));
+  rejects(win("0100-02-29T00:00:00Z", "0100-03-01T00:00:00Z"), "maintenance[0].start");
 });

@@ -335,9 +335,7 @@ async function handle(
       if (err instanceof HttpError) throw err;
       throw new HttpError(400, "body is not valid JSON");
     }
-    const result = validateResult(parsed, now(), (id) =>
-      service.listChecks().find((c) => c.id === id),
-    );
+    const result = validateResult(parsed, now(), (id) => service.findActiveCheck(id));
     if (typeof result === "string") throw new HttpError(400, result);
     // validateResult maps an omitted or blank location to the default: the token decides then.
     const sent = (parsed as { location?: unknown }).location;

@@ -47,6 +47,8 @@ export interface Service {
   /** Every active heartbeat check, for the evaluator. */
   listHeartbeats(): HeartbeatInfo[];
   hasCheck(id: string): boolean;
+  /** One active check by id, without its results; undefined when unknown or inactive. */
+  findActiveCheck(id: string): Check | undefined;
   listResults(checkId: string, limit: number): Result[];
   listIncidents(status?: "open" | "resolved"): Incident[];
   listMaintenance(checkId?: string): MaintenanceWindow[];
@@ -562,6 +564,11 @@ export function createService(
 
     hasCheck(id) {
       return getCheck.get(id) !== undefined;
+    },
+
+    findActiveCheck(id) {
+      const row = getActiveCheck.get(id) as CheckRow | undefined;
+      return row === undefined ? undefined : toCheck(row);
     },
 
     listResults(checkId, limit) {

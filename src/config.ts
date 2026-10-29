@@ -249,7 +249,10 @@ function isRealCalendarTime(v: string): boolean {
     number,
     number,
   ];
-  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  // Not Date.UTC: it maps years 0-99 to 1900-1999.
+  const isLeap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const februaryDays = isLeap ? 29 : 28;
+  const daysInMonth = month === 2 ? februaryDays : 30 + ((month + Math.floor(month / 8)) % 2);
   return (
     month >= 1 &&
     month <= 12 &&
