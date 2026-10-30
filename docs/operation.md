@@ -57,7 +57,7 @@ This command was not run for this page; it needs the `sqlite3` tool.
 
 ## Manual incidents
 
-Enable them with `PULSE_API_ADMIN_TOKENS_FILE` (see [Configuration](configuration.md#admin-tokensjson)); the `curl` examples are in [REST API](rest-api.md#write-routes). Counters: `pulse_api_manual_incidents_created_total` and `pulse_api_manual_incidents_resolved_total`, without labels. The start log says `manualIncidents` is `writable` or `read-only` and counts `adminTokens`. The tables are created on start in an older database; nothing else changes. Rotate admin tokens like probe tokens: add the new one, restart, remove the old one, restart.
+Enable them with `PULSE_API_ADMIN_TOKENS_FILE` (see [Configuration](configuration.md#admin-tokensjson)); the `curl` examples are in [REST API](rest-api.md#write-routes). Counters: `pulse_api_manual_incidents_created_total` and `pulse_api_manual_incidents_resolved_total`, without labels. The start log says `manualIncidents` is `writable` or `off` and counts `adminTokens`. While it is `off`, the reads are empty even when the database holds incidents. The tables are created on start in an older database; nothing else changes. Rotate admin tokens like probe tokens: add the new one, restart, remove the old one, restart.
 
 Upgrade order: contract, then status and notify, then api. Status and notify treat a `404` from `/manual-incidents` of an older api as no incidents.
 

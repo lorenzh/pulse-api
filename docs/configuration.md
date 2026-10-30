@@ -76,6 +76,7 @@ The contract (`@lorenzh/pulse-contract`) owns the exact limits: header names mus
 
 Notes:
 
+- **Header references.** An `{"env": "NAME"}` reference replaces the whole header value. For a bearer token the variable holds the scheme too: `SVC_TOKEN="Bearer <token>"`.
 - **Secrets.** Use `{"env": "NAME"}` for a secret. The probe resolves it from its own environment, so the secret lives in the probe's environment and never in the API's. The API never resolves an `env` reference. A check whose variable is unset in a probe is skipped by that probe, with a log line that names the variable. Every probe location needs the variable.
 - A literal header value and a `body` are stored in the API database and served to every probe that sends a valid token on `GET /probe/checks`. Treat the checks file, the database and the probe tokens as sensitive.
 - `GET /checks` (public) never serves `headers`, `body` or `jsonAssert`, not even names. It serves `method` and `expectedStatus` only when they are not the defaults. See [REST API](rest-api.md#get-probechecks).
@@ -128,7 +129,7 @@ The secret is kept in memory only. `GET /checks`, `/metrics`, incident reasons a
 
 ### components
 
-`components` is an array of customer-facing groups of checks, served by `GET /components` and `GET /components/uptime`. A missing key means no components. They are not part of `GET /probe/checks`.
+`components` is an array of customer-facing groups of checks, served by `GET /components` and `GET /components/uptime`. A missing key means no components. Both routes are public like the other reads: the status page proxies them without a token. They are not part of `GET /probe/checks`.
 
 | Field         | Required | Meaning                                                                   |
 | ------------- | -------- | ------------------------------------------------------------------------- |
@@ -162,7 +163,7 @@ Optional. Set `PULSE_API_ADMIN_TOKENS_FILE` to enable `POST`, `DELETE` on `/manu
 | `name`   | Non-empty string; only for your own bookkeeping.                                                            |
 | `token`  | The same rules as a probe token: 16 or more characters, no whitespace, not a placeholder or public example. |
 
-An admin token must differ from every probe token, and tokens must not repeat. Either error stops the start with `pulse-api: <message> (PULSE_API_ADMIN_TOKENS_FILE=<path>)` and exit code 2. Messages never print token values and the start log only counts tokens. Without the setting the write routes answer `404` and `GET /manual-incidents` lists only what the database already holds. The tokens are compared in constant time.
+An admin token must differ from every probe token, and tokens must not repeat. Either error stops the start with `pulse-api: <message> (PULSE_API_ADMIN_TOKENS_FILE=<path>)` and exit code 2. Messages never print token values and the start log only counts tokens. Without the setting the manual incidents feature is off: the write routes answer `404`, `GET /manual-incidents` answers `200` with an empty list and `GET /manual-incidents/<id>` answers `404`, even when the database holds incidents. The stored incidents come back when the setting is set again. The tokens are compared in constant time.
 
 ## Compose variables
 

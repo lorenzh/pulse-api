@@ -287,8 +287,11 @@ regular_services=$(COMPOSE_FILE=compose.yaml docker compose config --services | 
 [[ "$regular_services" == "api notify probe status" ]] ||
   fail "the regular stack has the services: ${regular_services}"
 regular_demo_services=$(COMPOSE_FILE=compose.yaml docker compose --profile demo config --services | sort | paste -sd' ' -)
-[[ "$regular_demo_services" != *e2e* ]] || fail "the regular stack lists an e2e service"
-echo "ok: the regular stack has exactly api, notify, probe and status"
+# Hard-coded on purpose: a list derived from compose.yaml would accept any extra service.
+expected_demo_services="api demo-api demo-init demo-probe-a demo-probe-b demo-status demo-targets demo-tls notify probe status"
+[[ "$regular_demo_services" == "$expected_demo_services" ]] ||
+  fail "the regular stack with the demo profile has the services: ${regular_demo_services} (expected: ${expected_demo_services})"
+echo "ok: the regular stack has exactly api, notify, probe and status, plus the seven demo services"
 checks_backup=$(mktemp)
 cp "$checks_file" "$checks_backup"
 docker compose --profile demo down -v --remove-orphans

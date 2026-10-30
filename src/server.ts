@@ -378,7 +378,7 @@ function manualId(idText: string | undefined): number | undefined {
 }
 
 function requireAdmin(ops: Ops, req: IncomingMessage): void {
-  // Without admin tokens the feature is read-only and the write routes do not exist.
+  // Without admin tokens the feature is off and the write routes do not exist.
   if (ops.adminTokens === undefined) throw new HttpError(404, "not found");
   if (!matchesAnyToken(ops.adminTokens, req.headers.authorization)) {
     throw new HttpError(401, "unauthorized", { "www-authenticate": "Bearer" });
@@ -606,9 +606,9 @@ export type ApiServerOptions = {
   heartbeatSecrets?: ReadonlyMap<string, string>;
   /** The configured components, served by `/components` and `/components/uptime`. */
   components?: readonly Component[];
-  /** Store behind `/manual-incidents`. Without it the routes read an empty in-memory list. */
+  /** Store behind `/manual-incidents`. Without it, or without `adminTokens`, the reads are empty. */
   manualIncidents?: ManualIncidentStore;
-  /** Tokens that may write manual incidents. Without them the write routes answer 404. */
+  /** Tokens that may write manual incidents. Without them the writes answer 404 and the reads are empty. */
   adminTokens?: readonly string[];
 };
 
@@ -635,7 +635,11 @@ export function createApiServer(service: Service, options: ApiServerOptions): Se
     notReadyReason: options.notReadyReason ?? (() => undefined),
     heartbeatSecrets: options.heartbeatSecrets ?? new Map(),
     components: options.components ?? [],
-    manualIncidents: options.manualIncidents ?? emptyManualIncidents(),
+    // Without admin tokens the feature is off: every read is empty, even with stored incidents.
+    manualIncidents:
+      options.adminTokens === undefined
+        ? emptyManualIncidents()
+        : (options.manualIncidents ?? emptyManualIncidents()),
     adminTokens: options.adminTokens,
   };
   const logError = options.logError ?? ((_message, err) => console.error(err));

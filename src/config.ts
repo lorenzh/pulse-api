@@ -369,7 +369,8 @@ function parseComponents(raw: unknown, ids: ReadonlySet<string>): Component[] {
     const verdict = validateComponent(item, where);
     if (!verdict.ok) throw new ConfigError(verdict.error);
     const component = verdict.value;
-    if (seen.has(component.id)) throw new ConfigError(`duplicate component id "${component.id}"`);
+    if (seen.has(component.id))
+      throw new ConfigError(`${where}.id: duplicate component id "${component.id}"`);
     seen.add(component.id);
     component.checkIds.forEach((checkId, j) => {
       if (!ids.has(checkId)) {

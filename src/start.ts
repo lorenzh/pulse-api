@@ -177,7 +177,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     probeTokens: tokens.length,
     locations: new Set(tokens.map((t) => t.location)).size,
     tokensFile,
-    manualIncidents: adminTokens === undefined ? "read-only" : "writable",
+    manualIncidents: adminTokens === undefined ? "off" : "writable",
     adminTokens: adminTokens?.length ?? 0,
   });
 
