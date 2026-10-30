@@ -4,3 +4,4 @@ checks.json
 tokens.json
 .env
 !compose/checks.json
+!compose/e2e/checks.json
