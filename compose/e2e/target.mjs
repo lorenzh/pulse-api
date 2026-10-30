@@ -3,7 +3,7 @@
 // It never logs headers or bodies.
 import { createServer } from "node:http";
 
-const token = process.env.SVC_TOKEN ?? "";
+const token = process.env.PULSE_HEADER_SVC_TOKEN ?? "";
 const expectedBody = '{"ping":"e2e-body-sentinel"}';
 let mode = "ok";
 

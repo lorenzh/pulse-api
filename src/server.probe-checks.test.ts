@@ -8,7 +8,7 @@ import { createService } from "./service.ts";
 
 const TOKEN = "token-a-0123456789abcdef";
 const HEADER_SECRET = "literal-header-sentinel";
-const ENV_NAME = "SVC_TOKEN_SENTINEL";
+const ENV_NAME = "PULSE_HEADER_SVC_TOKEN_SENTINEL";
 const BODY_SECRET = "body-sentinel";
 
 // eslint-disable-next-line sonarjs/no-clear-text-protocols -- local test fixture, never requested

@@ -16,7 +16,7 @@
       "method": "POST",
       "headers": {
         "Authorization": {
-          "env": "SVC_TOKEN"
+          "env": "PULSE_HEADER_SVC_TOKEN"
         },
         "Content-Type": "application/json"
       },
