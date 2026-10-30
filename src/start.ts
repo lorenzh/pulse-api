@@ -8,8 +8,10 @@ import {
   readString,
   StartupError,
 } from "@lorenzh/pulse-kit";
-import { ConfigError, loadConfig, loadTokens } from "./config.ts";
+import { assertDistinctFromProbeTokens } from "./admin-tokens.ts";
+import { ConfigError, loadAdminTokens, loadConfig, loadTokens } from "./config.ts";
 import { createHeartbeatEvaluator, startHeartbeatEvaluator } from "./heartbeat.ts";
+import { createManualIncidentStore } from "./manual-incidents.ts";
 import { createMetrics } from "./metrics.ts";
 import { readRetentionDays, startRetention } from "./retention.ts";
 import { createApiServer } from "./server.ts";
@@ -73,6 +75,7 @@ async function run(deps: StartDeps, onDb: (db: DatabaseSync) => void): Promise<R
   const dbPath = readString(env, "PULSE_DB") ?? "./pulse.db";
   const checksFile = readString(env, "PULSE_CHECKS_FILE") ?? "./checks.json";
   const tokensFile = readString(env, "PULSE_TOKENS_FILE") ?? "./tokens.json";
+  const adminTokensFile = readString(env, "PULSE_API_ADMIN_TOKENS_FILE");
   const retentionDays = readRetentionDays(env);
   const { checks, secrets, maintenance, components } = loadConfig(checksFile);
   let tokens: ReturnType<typeof loadTokens>;
@@ -81,6 +84,18 @@ async function run(deps: StartDeps, onDb: (db: DatabaseSync) => void): Promise<R
   } catch (err) {
     if (!(err instanceof TokensError)) throw err;
     throw new TokensError(`${err.message} (PULSE_TOKENS_FILE=${tokensFile})`, { cause: err });
+  }
+  let adminTokens: ReturnType<typeof loadAdminTokens> | undefined;
+  if (adminTokensFile !== undefined) {
+    try {
+      adminTokens = loadAdminTokens(adminTokensFile);
+      assertDistinctFromProbeTokens(adminTokens, tokens);
+    } catch (err) {
+      if (!(err instanceof TokensError)) throw err;
+      throw new TokensError(`${err.message} (PULSE_API_ADMIN_TOKENS_FILE=${adminTokensFile})`, {
+        cause: err,
+      });
+    }
   }
 
   let db: DatabaseSync;
@@ -100,6 +115,11 @@ async function run(deps: StartDeps, onDb: (db: DatabaseSync) => void): Promise<R
     onIncident: (event) => metrics.recordIncident(event),
   });
   service.upsertChecks(checks);
+  const manualIncidents = createManualIncidentStore(db, {
+    now: deps.now,
+    componentIds: new Set(components.map((c) => c.id)),
+    onEvent: (event) => metrics.recordManualIncident(event),
+  });
 
   const retention = startRetention({
     service,
@@ -110,6 +130,7 @@ async function run(deps: StartDeps, onDb: (db: DatabaseSync) => void): Promise<R
     setTimeout: (fn, ms) => deps.setTimeout(() => void fn(), ms),
     clearTimeout: deps.clearTimeout,
     log: (line) => logger.info(line),
+    deleteManualIncidents: (cutoff) => manualIncidents.deleteResolvedBefore(cutoff),
   });
 
   const heartbeat = startHeartbeatEvaluator({
@@ -124,6 +145,8 @@ async function run(deps: StartDeps, onDb: (db: DatabaseSync) => void): Promise<R
     tokens,
     heartbeatSecrets: secrets,
     components,
+    manualIncidents,
+    ...(adminTokens === undefined ? {} : { adminTokens: adminTokens.map((t) => t.token) }),
     now: deps.now,
     metrics,
     notReadyReason: () => (isShuttingDown ? "shutting down" : undefined),
@@ -154,6 +177,8 @@ async function run(deps: StartDeps, onDb: (db: DatabaseSync) => void): Promise<R
     probeTokens: tokens.length,
     locations: new Set(tokens.map((t) => t.location)).size,
     tokensFile,
+    manualIncidents: adminTokens === undefined ? "read-only" : "writable",
+    adminTokens: adminTokens?.length ?? 0,
   });
 
   const timeoutMs = deps.shutdownTimeoutMs ?? SHUTDOWN_TIMEOUT_MS;

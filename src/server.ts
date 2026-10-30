@@ -4,6 +4,7 @@ import {
   type Check,
   type Component,
   type ErrorResponse,
+  MANUAL_INCIDENT_MAX_BODY_BYTES,
   type Result,
   validatePostResultRequest,
   WIRE_VERSION,
@@ -11,6 +12,12 @@ import {
 } from "@lorenzh/pulse-contract";
 import { BodyError, handleOps, readBody, readJsonBody, sendJson } from "@lorenzh/pulse-kit";
 import { componentsUptime, componentsWithState } from "./components.ts";
+import {
+  ManualIncidentConflictError,
+  ManualIncidentInputError,
+  ManualIncidentNotFoundError,
+  type ManualIncidentStore,
+} from "./manual-incidents.ts";
 import { createMetrics, type Metrics } from "./metrics.ts";
 import {
   DEFAULT_LOCATION,
@@ -19,7 +26,7 @@ import {
   type Service,
   UnknownCheckError,
 } from "./service.ts";
-import { authenticate, type ProbeToken } from "./tokens.ts";
+import { authenticate, matchesAnyToken, type ProbeToken } from "./tokens.ts";
 
 const MAX_BODY = 1_000_000;
 const MAX_PING_BODY = 1024;
@@ -162,6 +169,7 @@ export function validateResult(
 }
 
 const RESULTS_PATH = /^\/checks\/([^/]+)\/results$/;
+const MANUAL_PATH = /^\/manual-incidents(?:\/([^/]+)(?:\/(updates|resolve))?)?$/;
 const HEARTBEAT_PATH = /^\/heartbeat\/([^/]+)(?:\/([^/]+))?$/;
 const ROUTES = [
   "/results",
@@ -172,6 +180,7 @@ const ROUTES = [
   "/components/uptime",
   "/incidents",
   "/maintenance",
+  "/manual-incidents",
   "/healthz",
   "/readyz",
   "/metrics",
@@ -188,6 +197,10 @@ function routeOf(rawUrl: string | undefined): string {
   }
   if (RESULTS_PATH.test(path)) return "/checks/:id/results";
   if (HEARTBEAT_PATH.test(path)) return "/heartbeat/:id";
+  const manual = MANUAL_PATH.exec(path);
+  if (manual?.[1] !== undefined) {
+    return manual[2] === undefined ? "/manual-incidents/:id" : `/manual-incidents/:id/${manual[2]}`;
+  }
   return ROUTES.find((r) => r === path) ?? "unmatched";
 }
 
@@ -197,6 +210,9 @@ type Ops = {
   notReadyReason: () => string | undefined;
   heartbeatSecrets: ReadonlyMap<string, string>;
   components: readonly Component[];
+  manualIncidents: ManualIncidentStore;
+  /** Admin tokens; undefined when the feature is off and the write routes answer 404. */
+  adminTokens: readonly string[] | undefined;
 };
 
 function digest(text: string): Buffer {
@@ -303,6 +319,132 @@ function parseCount(raw: string | null, name: string, min: number): number | und
   return n;
 }
 
+/** Map the store's typed errors to the HttpError the API answers with. */
+function manualFailure(err: unknown): unknown {
+  if (err instanceof ManualIncidentInputError) return new HttpError(400, err.message);
+  if (err instanceof ManualIncidentNotFoundError)
+    return new HttpError(404, "manual incident not found");
+  if (err instanceof ManualIncidentConflictError) return new HttpError(409, err.message);
+  return err;
+}
+
+async function readManualBody(req: IncomingMessage, isOptional: boolean): Promise<unknown> {
+  try {
+    if (!isOptional) return await readJsonBody(req, { maxBytes: MANUAL_INCIDENT_MAX_BODY_BYTES });
+    const text = await readBody(req, MANUAL_INCIDENT_MAX_BODY_BYTES);
+    return text.trim() === "" ? undefined : await parseJson(text);
+  } catch (err) {
+    throw bodyFailure(err);
+  }
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new BodyError("invalid-json", "body is not valid JSON");
+  }
+}
+
+function manualFilter(url: URL): "open" | "resolved" | "all" {
+  const status = url.searchParams.get("status");
+  if (status === null || status === "all") return "all";
+  if (status === "open" || status === "resolved") return status;
+  throw new HttpError(400, 'status must be "open", "resolved" or "all"');
+}
+
+type ManualAction = "list" | "get" | "create" | "update" | "resolve" | "delete";
+
+const MANUAL_ACTIONS: Record<string, ManualAction> = {
+  "GET list": "list",
+  "POST list": "create",
+  "GET item": "get",
+  "DELETE item": "delete",
+  "POST updates": "update",
+  "POST resolve": "resolve",
+};
+const MANUAL_ALLOW: Record<string, string> = {
+  list: "GET, POST",
+  item: "GET, DELETE",
+  updates: "POST",
+  resolve: "POST",
+};
+
+/** The id of the path, or undefined for the list path; a bad id answers 404 like an unknown one. */
+function manualId(idText: string | undefined): number | undefined {
+  if (idText === undefined) return undefined;
+  if (!/^\d{1,15}$/.test(idText)) throw new HttpError(404, "not found");
+  return Number(idText);
+}
+
+function requireAdmin(ops: Ops, req: IncomingMessage): void {
+  // Without admin tokens the feature is read-only and the write routes do not exist.
+  if (ops.adminTokens === undefined) throw new HttpError(404, "not found");
+  if (!matchesAnyToken(ops.adminTokens, req.headers.authorization)) {
+    throw new HttpError(401, "unauthorized", { "www-authenticate": "Bearer" });
+  }
+}
+
+/** Run a write route; the store's errors map to a status. */
+async function writeManual(
+  ops: Ops,
+  req: IncomingMessage,
+  res: ServerResponse,
+  action: ManualAction,
+  id: number,
+): Promise<void> {
+  const store = ops.manualIncidents;
+  try {
+    if (action === "update") {
+      sendJson(res, 201, store.addUpdate(id, await readManualBody(req, false)));
+    } else if (action === "resolve") {
+      sendJson(res, 200, store.resolve(id, await readManualBody(req, true)));
+    } else {
+      store.remove(id);
+      res.writeHead(204).end();
+    }
+  } catch (err) {
+    throw manualFailure(err);
+  }
+}
+
+/** Serve `/manual-incidents[/<id>[/updates|/resolve]]`. Writes need an admin token. */
+async function serveManualIncidents(
+  ops: Ops,
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  match: RegExpExecArray,
+): Promise<void> {
+  const store = ops.manualIncidents;
+  const id = manualId(match[1]);
+  const shape = id === undefined ? "list" : (match[2] ?? "item");
+  const action = MANUAL_ACTIONS[`${req.method ?? "GET"} ${shape}`];
+  if (action === undefined) {
+    throw new HttpError(405, "method not allowed", { Allow: MANUAL_ALLOW[shape] ?? "GET" });
+  }
+  if (action === "list") {
+    sendJson(res, 200, store.list(manualFilter(url)));
+    return;
+  }
+  if (action === "get") {
+    const incident = id === undefined ? undefined : store.get(id);
+    if (incident === undefined) throw new HttpError(404, "manual incident not found");
+    sendJson(res, 200, incident);
+    return;
+  }
+  requireAdmin(ops, req);
+  if (action === "create") {
+    try {
+      sendJson(res, 201, store.create(await readManualBody(req, false)));
+    } catch (err) {
+      throw manualFailure(err);
+    }
+    return;
+  }
+  if (id !== undefined) await writeManual(ops, req, res, action, id);
+}
+
 // eslint-disable-next-line sonarjs/cognitive-complexity -- splitting this validator/handler would be a behaviour-risking refactor
 async function handle(
   ops: Ops,
@@ -318,6 +460,8 @@ async function handle(
   if (serveOps(ops, req, res)) return;
   const ping = HEARTBEAT_PATH.exec(path);
   if (ping) return servePing(ops, now, req, res, ping);
+  const manual = MANUAL_PATH.exec(path);
+  if (manual) return serveManualIncidents(ops, req, res, url, manual);
   const known =
     path === "/results" ||
     path === "/checks" ||
@@ -462,7 +606,26 @@ export type ApiServerOptions = {
   heartbeatSecrets?: ReadonlyMap<string, string>;
   /** The configured components, served by `/components` and `/components/uptime`. */
   components?: readonly Component[];
+  /** Store behind `/manual-incidents`. Without it the routes read an empty in-memory list. */
+  manualIncidents?: ManualIncidentStore;
+  /** Tokens that may write manual incidents. Without them the write routes answer 404. */
+  adminTokens?: readonly string[];
 };
+
+function emptyManualIncidents(): ManualIncidentStore {
+  const refuse = (): never => {
+    throw new ManualIncidentNotFoundError("manual incidents are not configured");
+  };
+  return {
+    list: () => [],
+    get: () => undefined,
+    create: refuse,
+    addUpdate: refuse,
+    resolve: refuse,
+    remove: refuse,
+    deleteResolvedBefore: () => 0,
+  };
+}
 
 export function createApiServer(service: Service, options: ApiServerOptions): Server {
   const now = options.now ?? Date.now;
@@ -472,6 +635,8 @@ export function createApiServer(service: Service, options: ApiServerOptions): Se
     notReadyReason: options.notReadyReason ?? (() => undefined),
     heartbeatSecrets: options.heartbeatSecrets ?? new Map(),
     components: options.components ?? [],
+    manualIncidents: options.manualIncidents ?? emptyManualIncidents(),
+    adminTokens: options.adminTokens,
   };
   const logError = options.logError ?? ((_message, err) => console.error(err));
   return createServer((req, res) => {

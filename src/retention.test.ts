@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import { test } from "node:test";
 import type { CheckUptime } from "@lorenzh/pulse-contract";
 import { openDb } from "./db.ts";
+import { createManualIncidentStore } from "./manual-incidents.ts";
 import {
   cleanupResults,
   RETENTION_INTERVAL_MS,
@@ -211,4 +212,37 @@ test("abort ends a run after the batch in progress", async () => {
   );
   assert.equal(calls, 1);
   assert.equal(deleted, 1);
+});
+
+test("cleanupResults: resolved manual incidents older than the window are deleted, open ones stay", async () => {
+  const { db, service } = setup();
+  const store = createManualIncidentStore(db, { now: () => NOW, componentIds: new Set() });
+  const body = { title: "t", impact: "none", componentIds: [], message: "m" };
+  const oldOne = store.create(body);
+  const recent = store.create(body);
+  const open = store.create(body);
+  db.prepare("UPDATE manual_incidents SET status = 'resolved', resolved_at = ? WHERE id = ?").run(
+    TODAY - 100 * DAY,
+    oldOne.id,
+  );
+  db.prepare("UPDATE manual_incidents SET status = 'resolved', resolved_at = ? WHERE id = ?").run(
+    TODAY - 10 * DAY,
+    recent.id,
+  );
+  const deleted = await cleanupResults(service, {
+    now: () => NOW,
+    retentionDays: 90,
+    sleep: () => Promise.resolve(),
+    deleteManualIncidents: (cutoff) => store.deleteResolvedBefore(cutoff),
+  });
+  assert.ok(deleted >= 1);
+  assert.equal(store.get(oldOne.id), undefined);
+  assert.ok(store.get(recent.id));
+  assert.ok(store.get(open.id));
+  assert.equal(
+    db
+      .prepare("SELECT count(*) AS n FROM manual_incident_updates WHERE incident_id = ?")
+      .get(oldOne.id)?.n,
+    0,
+  );
 });

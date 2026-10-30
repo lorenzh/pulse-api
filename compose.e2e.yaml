@@ -2,9 +2,26 @@
 # COMPOSE_FILE=compose.yaml:compose.e2e.yaml
 services:
   api:
+    environment:
+      # Enables the write routes of manual incidents; the token is a throwaway of this stack.
+      PULSE_API_ADMIN_TOKENS_FILE: /run/pulse/admin-tokens.json
+    configs:
+      - source: admin-tokens
+        target: /run/pulse/admin-tokens.json
     volumes:
       # Same target path as in compose.yaml, so this replaces the regular checks file.
       - ./compose/e2e/checks.json:/config/checks.json:ro
+
+  status:
+    environment:
+      # Turns on /feed.atom.
+      PULSE_STATUS_PUBLIC_URL: http://status.e2e.invalid
+
+  notify:
+    volumes:
+      # Same target path as in compose.yaml: this replaces the regular channels with
+      # component-routed ones for the manual incident scenario.
+      - ./compose/e2e/notify.json:/config/notify.json:ro
 
   probe:
     environment:
@@ -23,3 +40,8 @@ services:
       SVC_TOKEN: ${E2E_SVC_TOKEN:-e2e-svc-token-sentinel}
     volumes:
       - ./compose/e2e/target.mjs:/e2e/target.mjs:ro
+
+configs:
+  admin-tokens:
+    content: |
+      {"tokens": [{"name": "e2e", "token": "${E2E_ADMIN_TOKEN:-e2e-admin-token-sentinel-0123}"}]}

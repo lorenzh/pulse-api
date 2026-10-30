@@ -78,9 +78,10 @@ The `401` check comes before body checks, so a caller without a token learns not
 
 Raw results are deleted after `PULSE_RETENTION_DAYS` days (default and minimum 90, the window of `GET /uptime`).
 
+- Resolved manual incidents are deleted with the same cutoff, by their resolution time.
 - Retention counts whole UTC days including today. Results before the start of the UTC day `PULSE_RETENTION_DAYS - 1` days ago are deleted.
 - The newest result of each check and location is always kept.
-- Incidents are never deleted.
+- Automatic incidents are never deleted.
 - Cleanup runs at start and then hourly, in batches of 1000 rows.
 
 The database file does not shrink after deletes. SQLite reuses the freed pages. See [Operation](operation.md#retention-and-disk-space).

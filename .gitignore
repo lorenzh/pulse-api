@@ -2,6 +2,7 @@ node_modules/
 pulse.db*
 checks.json
 tokens.json
+admin-tokens.json
 .env
 !compose/checks.json
 !compose/e2e/checks.json

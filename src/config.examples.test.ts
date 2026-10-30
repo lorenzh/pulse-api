@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { loadChecks, loadConfig, loadTokens } from "./config.ts";
+import { loadAdminTokens, loadChecks, loadConfig, loadTokens } from "./config.ts";
 
 const CHECKS_EXAMPLE = new URL("../checks.example.json", import.meta.url).pathname;
 const TOKENS_EXAMPLE = new URL("../tokens.example.json", import.meta.url).pathname;
@@ -23,5 +23,13 @@ test("tokens.example.json is well formed and its placeholder token is rejected",
   assert.throws(() => loadTokens(TOKENS_EXAMPLE), {
     name: "TokensError",
     message: 'tokens[0] (location "east") still has the example placeholder token',
+  });
+});
+
+test("admin-tokens.example.json is well formed and its placeholder token is rejected", () => {
+  const example = new URL("../admin-tokens.example.json", import.meta.url).pathname;
+  assert.throws(() => loadAdminTokens(example), {
+    name: "TokensError",
+    message: /still has the example placeholder token/,
   });
 });

@@ -214,6 +214,53 @@ assert_no_volume() {
   if has_volume "$1"; then fail "volume ${project}_$1 still exists"; fi
 }
 
+e2e_admin_token="${E2E_ADMIN_TOKEN:-e2e-admin-token-sentinel-0123}"
+manual_title='<script>alert(1)</script> Checkout slow'
+escaped_title='&lt;script&gt;alert(1)&lt;/script&gt; Checkout slow'
+
+# manual_code <method> <path> <body> <token>: print the HTTP status. Empty body or token: omitted.
+manual_code() {
+  local args=(-s -o /dev/null -w '%{http_code}' --max-time 5 -X "$1")
+  [[ -n "${4:-}" ]] && args+=(-H "Authorization: Bearer $4")
+  [[ -n "${3:-}" ]] && args+=(-H 'Content-Type: application/json' -d "$3")
+  curl "${args[@]}" "http://127.0.0.1:${api_port}$2"
+}
+
+# manual_call <method> <path> [body]: call with the admin token; print the body, fail on non-2xx.
+manual_call() {
+  local args=(-fsS --max-time 5 -X "$1" -H "Authorization: Bearer ${e2e_admin_token}")
+  [[ -n "${3:-}" ]] && args+=(-H 'Content-Type: application/json' -d "$3")
+  curl "${args[@]}" "http://127.0.0.1:${api_port}$2"
+}
+
+status_page() { curl -fsS --max-time 5 "http://127.0.0.1:${status_port}$1"; }
+
+# The page is drawn in the browser from the proxied API, so the proxy and the feed are asserted here.
+proxy_manual() { status_page /api/manual-incidents; }
+
+proxy_shows_open_manual() {
+  proxy_manual | jq -e --argjson id "$manual_id" --arg t "$manual_title" \
+    '.[] | select(.id == $id and .title == $t and .resolvedAt == null and .impact == "major" and .componentIds == ["web"])'
+}
+
+proxy_has_text() { proxy_manual | grep -qF -- "$1"; }
+
+proxy_shows_resolved_manual() {
+  proxy_manual | jq -e --argjson id "$manual_id" '.[] | select(.id == $id and .resolvedAt != null and (.updates | length) == 3)'
+}
+
+feed_has() { status_page /feed.atom | grep -qF -- "$1"; }
+
+manual_count() { # manual_count <file> <key>: lines of a notify channel file with the key
+  docker compose exec -T notify cat "/data/$1" 2>/dev/null | grep -cF -- "\"key\":\"$2\"" || true
+}
+
+manual_sent() { [[ "$(manual_count "$1" "$2")" == "1" ]]; }
+
+metric_is() { # metric_is <series> <value>
+  api /metrics | grep -qx "$1 $2"
+}
+
 step "Setup (project ${project})"
 for tool in docker curl jq openssl; do
   command -v "$tool" >/dev/null || fail "$tool is required"
@@ -361,6 +408,85 @@ docker compose start status
 wait_for "$T_INCIDENT_RESOLVE" "incident ${incident_id} is resolved" is_incident_resolved "$incident_id"
 wait_for "$T_NOTIFY" "notify ledger has ${incident_id}:opened" notify_has "${incident_id}:opened"
 wait_for "$T_NOTIFY" "notify ledger has ${incident_id}:resolved" notify_has "${incident_id}:resolved"
+
+step "Manual incidents"
+probe_token=$(env_value PULSE_PROBE_TOKEN "")
+body='{"title":"T","impact":"major","componentIds":["web"],"message":"m"}'
+[[ "$(manual_code POST /manual-incidents "$body" "")" == "401" ]] || fail "an unauthenticated write was not refused"
+[[ "$(manual_code POST /manual-incidents "$body" "$probe_token")" == "401" ]] || fail "a probe token write was not refused"
+echo "ok: writes without a token and with a probe token answer 401"
+[[ "$(manual_code POST /manual-incidents '{"title":"T","impact":"major","componentIds":["nope"],"message":"m"}' "$e2e_admin_token")" == "400" ]] ||
+  fail "an unknown component was accepted"
+long_title=$(printf 'x%.0s' $(seq 1 201))
+[[ "$(manual_code POST /manual-incidents "{\"title\":\"${long_title}\",\"impact\":\"none\",\"componentIds\":[],\"message\":\"m\"}" "$e2e_admin_token")" == "400" ]] ||
+  fail "an over-long title was accepted"
+long_message=$(printf 'x%.0s' $(seq 1 2001))
+[[ "$(manual_code POST /manual-incidents "{\"title\":\"T\",\"impact\":\"none\",\"componentIds\":[],\"message\":\"${long_message}\"}" "$e2e_admin_token")" == "400" ]] ||
+  fail "an over-long message was accepted"
+echo "ok: an unknown component and over-long text are rejected"
+[[ "$(api /manual-incidents | jq 'length')" == "0" ]] || fail "a rejected write was stored"
+
+wait_for "$T_NOTIFY" "notify has polled the api" notify_has_polled
+created=$(manual_call POST /manual-incidents "$(jq -nc --arg t "$manual_title" \
+  '{title: $t, impact: "major", componentIds: ["web"], message: "Investigating <b>now</b>"}')")
+manual_id=$(jq -re '.id' <<<"$created")
+echo "manual incident: ${manual_id}"
+wait_for "$T_PAGE" "the status service serves the open manual incident (hide-details is on by default)" proxy_shows_open_manual
+wait_for "$T_PAGE" "the feed has manual:${manual_id}:0" feed_has "manual:${manual_id}:0"
+wait_for "$T_PAGE" "the feed escapes the title" feed_has "$escaped_title"
+if status_page /feed.atom | grep -qF '<script>alert(1)'; then fail "the feed holds unescaped HTML"; fi
+echo "ok: the feed holds no raw <script>"
+wait_for "$T_NOTIFY" "notify sent manual:${manual_id}:opened to the web channel" \
+  manual_sent manual-web.jsonl "manual:${manual_id}:opened"
+
+sleep 1
+manual_call POST "/manual-incidents/${manual_id}/updates" '{"status":"identified","message":"Cause found."}' >/dev/null
+wait_for "$T_NOTIFY" "notify sent manual:${manual_id}:update:1" manual_sent manual-web.jsonl "manual:${manual_id}:update:1"
+wait_for "$T_PAGE" "the status service serves the latest update" proxy_has_text "Cause found."
+sleep 1
+manual_call POST "/manual-incidents/${manual_id}/updates" '{"status":"resolved","message":"Fixed."}' >/dev/null
+wait_for "$T_NOTIFY" "notify sent manual:${manual_id}:resolved" manual_sent manual-web.jsonl "manual:${manual_id}:resolved"
+
+manual_list=$(api /manual-incidents)
+jq -e --argjson id "$manual_id" '
+  .[] | select(.id == $id) | .status == "resolved" and .resolvedAt != null
+    and ([.updates[].message] == ["Investigating <b>now</b>", "Cause found.", "Fixed."])
+    and ([.updates[].at] == ([.updates[].at] | sort))
+    and .updates[-1].at == .resolvedAt' <<<"$manual_list" >/dev/null ||
+  fail "GET /manual-incidents does not list the incident with its updates in time order"
+echo "ok: GET /manual-incidents lists the resolved incident with three updates in time order"
+wait_for "$T_PAGE" "the status service serves the resolved incident with all updates" proxy_shows_resolved_manual
+wait_for "$T_PAGE" "the feed has manual:${manual_id}:2" feed_has "manual:${manual_id}:2"
+
+[[ "$(manual_count manual-public-api.jsonl "manual:${manual_id}:opened")" == "0" ]] ||
+  fail "the public-api channel got an incident of component web"
+echo "ok: component routing: web channel got the events, public-api channel none"
+for key in opened update:1 resolved; do
+  [[ "$(manual_count incidents.jsonl "manual:${manual_id}:${key}")" == "1" ]] ||
+    fail "the catch-all channel does not hold manual:${manual_id}:${key} exactly once"
+done
+echo "ok: one ledger entry per event, sent once"
+
+docker compose restart notify
+wait_for "$T_UP" "notify is healthy after the restart" is_healthy notify
+wait_for "$T_NOTIFY" "notify has polled again" notify_has_polled
+sleep $((POLL_INTERVAL * 3))
+for key in opened update:1 resolved; do
+  [[ "$(manual_count manual-web.jsonl "manual:${manual_id}:${key}")" == "1" ]] ||
+    fail "manual:${manual_id}:${key} was sent again after a notify restart"
+done
+echo "ok: a notify restart sends nothing twice"
+
+metric_is pulse_api_manual_incidents_created_total 1 || fail "pulse_api_manual_incidents_created_total is not 1"
+metric_is pulse_api_manual_incidents_resolved_total 1 || fail "pulse_api_manual_incidents_resolved_total is not 1"
+echo "ok: metrics count one created and one resolved"
+[[ "$(manual_code DELETE "/manual-incidents/${manual_id}" "" "$e2e_admin_token")" == "204" ]] || fail "DELETE did not answer 204"
+[[ "$(api /manual-incidents | jq 'length')" == "0" ]] || fail "the deleted incident is still listed"
+[[ "$(manual_code GET "/manual-incidents/${manual_id}" "" "")" == "404" ]] || fail "the deleted incident is still readable"
+echo "ok: delete removes the incident from reads"
+assert_absent "GET /metrics" "$(api /metrics)"
+if grep -qF -- "$e2e_admin_token" <<<"$(docker compose logs --no-color)"; then fail "the logs show the admin token"; fi
+echo "ok: the container logs show no admin token"
 
 step "Reload the checks"
 jq '.checks += [{id: "e2e-api", name: "E2E api", url: "http://api:3000/checks", intervalMs: 10000, timeoutMs: 2000}]' \

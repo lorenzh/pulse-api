@@ -101,6 +101,25 @@ function migrate(db: DatabaseSync): void {
   );
   db.exec("CREATE INDEX IF NOT EXISTS results_by_time ON results (timestamp)");
   db.exec("CREATE INDEX IF NOT EXISTS incidents_check_id ON incidents (check_id)");
+  // Additive and idempotent: an older database gets the tables, an existing one is untouched.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS manual_incidents (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      impact TEXT NOT NULL,
+      component_ids_json TEXT NOT NULL,
+      status TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      resolved_at INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS manual_incident_updates (
+      incident_id INTEGER NOT NULL REFERENCES manual_incidents(id) ON DELETE CASCADE,
+      n INTEGER NOT NULL,
+      at INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      message TEXT NOT NULL,
+      PRIMARY KEY (incident_id, n)
+    );`);
   if (isLateMissing) {
     // Once: a row inserted after a row of the same check and location with a larger timestamp was late.
     db.exec(`UPDATE results SET late = 1 WHERE EXISTS (

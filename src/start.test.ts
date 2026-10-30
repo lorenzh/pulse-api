@@ -381,3 +381,56 @@ test("a token validation error names the tokens file path and the setting", asyn
   assert.ok(message.includes("PULSE_TOKENS_FILE"), message);
   assert.ok(!message.includes('"short"'), message);
 });
+
+const ADMIN_TOKEN = "admin-token-0123456789abcdef";
+
+test("admin tokens: the file enables writes; the token never reaches the logs", async () => {
+  const adminFile = join(dir, "admin.json");
+  writeFileSync(adminFile, JSON.stringify({ tokens: [{ name: "ops", token: ADMIN_TOKEN }] }));
+  const { base, lines } = deps({ PULSE_API_ADMIN_TOKENS_FILE: adminFile });
+  const api = await startApi(base);
+  try {
+    const url = `http://127.0.0.1:${api.port}/manual-incidents`;
+    const refused = await fetch(url, { method: "POST", body: "{}" });
+    assert.equal(refused.status, 401);
+    const created = await fetch(url, {
+      method: "POST",
+      headers: { authorization: `Bearer ${ADMIN_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ title: "t", impact: "none", componentIds: [], message: "m" }),
+    });
+    assert.equal(created.status, 201);
+    const metrics = await (await fetch(`http://127.0.0.1:${api.port}/metrics`)).text();
+    assert.match(metrics, /^pulse_api_manual_incidents_created_total 1$/m);
+  } finally {
+    await api.close();
+  }
+  assert.ok(!lines.some((l) => l.line.includes(ADMIN_TOKEN)));
+  assert.ok(lines.some((l) => l.line.includes('"manualIncidents":"writable"')));
+});
+
+test("without the admin tokens setting the writes answer 404", async () => {
+  const { base } = deps({});
+  const api = await startApi(base);
+  try {
+    const r = await fetch(`http://127.0.0.1:${api.port}/manual-incidents`, { method: "POST" });
+    assert.equal(r.status, 404);
+  } finally {
+    await api.close();
+  }
+});
+
+test("admin token startup errors name the setting and never print a token", async () => {
+  const overlap = join(dir, "admin-overlap.json");
+  writeFileSync(overlap, JSON.stringify({ tokens: [{ name: "ops", token: TOKEN }] }));
+  const message = await startupMessage({ PULSE_API_ADMIN_TOKENS_FILE: overlap });
+  assert.match(message, /also a probe token.*PULSE_API_ADMIN_TOKENS_FILE=/);
+  assert.ok(!message.includes(TOKEN));
+  const missing = await startupMessage({ PULSE_API_ADMIN_TOKENS_FILE: join(dir, "nope.json") });
+  assert.match(missing, /cannot read admin tokens file/);
+  const example = join(dir, "admin-example.json");
+  writeFileSync(
+    example,
+    JSON.stringify({ tokens: [{ name: "ops", token: "replace-with-x-0123456789" }] }),
+  );
+  assert.match(await startupMessage({ PULSE_API_ADMIN_TOKENS_FILE: example }), /placeholder/);
+});

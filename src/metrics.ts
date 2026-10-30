@@ -6,6 +6,7 @@ const CHECK_STATES: readonly CheckState[] = ["up", "degraded", "down", "unknown"
 export interface Metrics {
   recordResult(checkId: string, location: string, latencyMs: number): void;
   recordIncident(event: "opened" | "resolved"): void;
+  recordManualIncident(event: "created" | "resolved"): void;
   recordRequest(route: string, code: number): void;
   /** Start both heartbeat counters of a check at 0, so they show before the first event. */
   trackHeartbeat(checkId: string): void;
@@ -40,6 +41,14 @@ export function createMetrics({ listStates = () => [] }: MetricsDeps = {}): Metr
   );
   const opened = registry.counter("pulse_api_incidents_opened_total", "Incidents opened.");
   const resolved = registry.counter("pulse_api_incidents_resolved_total", "Incidents resolved.");
+  const manualCreated = registry.counter(
+    "pulse_api_manual_incidents_created_total",
+    "Manual incidents created.",
+  );
+  const manualResolved = registry.counter(
+    "pulse_api_manual_incidents_resolved_total",
+    "Manual incidents resolved.",
+  );
   const requests = registry.counter(
     "pulse_api_http_requests_total",
     "HTTP requests, by route pattern and status code.",
@@ -52,6 +61,8 @@ export function createMetrics({ listStates = () => [] }: MetricsDeps = {}): Metr
   up.set(1);
   opened.inc({}, 0);
   resolved.inc({}, 0);
+  manualCreated.inc({}, 0);
+  manualResolved.inc({}, 0);
 
   registry.collect(() => {
     checkState.remove({});
@@ -67,6 +78,9 @@ export function createMetrics({ listStates = () => [] }: MetricsDeps = {}): Metr
     },
     recordIncident(event) {
       (event === "opened" ? opened : resolved).inc();
+    },
+    recordManualIncident(event) {
+      (event === "created" ? manualCreated : manualResolved).inc();
     },
     recordRequest(route, code) {
       requests.inc({ route, code: String(code) });

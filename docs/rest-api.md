@@ -237,6 +237,46 @@ The `401` body is always `{"error":"unauthorized"}` with `www-authenticate: Bear
 
 A ping stores an `up` result with `location` `heartbeat`, `statusCode` null, `latencyMs` 0 and the API clock as `timestamp`. `lastResultAt` of the check is the time of the last ping. The path form puts the secret in the URL; see [Heartbeat checks](operation.md#heartbeat-checks).
 
+## Manual incidents
+
+Operators post incidents by hand, with timed updates. They sit beside the automatic incidents of `GET /incidents` and use their own ids. The shapes are `ManualIncident`, `ManualIncidentInput` and `ManualIncidentUpdateInput` of `@lorenzh/pulse-contract`.
+
+A `ManualIncident` is `{id, title, componentIds, impact, status, createdAt, resolvedAt, updates}`. `impact` is `none`, `minor`, `major` or `critical` and is fixed at creation. `status` is `investigating`, `identified`, `monitoring` or `resolved`. `updates` is `{at, status, message}[]`, append-only and ordered by `at`; the index is the stable update number, and update 0 is the creation message. `resolvedAt` is set exactly when `status` is `resolved`. The server sets all times.
+
+Limits: `title` 1 to 200 characters, `message` 1 to 2000, at most 100 updates per incident, at most 50 `componentIds`, body at most 16 KiB (`413` above). Text is plain: control characters (newline only in messages) are refused with `400`. HTML is stored as written; consumers must escape it. `componentIds` may be empty (a general incident); the ids must be unique and configured components, and with no components configured the list must be empty.
+
+### GET /manual-incidents
+
+Public, like the other reads. `?status=open|resolved|all` (default `all`): open incidents (newest created first), then incidents resolved within 14 days (newest first, at most 50). `resolved` returns only the second group. Another value answers `400`. `GET /manual-incidents/:id` answers one incident or `404`.
+
+### Write routes
+
+All need `Authorization: Bearer <admin token>` (see [admin-tokens.json](configuration.md#admin-tokensjson)). A missing, wrong or probe token answers `401`. Without `PULSE_API_ADMIN_TOKENS_FILE` they answer `404`.
+
+| Route                                | Body                                                                                                      | Answer                 |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------- | ---------------------- |
+| `POST /manual-incidents`             | `title`, `impact`, `componentIds`, `message`, optional `status` (default `investigating`, not `resolved`) | `201` and the incident |
+| `POST /manual-incidents/:id/updates` | `status` (may be `resolved`), `message`                                                                   | `201` and the incident |
+| `POST /manual-incidents/:id/resolve` | optional `message` (default `Resolved.`)                                                                  | `200` and the incident |
+| `DELETE /manual-incidents/:id`       | none                                                                                                      | `204`                  |
+
+A resolved incident takes no update and no second resolve, and is never reopened: `409`. The same answer follows the 100th update. An unknown id answers `404`, invalid input `400`. Resolving by either route yields one resolution. `DELETE` is a hard delete: notifications that were sent cannot be retracted, and the incident leaves the status page and feeds. Resolved incidents are deleted after the retention window, like [resolved results](concepts.md#retention).
+
+```sh
+API=http://127.0.0.1:3000
+TOKEN=$(cat /path/to/admin-token)   # a value from your admin tokens file
+curl -sS -X POST "$API/manual-incidents" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Slow checkout","impact":"minor","componentIds":["web"],"message":"We are looking into it."}'
+curl -sS -X POST "$API/manual-incidents/1/updates" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"status":"identified","message":"Cause found."}'
+curl -sS -X POST "$API/manual-incidents/1/resolve" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"message":"Fixed."}'
+curl -sS -X DELETE "$API/manual-incidents/1" -H "Authorization: Bearer $TOKEN"
+```
+
+`GET /components` is unchanged: it does not apply manual incidents. The status page maps an open incident's impact to the state of its components (`minor` to `degraded`, `major` and `critical` to `down`) with `incidentImpactState` of the contract.
+
 ## GET /healthz
 
 Liveness. Returns `200` with the body `ok` as long as the process answers. It does not access the database and also answers `200` while the API shuts down (it answered `503` then before; use `/readyz` for readiness). Any other method (also `HEAD`) gives `405` with `{"error":"method not allowed"}` and `Allow: GET`.

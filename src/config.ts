@@ -10,6 +10,7 @@ import {
   validateComponent,
 } from "@lorenzh/pulse-contract";
 import { z } from "zod";
+import { type AdminToken, parseAdminTokens } from "./admin-tokens.ts";
 import { firstIssue, type Issue, pathName, unknownKey } from "./issue-path.ts";
 import { type ProbeToken, parseTokens, TokensError } from "./tokens.ts";
 
@@ -425,22 +426,29 @@ export function loadChecks(path: string): Check[] {
   return parseFile(path, parseChecks);
 }
 
-/** Read and validate the tokens file. Messages never contain a token value. */
-export function loadTokens(path: string): ProbeToken[] {
+function readTokensJson(path: string, label: string): unknown {
   let text: string;
   try {
     text = readFileSync(path, "utf8");
   } catch (err) {
-    throw new TokensError(`cannot read tokens file ${path}: ${(err as Error).message}`, {
+    throw new TokensError(`cannot read ${label} ${path}: ${(err as Error).message}`, {
       cause: err,
     });
   }
-  let data: unknown;
   try {
-    data = JSON.parse(text);
+    return JSON.parse(text);
   } catch (err) {
     // The JSON parser message can quote file content, so it is left out.
-    throw new TokensError(`tokens file ${path} is not valid JSON`, { cause: err });
+    throw new TokensError(`${label} ${path} is not valid JSON`, { cause: err });
   }
-  return parseTokens(data);
+}
+
+/** Read and validate the tokens file. Messages never contain a token value. */
+export function loadTokens(path: string): ProbeToken[] {
+  return parseTokens(readTokensJson(path, "tokens file"));
+}
+
+/** Read and validate the admin tokens file. Messages never contain a token value. */
+export function loadAdminTokens(path: string): AdminToken[] {
+  return parseAdminTokens(readTokensJson(path, "admin tokens file"));
 }
