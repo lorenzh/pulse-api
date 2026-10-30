@@ -20,7 +20,7 @@ test("config: components keep their order and a check may be in several", () => 
 test("config: rejects invalid components with a path", () => {
   const cases: [unknown, RegExp][] = [
     ["x", /components.*array/],
-    [[web, web], /duplicate component id "web"/],
+    [[web, web], /^components\[1\]\.id: duplicate component id "web"/],
     [
       [{ ...web, checkIds: ["zzz"] }],
       /components\[0\]\.checkIds\[0\] must reference a configured check/,

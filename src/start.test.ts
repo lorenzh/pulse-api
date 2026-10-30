@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { ChecksResponse } from "@lorenzh/pulse-contract";
 import { type LogLevel, StartupError } from "@lorenzh/pulse-kit";
 import { openDb } from "./db.ts";
+import { createManualIncidentStore } from "./manual-incidents.ts";
 import { type StartDeps, startApi } from "./start.ts";
 
 const TOKEN = "test-token-east-0123456789abcdef";
@@ -442,4 +443,41 @@ test("admin token startup errors name the setting and never print a token", asyn
     JSON.stringify({ tokens: [{ name: "ops", token: "replace-with-x-0123456789" }] }),
   );
   assert.match(await startupMessage({ PULSE_API_ADMIN_TOKENS_FILE: example }), /placeholder/);
+});
+
+/** Start the API on a database that holds one manual incident; read the list and the item. */
+async function readStoredManualIncident(
+  env: Record<string, string>,
+): Promise<{ list: { id: number }[]; item: number; id: number }> {
+  const db = openDb(":memory:");
+  const store = createManualIncidentStore(db, { now: () => NOW, componentIds: new Set() });
+  const stored = store.create({ title: "t", impact: "none", componentIds: [], message: "m" });
+  assert.equal(store.list("all").length, 1);
+  const { base } = deps(env, { openDb: () => db });
+  const api = await startApi(base);
+  try {
+    const r = await fetch(`http://127.0.0.1:${api.port}/manual-incidents`);
+    assert.equal(r.status, 200);
+    const item = await fetch(`http://127.0.0.1:${api.port}/manual-incidents/${stored.id}`);
+    return { list: (await r.json()) as { id: number }[], item: item.status, id: stored.id };
+  } finally {
+    await api.close();
+  }
+}
+
+test("without the admin tokens setting the reads are empty although the database holds incidents", async () => {
+  const result = await readStoredManualIncident({});
+  assert.deepEqual(result.list, []);
+  assert.equal(result.item, 404);
+});
+
+test("with the admin tokens setting the reads list the stored incidents", async () => {
+  const adminFile = join(dir, "admin-read.json");
+  writeFileSync(adminFile, JSON.stringify({ tokens: [{ name: "ops", token: ADMIN_TOKEN }] }));
+  const result = await readStoredManualIncident({ PULSE_API_ADMIN_TOKENS_FILE: adminFile });
+  assert.deepEqual(
+    result.list.map((i) => i.id),
+    [result.id],
+  );
+  assert.equal(result.item, 200);
 });

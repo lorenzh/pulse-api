@@ -39,7 +39,7 @@ function setup(isAdminOn: boolean) {
     manualIncidents: store,
     ...(isAdminOn ? { adminTokens: [ADMIN] } : {}),
   });
-  return { server, metrics, db };
+  return { server, metrics, db, store };
 }
 
 const on = setup(true);
@@ -282,6 +282,42 @@ test("without admin tokens the writes answer 404 and reads are empty", async () 
   );
   const list = await call("GET", "/manual-incidents", undefined, null, offBase);
   assert.deepEqual(list.json, []);
+});
+
+test("without admin tokens the reads are empty although the database holds incidents", async () => {
+  const created = off.store.create(NEW);
+  try {
+    assert.equal(off.store.list("all").length, 1);
+    for (const status of ["", "?status=open", "?status=resolved", "?status=all"]) {
+      const list = await call("GET", `/manual-incidents${status}`, undefined, null, offBase);
+      assert.equal(list.status, 200, status);
+      assert.deepEqual(list.json, [], status);
+    }
+    assert.equal(
+      (await call("GET", `/manual-incidents/${created.id}`, undefined, null, offBase)).status,
+      404,
+    );
+  } finally {
+    off.store.remove(created.id);
+  }
+});
+
+test("with admin tokens the reads serve the incidents the database holds", async () => {
+  const created = on.store.create(NEW);
+  try {
+    const list = await call("GET", "/manual-incidents", undefined, null);
+    assert.equal(list.status, 200);
+    assert.deepEqual(
+      (list.json as ManualIncident[]).map((i) => i.id),
+      [created.id],
+    );
+    assert.equal(
+      (await call("GET", `/manual-incidents/${created.id}`, undefined, null)).status,
+      200,
+    );
+  } finally {
+    on.store.remove(created.id);
+  }
 });
 
 test("unknown ids, bad ids, and wrong methods", async () => {

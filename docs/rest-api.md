@@ -247,7 +247,7 @@ Limits: `title` 1 to 200 characters, `message` 1 to 2000, at most 100 updates pe
 
 ### GET /manual-incidents
 
-Public, like the other reads. `?status=open|resolved|all` (default `all`): open incidents (newest created first), then incidents resolved within 14 days (newest first, at most 50). `resolved` returns only the second group. Another value answers `400`. `GET /manual-incidents/:id` answers one incident or `404`.
+Public, like the other reads. `?status=open|resolved|all` (default `all`): open incidents (newest created first), then incidents resolved within 14 days (newest first, at most 50). `resolved` returns only the second group. Another value answers `400`. `GET /manual-incidents/:id` answers one incident or `404`. Without `PULSE_API_ADMIN_TOKENS_FILE` the feature is off: the list is empty and every id answers `404`, even when the database holds incidents.
 
 ### Write routes
 
