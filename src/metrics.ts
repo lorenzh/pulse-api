@@ -1,4 +1,4 @@
-import type { CheckState } from "@lorenzh/pulse-contract";
+import type { CheckState, Location } from "@lorenzh/pulse-contract";
 import { createRegistry, DURATION_BUCKETS_SECONDS } from "@lorenzh/pulse-kit";
 
 const CHECK_STATES: readonly CheckState[] = ["up", "degraded", "down", "unknown", "maintenance"];
@@ -20,15 +20,24 @@ export interface Metrics {
 export interface MetricsDeps {
   /** The check states at scrape time. */
   listStates?: () => readonly { id: string; state: CheckState }[];
+  /** The probe locations at scrape time. */
+  listLocations?: () => readonly Location[];
 }
 
 /** Counters live in memory and reset on restart; check states are read at every scrape. */
-export function createMetrics({ listStates = () => [] }: MetricsDeps = {}): Metrics {
+export function createMetrics({
+  listStates = () => [],
+  listLocations = () => [],
+}: MetricsDeps = {}): Metrics {
   const registry = createRegistry();
   const up = registry.gauge("pulse_up", "Whether the API is running.");
   const checkState = registry.gauge(
     "pulse_api_check_state",
     "Current state of a check: 1 for its state, 0 for the others.",
+  );
+  const locationLastResult = registry.gauge(
+    "pulse_api_location_last_result_timestamp_seconds",
+    "Newest accepted result timestamp of a probe location, in Unix seconds.",
   );
   const ingested = registry.counter(
     "pulse_api_results_ingested_total",
@@ -68,6 +77,10 @@ export function createMetrics({ listStates = () => [] }: MetricsDeps = {}): Metr
     checkState.remove({});
     for (const { id, state } of listStates()) {
       for (const s of CHECK_STATES) checkState.set(s === state ? 1 : 0, { check: id, state: s });
+    }
+    locationLastResult.remove({});
+    for (const { name, lastResultAt } of listLocations()) {
+      locationLastResult.set(lastResultAt / 1000, { location: name });
     }
   });
 

@@ -65,6 +65,10 @@ See [checks.json](configuration.md#checksjson).
 
 The API exits with code 2. Set `PULSE_RETENTION_DAYS` to an integer of at least 90, or unset it.
 
+### `pulse-api: PULSE_LOCATION_SILENT_MS: must be an integer from 1 to 2147483647`
+
+The setting is not a positive integer in milliseconds within the timer limit. Fix or unset it; unset derives the threshold from the check intervals.
+
 ### `pulse-api: cannot listen on port <n> (PORT): ...`
 
 The API exits with code 2. Port 3000 (or `PORT`) is in use. Choose another `PORT`. With Compose, change `PULSE_API_PORT`.
@@ -126,6 +130,10 @@ No ping arrived within `period + grace`. Run the job's `curl` by hand and look f
 ## A check stays `unknown`
 
 No probe has posted a result yet. Check that the probe runs, that it reaches the API, and that it logs no `401` or `403`. After you add a check, restart the API; the probe picks the check up at its next reload.
+
+## A location is `silent` in `GET /locations`
+
+The API received no accepted result from that location for longer than the silent threshold. Check that the probe runs, that it reaches the API and that it logs no `401` or `403`. A probe that cannot reach the API buffers its results and the location turns `reporting` again as soon as it delivers. `PULSE_LOCATION_SILENT_MS` changes the threshold. After an API restart each location counts as seen at the timestamp of its newest stored result: it is `reporting` while that result is younger than the threshold and `silent` after that, until its probe posts again.
 
 ## The status page is stale
 

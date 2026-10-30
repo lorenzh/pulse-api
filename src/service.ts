@@ -8,6 +8,7 @@ import type {
   CheckWithState,
   HttpCheck,
   Incident,
+  Location,
   LocationResult,
   MaintenanceWindow,
   Result,
@@ -85,6 +86,14 @@ export const UPTIME_DAYS = 90;
 /** How long `listChecks` and `getUptime` answers are reused when no ingest happened. */
 export const CACHE_TTL_MS = 5000;
 
+/** The lowest default for the silent threshold of a location. */
+export const MIN_LOCATION_SILENT_MS = 180_000;
+
+function compareNames(a: string, b: string): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
+
 export class UnknownCheckError extends Error {}
 
 /** The location of ping results and of the down result the evaluator writes. */
@@ -104,7 +113,14 @@ export interface HeartbeatInfo {
 
 export interface Service {
   upsertChecks(checks: Check[]): void;
-  ingest(result: Result): void;
+  /**
+   * Store a result. Idempotent on (check, location, timestamp): a repeat changes nothing and
+   * returns false; a new result returns true. `isGenerated` marks a sample the api made itself (a
+   * heartbeat ping or the evaluator's down result): two of those in one millisecond are both kept.
+   */
+  ingest(result: Result, isGenerated?: boolean): boolean;
+  /** Every probe location seen, sorted by name, with its state at the current time. */
+  listLocations(): Location[];
   listChecks(): CheckWithState[];
   /** Every active check as written in the checks file, for an authenticated probe. No state. */
   listProbeChecks(): Check[];
@@ -202,6 +218,8 @@ export interface ServiceOptions {
   now?: () => number;
   /** Receives one line per incident resolved because its check left the checks file. */
   log?: (line: string) => void;
+  /** `PULSE_LOCATION_SILENT_MS`; without it the threshold follows the check intervals. */
+  locationSilentMs?: number;
   /** Called after a transaction commits, once per incident opened or resolved. */
   onIncident?: (event: "opened" | "resolved") => void;
 }
@@ -292,12 +310,52 @@ export function createService(
     now = Date.now,
     log = () => undefined,
     onIncident = () => undefined,
+    locationSilentMs,
   }: ServiceOptions = {},
 ): Service {
   const windows = [...maintenance].sort(
     // eslint-disable-next-line sonarjs/no-nested-conditional -- tie-break comparator reads clearest as one expression; refactor out of scope
     (a, b) => a.start - b.start || (a.checkId < b.checkId ? -1 : a.checkId > b.checkId ? 1 : 0),
   );
+  // Per probe location: the newest result timestamp and the api time of the last accepted result.
+  // Replayed results carry old timestamps, so `lastSeenAt` decides the state. Rebuilt from the
+  // stored results, so a restart does not forget a location.
+  const tracker = new Map<string, { lastResultAt: number; lastSeenAt: number }>();
+  const trackLocation = (location: string, timestamp: number): void => {
+    if (location === HEARTBEAT_LOCATION) return;
+    const seen = tracker.get(location);
+    tracker.set(location, {
+      lastResultAt: Math.max(seen?.lastResultAt ?? 0, timestamp),
+      lastSeenAt: now(),
+    });
+  };
+  const silentThreshold = (): number => {
+    if (locationSilentMs !== undefined) return locationSilentMs;
+    const largest = (largestInterval.get() as { m: number | null } | undefined)?.m ?? 0;
+    return Math.max(MIN_LOCATION_SILENT_MS, 3 * largest);
+  };
+  /** Insert one result row; false when the (check, location, timestamp) sample is stored already. */
+  const storeSample = (result: Result, isLate: boolean, isGenerated: boolean): boolean => {
+    let at = result.timestamp;
+    let changes = 0;
+    do {
+      changes = insertResult.run(
+        result.checkId,
+        at,
+        result.status,
+        result.statusCode,
+        result.latencyMs,
+        result.reason,
+        result.location,
+        result.certDaysLeft ?? null,
+        result.attempts ?? 1,
+        isLate ? 1 : 0,
+      ).changes;
+      // Generated samples are made here, never re-sent: two in one millisecond are both kept.
+      at += 1;
+    } while (changes === 0 && isGenerated);
+    return changes > 0;
+  };
   let cache = new Map<"checks" | "uptime", { at: number; windows: string; value: unknown }>();
   const invalidate = (): void => {
     cache = new Map();
@@ -359,7 +417,8 @@ export function createService(
   );
   const insertResult = db.prepare(
     `INSERT INTO results (check_id, timestamp, status, status_code, latency_ms, reason, location, cert_days_left, attempts, late)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (check_id, location, timestamp) DO NOTHING`,
   );
   const newestStored = db.prepare(
     "SELECT MAX(timestamp) AS t FROM results WHERE check_id = ? AND location = ?",
@@ -412,6 +471,18 @@ export function createService(
            AND (n.timestamp > r.timestamp OR (n.timestamp = r.timestamp AND n.id > r.id)))
        LIMIT ?)`,
   );
+  const largestInterval = db.prepare(
+    "SELECT MAX(interval_ms) AS m FROM checks WHERE active = 1 AND type != 'heartbeat'",
+  );
+  const newestPerLocation = db.prepare(
+    "SELECT location, MAX(timestamp) AS t FROM results WHERE location != ? GROUP BY location",
+  );
+  for (const row of newestPerLocation.all(HEARTBEAT_LOCATION) as {
+    location: string;
+    t: number;
+  }[]) {
+    tracker.set(row.location, { lastResultAt: row.t, lastSeenAt: row.t });
+  }
   const updateState = db.prepare(
     `UPDATE checks SET state = ?, consecutive_down = ?, last_result_at = ?, last_reason = ? WHERE id = ?`,
   );
@@ -647,8 +718,9 @@ export function createService(
       for (let i = 0; i < resolved; i++) onIncident("resolved");
     },
 
-    ingest(result) {
+    ingest(result, isGenerated = false) {
       let incidentEvent: "opened" | "resolved" | undefined;
+      let isNew = true;
       invalidate();
       transaction(() => {
         const row = getActiveCheck.get(result.checkId) as CheckRow | undefined;
@@ -663,18 +735,11 @@ export function createService(
         // Heartbeat timestamps come from the api clock, so lateness does not apply.
         const isLate =
           !isHeartbeat && newest !== null && newest !== undefined && result.timestamp < newest;
-        insertResult.run(
-          result.checkId,
-          result.timestamp,
-          result.status,
-          result.statusCode,
-          result.latencyMs,
-          result.reason,
-          result.location,
-          result.certDaysLeft ?? null,
-          result.attempts ?? 1,
-          isLate ? 1 : 0,
-        );
+        // A repeat of a stored sample (a probe re-sending after a lost answer) changes nothing.
+        if (!storeSample(result, isLate, isGenerated)) {
+          isNew = false;
+          return;
+        }
         // A late result is history only: it must not rewrite live state or incidents.
         if (isLate) return;
         // Older than the newest result of any location: history and quorum input only.
@@ -726,7 +791,22 @@ export function createService(
           result.checkId,
         );
       });
+      // Only after the commit: a rolled-back result must not mark its location reporting.
+      if (isNew) trackLocation(result.location, result.timestamp);
       if (incidentEvent !== undefined) onIncident(incidentEvent);
+      return isNew;
+    },
+
+    listLocations() {
+      const threshold = silentThreshold();
+      const t = now();
+      return [...tracker.entries()]
+        .map(([name, seen]) => ({
+          name,
+          lastResultAt: seen.lastResultAt,
+          state: t - seen.lastSeenAt > threshold ? ("silent" as const) : ("reporting" as const),
+        }))
+        .sort((a, b) => compareNames(a.name, b.name));
     },
 
     listCheckStates() {

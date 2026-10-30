@@ -20,7 +20,7 @@ The database is one SQLite file, at `PULSE_DB` (default `./pulse.db`, `/data/pul
 
 ### Schema
 
-The schema is versioned with `PRAGMA user_version`. At start the API creates missing tables, then runs every numbered step (`src/migrations.ts`) above the file's version, all in one transaction. A failing step rolls everything back and the start fails. Version 1 rebuilds `checks` to hold tcp, dns and domain checks; `results` and `incidents` are not touched.
+The schema is versioned with `PRAGMA user_version`. At start the API creates missing tables, then runs every numbered step (`src/migrations.ts`) above the file's version, all in one transaction. A failing step rolls everything back and the start fails. Version 1 rebuilds `checks` to hold tcp, dns and domain checks; `results` and `incidents` are not touched. Version 2 makes `results` unique on (`check_id`, `location`, `timestamp`): it deletes duplicate rows, keeping the first by row id, and adds the unique index. The start logs `migration 2: removed <n> duplicate results, kept the first of each` when it deleted any. On a large database this step takes seconds (about 1.8 s for 1 million results in a local measurement).
 
 - Upgrades are automatic. Back up the database file first.
 - A file whose `user_version` is higher than the program supports is refused at start with exit code 2 (`database schema version 2 is newer than this program supports (1); downgrades are not supported`). Downgrades are not supported: restore the backup.
@@ -130,6 +130,12 @@ A configuration or startup error is not a JSON line: it is one line `pulse-api: 
 The log never prints token values.
 
 With Compose: `docker compose logs api`.
+
+## Probe locations
+
+`GET /locations` lists each probe location with `reporting` or `silent` ([REST API](rest-api.md#get-locations)); the silent threshold is `PULSE_LOCATION_SILENT_MS` ([Configuration](configuration.md)). The metric `pulse_api_location_last_result_timestamp_seconds{location}` is the newest accepted result timestamp. Alert on silence, for example `time() - pulse_api_location_last_result_timestamp_seconds > 300`. The metric uses the result timestamp, so after a long outage it lags until a probe has delivered its buffered results; `GET /locations` uses the receive time and is `reporting` as soon as the probe delivers.
+
+A probe that could not reach the API keeps its results in a bounded buffer and re-sends them in order. `POST /results` is idempotent, so a re-sent result that the API already stored is safe. Replayed results are processed like live ones with their original timestamps (they are not late unless they arrive out of order), so a replay can open or resolve an incident with an old time and notify can send late notifications after an outage. The API rejects results older than 7 days.
 
 ## Health and metrics
 

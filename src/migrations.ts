@@ -50,6 +50,15 @@ FROM checks;
 DROP TABLE checks;
 ALTER TABLE checks_new RENAME TO checks;
 `,
+  // 2: idempotent ingest. A sample is one (check, location, timestamp). Duplicates keep the first
+  // row by rowid.
+  `
+DELETE FROM results WHERE id NOT IN (SELECT MIN(id) FROM results GROUP BY check_id, location, timestamp);
+CREATE UNIQUE INDEX results_by_sample ON results (check_id, location, timestamp);
+`,
 ];
+
+/** The step that adds the unique sample index; `openDb` counts the duplicates it removes. */
+export const DEDUPLICATE_STEP = 2;
 
 export const SCHEMA_VERSION: number = MIGRATIONS.length;

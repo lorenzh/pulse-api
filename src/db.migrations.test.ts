@@ -89,7 +89,7 @@ test("a version 0 file upgrades in place and keeps rows, indexes and foreign key
     db
       .query("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'results_by%'")
       .all(),
-  ).toHaveLength(3);
+  ).toHaveLength(4);
   db.run(
     "INSERT INTO checks (id, name, type, host, port, interval_ms) VALUES ('p', 'P', 'tcp', 'h', 1, 1000)",
   );
@@ -178,4 +178,36 @@ test("a migration that leaves a row with a broken foreign key is refused and rol
   const after = new Database(path);
   expect(version(after)).toBe(0);
   after.close();
+});
+
+test("migration 2 removes duplicate results, keeps the first by rowid and logs the count", () => {
+  const path = join(dir, "dup.db");
+  makeV0(path);
+  const raw = new Database(path);
+  raw.run(
+    `INSERT INTO results (check_id, timestamp, status, latency_ms, location) VALUES
+       ('h', 1, 'down', 9, 'default'), ('h', 1, 'up', 1, 'default'), ('h', 1, 'up', 1, 'default'),
+       ('h', 1, 'up', 1, 'other'), ('h', 2, 'up', 1, 'default')`,
+  );
+  raw.close();
+  const lines: string[] = [];
+  const db = openDb(path, undefined, (line) => lines.push(line));
+  const rows = db
+    .query("SELECT latency_ms, location, timestamp FROM results WHERE check_id = 'h' ORDER BY id")
+    .all();
+  expect(rows).toEqual([
+    { latency_ms: 3.5, location: "default", timestamp: 1 }, // the fixture row came first
+    { latency_ms: 1, location: "other", timestamp: 1 },
+    { latency_ms: 1, location: "default", timestamp: 2 },
+  ]);
+  expect(lines).toEqual(["migration 2: removed 3 duplicate results, kept the first of each"]);
+  expect(() =>
+    db.run(
+      "INSERT INTO results (check_id, timestamp, status, latency_ms, location) VALUES ('h', 2, 'up', 1, 'default')",
+    ),
+  ).toThrow();
+  db.close();
+  const quiet: string[] = [];
+  openDb(path, undefined, (line) => quiet.push(line)).close();
+  expect(quiet).toEqual([]);
 });

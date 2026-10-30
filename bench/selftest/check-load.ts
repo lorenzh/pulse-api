@@ -48,7 +48,7 @@ const post = await closeFirstServer();
 const postResets: Resets = { retriedGets: 0, droppedPosts: 0 };
 const postSamples: number[] = [];
 await timed(post.url, { method: "POST", body: "{}" }, 204, postSamples, postResets);
-// A POST is never sent twice: a repeated result would be stored twice.
+// A POST is never sent twice: an api from before the unique result key would store it twice.
 assert.deepEqual(postResets, { retriedGets: 0, droppedPosts: 1 });
 assert.equal(postSamples.length, 0);
 assert.equal(post.connections(), 1);

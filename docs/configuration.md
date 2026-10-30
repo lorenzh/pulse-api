@@ -4,19 +4,22 @@ The API is configured by environment variables and two JSON files. It reads all 
 
 ## Environment variables
 
-| Variable                      | Default         | Meaning                                                                                                   |
-| ----------------------------- | --------------- | --------------------------------------------------------------------------------------------------------- |
-| `PORT`                        | `3000`          | HTTP port. An integer from 0 to 65535.                                                                    |
-| `PULSE_DB`                    | `./pulse.db`    | Path of the SQLite file. It is created if it does not exist.                                              |
-| `PULSE_CHECKS_FILE`           | `./checks.json` | Path of the [checks file](#checksjson).                                                                   |
-| `PULSE_TOKENS_FILE`           | `./tokens.json` | Path of the [tokens file](#tokensjson).                                                                   |
-| `PULSE_API_ADMIN_TOKENS_FILE` | unset           | Path of the [admin tokens file](#admin-tokensjson). Unset turns the write routes of manual incidents off. |
-| `PULSE_RETENTION_DAYS`        | `90`            | Days of raw results to keep. An integer of at least 90.                                                   |
-| `PULSE_LOG_LEVEL`             | `info`          | `debug`, `info`, `warn` or `error`. Another value stops the start.                                        |
+| Variable                      | Default         | Meaning                                                                                                                                                                                   |
+| ----------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PORT`                        | `3000`          | HTTP port. An integer from 0 to 65535.                                                                                                                                                    |
+| `PULSE_DB`                    | `./pulse.db`    | Path of the SQLite file. It is created if it does not exist.                                                                                                                              |
+| `PULSE_CHECKS_FILE`           | `./checks.json` | Path of the [checks file](#checksjson).                                                                                                                                                   |
+| `PULSE_TOKENS_FILE`           | `./tokens.json` | Path of the [tokens file](#tokensjson).                                                                                                                                                   |
+| `PULSE_API_ADMIN_TOKENS_FILE` | unset           | Path of the [admin tokens file](#admin-tokensjson). Unset turns the write routes of manual incidents off.                                                                                 |
+| `PULSE_RETENTION_DAYS`        | `90`            | Days of raw results to keep. An integer of at least 90.                                                                                                                                   |
+| `PULSE_LOCATION_SILENT_MS`    | derived         | Silence after which a probe location is `silent` in `GET /locations`. An integer from 1 to 2147483647. Unset: `max(180000, 3 × the largest interval of the active non-heartbeat checks)`. |
+| `PULSE_LOG_LEVEL`             | `info`          | `debug`, `info`, `warn` or `error`. Another value stops the start.                                                                                                                        |
 
 The Docker image sets `NODE_ENV=production` and `PULSE_DB=/data/pulse.db`.
 
 `PULSE_RETENTION_DAYS` that is not an integer of at least 90 stops the start with `PULSE_RETENTION_DAYS: must be an integer >= 90`. An unset or empty value means 90. See [Retention](concepts.md#retention).
+
+`PULSE_LOCATION_SILENT_MS` that is not an integer from 1 to 2147483647 stops the start with `PULSE_LOCATION_SILENT_MS: must be an integer from 1 to 2147483647`. See [Probe locations](concepts.md#probe-locations).
 
 Example:
 

@@ -35,7 +35,7 @@ await runService({
         if (level === "warn" || level === "error") process.stderr.write(`${line}\n`);
         else process.stdout.write(`${line}\n`);
       },
-      openDb: (path) => openDb(path),
+      openDb: (path, log) => openDb(path, undefined, log),
     });
   },
   stop: async () => {

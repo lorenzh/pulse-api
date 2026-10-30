@@ -23,7 +23,7 @@ function setup(now = () => NOW) {
   );
   const add = (t: number, status: string, n = 1, id = "a", loc = "default") => {
     db.run("BEGIN");
-    for (let i = 0; i < n; i++) insert.run(id, t, status, loc);
+    for (let i = 0; i < n; i++) insert.run(id, t + i, status, loc);
     db.run("COMMIT");
   };
   return { db, service, add };

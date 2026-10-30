@@ -62,6 +62,8 @@ Every message names the field, for example `timestamp is more than 60000 ms in t
 
 A result older than the newest stored result of the same check (any location) never changes the state, the counter, the incidents or `lastResultAt`; it is stored and listed in the results history (see [Late results](concepts.md#late-results)). Rows stored earlier with a future timestamp are not cleaned up; an operator can delete them from the `results` table.
 
+`POST /results` is idempotent on (check, location, timestamp). The same result posted again answers `204` like the first time, stores no row, and changes no state, counter, incident, metric or location time. The first post wins: a repeat with other values is ignored. A probe can therefore re-send buffered results after a lost answer. (Heartbeat pings and missed-ping results are made by the API itself; two in the same millisecond are both kept, the second one millisecond later. A result posted to `POST /results` for a heartbeat check follows the rule above.)
+
 Every response carries the headers `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` `Referrer-Policy: no-referrer` and `x-pulse-contract: <WIRE_VERSION>` (the wire-format version of the contract, `1` today). The result triggers one evaluation (see [Quorum and incidents](concepts.md#quorum-and-incidents)).
 
 Example (`PULSE_PROBE_TOKEN` holds the token of the `tokens.json` entry `east`, and `checks.json` has a check `example`):
@@ -144,6 +146,19 @@ Errors: `400` `limit must be a positive integer`, `400` `before must be a non-ne
 ```sh
 curl 'http://localhost:3000/checks/example/results?limit=1'
 ```
+
+## GET /locations
+
+No token, `GET` only. Returns the probe locations that posted a result, sorted by name, as `Location[]` (`LocationsResponse`):
+
+```json
+[{ "name": "east", "lastResultAt": 1761652800000, "state": "reporting" }]
+```
+
+- `lastResultAt` is the newest timestamp (epoch ms) of an accepted result of the location. A late or replayed result never lowers it.
+- `state` is `silent` when the API received no accepted result from the location for more than the silent threshold, else `reporting`. The rule uses the time the API received a result, not the result timestamp: a probe that replays buffered results with old timestamps is `reporting` as soon as it delivers. The threshold is `PULSE_LOCATION_SILENT_MS`, or `max(180000, 3 × the largest intervalMs of the active non-heartbeat checks)` when it is unset, evaluated at each read.
+- The heartbeat pseudo location (`heartbeat`) is never listed. Rejected posts (`400`, `401`, `403`, `404`) do not count.
+- The list is kept in memory. At start it is rebuilt from the newest stored result per location, so after a restart a location is `reporting` only for the rest of the threshold after its last stored result, and `silent` until its probe posts again. A location with no stored result is unknown until it posts.
 
 ## GET /uptime
 
@@ -289,16 +304,17 @@ Readiness, no token. Returns `200 ok` when `SELECT 1` works on the database and 
 
 Prometheus text format, no authentication. Counters live in memory and reset at restart. Any other method gives the same `405` as on `/healthz`.
 
-| Series                               | Type      | Labels                                                                                      |
-| ------------------------------------ | --------- | ------------------------------------------------------------------------------------------- |
-| `pulse_up`                           | gauge     | none. Always `1`.                                                                           |
-| `pulse_api_check_state`              | gauge     | `check`, `state`. `1` for the current state of each check, `0` for the others.              |
-| `pulse_api_results_ingested_total`   | counter   | `location`                                                                                  |
-| `pulse_api_result_latency_seconds`   | histogram | `check`. The latency the probe reported. Buckets 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10 s.     |
-| `pulse_api_incidents_opened_total`   | counter   | none                                                                                        |
-| `pulse_api_incidents_resolved_total` | counter   | none                                                                                        |
-| `pulse_api_http_requests_total`      | counter   | `route` (a pattern such as `/checks/:id/results`, `/heartbeat/:id`, or `unmatched`), `code` |
-| `pulse_heartbeat_pings_total`        | counter   | `check`. Accepted pings. Failed pings are only in the request counter, with code 401.       |
-| `pulse_heartbeat_missed_total`       | counter   | `check`. One per `period` elapsed after the deadline `period + grace`.                      |
+| Series                                             | Type      | Labels                                                                                      |
+| -------------------------------------------------- | --------- | ------------------------------------------------------------------------------------------- |
+| `pulse_up`                                         | gauge     | none. Always `1`.                                                                           |
+| `pulse_api_check_state`                            | gauge     | `check`, `state`. `1` for the current state of each check, `0` for the others.              |
+| `pulse_api_results_ingested_total`                 | counter   | `location`. A repeated post is not counted.                                                 |
+| `pulse_api_location_last_result_timestamp_seconds` | gauge     | `location`. `lastResultAt` of `GET /locations` in Unix seconds, read at the scrape.         |
+| `pulse_api_result_latency_seconds`                 | histogram | `check`. The latency the probe reported. Buckets 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10 s.     |
+| `pulse_api_incidents_opened_total`                 | counter   | none                                                                                        |
+| `pulse_api_incidents_resolved_total`               | counter   | none                                                                                        |
+| `pulse_api_http_requests_total`                    | counter   | `route` (a pattern such as `/checks/:id/results`, `/heartbeat/:id`, or `unmatched`), `code` |
+| `pulse_heartbeat_pings_total`                      | counter   | `check`. Accepted pings. Failed pings are only in the request counter, with code 401.       |
+| `pulse_heartbeat_missed_total`                     | counter   | `check`. One per `period` elapsed after the deadline `period + grace`.                      |
 
 The labels hold check ids and locations only. Check URLs, hosts, keywords, reasons and tokens never appear. The check ids are still configuration, so do not publish `/metrics` on a public network: scrape it from the private network, as with the read routes above.

@@ -179,6 +179,7 @@ const ROUTES = [
   "/components",
   "/components/uptime",
   "/incidents",
+  "/locations",
   "/maintenance",
   "/manual-incidents",
   "/healthz",
@@ -265,16 +266,19 @@ async function servePing(
     throw bodyFailure(err);
   }
   try {
-    ops.service.ingest({
-      checkId: id,
-      timestamp: now(),
-      status: "up",
-      statusCode: null,
-      latencyMs: 0,
-      reason: null,
-      location: HEARTBEAT_LOCATION,
-      attempts: 1,
-    });
+    ops.service.ingest(
+      {
+        checkId: id,
+        timestamp: now(),
+        status: "up",
+        statusCode: null,
+        latencyMs: 0,
+        reason: null,
+        location: HEARTBEAT_LOCATION,
+        attempts: 1,
+      },
+      true,
+    );
     ops.metrics.recordHeartbeatPing(id);
   } catch (err) {
     // An inactive check records nothing, but the job keeps working.
@@ -470,6 +474,7 @@ async function handle(
     path === "/components" ||
     path === "/components/uptime" ||
     path === "/incidents" ||
+    path === "/locations" ||
     path === "/maintenance" ||
     RESULTS_PATH.test(path);
   if (!known) throw new HttpError(404, "not found");
@@ -494,14 +499,16 @@ async function handle(
       throw new HttpError(403, "location does not match token");
     }
     result.location = tokenLocation;
+    let isNew: boolean;
     try {
-      service.ingest(result);
+      isNew = service.ingest(result);
     } catch (err) {
       if (err instanceof UnknownCheckError)
         throw new HttpError(404, `unknown check "${result.checkId}"`);
       throw err;
     }
-    ops.metrics.recordResult(result.checkId, result.location, result.latencyMs);
+    // A repeat is answered like the first post but is not counted again.
+    if (isNew) ops.metrics.recordResult(result.checkId, result.location, result.latencyMs);
     res.writeHead(204).end();
     return;
   }
@@ -519,6 +526,11 @@ async function handle(
 
   if (path === "/checks") {
     sendJson(res, 200, service.listChecks());
+    return;
+  }
+
+  if (path === "/locations") {
+    sendJson(res, 200, service.listLocations());
     return;
   }
 
