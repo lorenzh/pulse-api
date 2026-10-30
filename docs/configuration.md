@@ -38,6 +38,8 @@ Before this version the tokens file error exited with code 1, and other configur
 
 The file is `{"checks": [...], "maintenance": [...]}`. `maintenance` is optional. The checks are validated and upserted into the database at start. Existing state and results are kept. An invalid or unreadable file stops the start with one line `pulse-api: <path>: <message>` and exit code 2. A key that is not documented below is rejected, at the top level, in a check and in a `maintenance` window: `<path>: unknown key "keywrod" in checks[2]`. A `tls` check accepts only its own keys (`host`, `port`, `warnDays`, `intervalMs` and the common ones). Probes read the same checks from `GET /checks`. Values outside the documented ranges are rejected, with the cap 2147483647 (2^31-1, the largest timer delay) for `intervalMs`, `timeoutMs` and `latencyObjectiveMs`. A checks file that held out-of-range values before now fails to load.
 
+An explicit `null` is rejected for `type`, `retries`, `retryDelayMs`, the TLS `port` and `warnDays`, and the heartbeat `grace`; leave the key out to get the default. This is deliberate. The messages are, for example, `checks[0].retries must be an integer from 0 to 10`, `checks[0].port must be an integer from 1 to 65535` and `checks[0].grace must be an integer from 0 to 86400000 (milliseconds)`; a `null` type reports `checks[0].type Invalid input: expected "http"`.
+
 See `checks.example.json` for a complete example.
 
 ### Fields of every check
@@ -106,7 +108,7 @@ The secret is kept in memory only. `GET /checks`, `/metrics`, incident reasons a
 | `end`     | yes      | Same format, exclusive, must be after `start`.                        |
 | `note`    | yes      | Non-empty string shown with the maintenance state.                    |
 
-`start` and `end` must be real calendar dates (`2030-02-30` is rejected, `2028-02-29` is fine), and `end` must be after `start`. Windows are read at start only. See [Maintenance windows](concepts.md#maintenance-windows) for the rules.
+`start` and `end` must be real calendar dates (`2030-02-30` is rejected, `2028-02-29` is fine), and `end` must be after `start`. A window with a missing note and a reversed range reports the note first: `maintenance[0].note is required and must be a non-empty string`. Windows are read at start only. See [Maintenance windows](concepts.md#maintenance-windows) for the rules.
 
 ## tokens.json
 
@@ -118,7 +120,7 @@ The file is `{"tokens": [{"location": "east", "token": "<secret>"}]}`. Keep it o
 | `location` | Non-empty string, at most 64 characters after trim.                                                                              |
 | `token`    | String of at least 16 characters, unique across the file. A value that starts with `replace-with-` is rejected as a placeholder. |
 
-A token must not contain whitespace, must not start with `replace-with-` and must not be one of the public example tokens. A location may have several tokens. Create a token with `openssl rand -hex 32`. If the file is missing, not valid JSON or invalid, the API prints `pulse-api: <message>` and exits with code 2. The messages never print token values, and the start log only counts tokens and locations. See [Locations and tokens](concepts.md#locations-and-tokens).
+A token must not contain whitespace, must not start with `replace-with-` and must not be one of the public example tokens. A location may have several tokens. Create a token with `openssl rand -hex 32`. If the file is missing, not valid JSON or invalid, the API prints `pulse-api: <message>` and exits with code 2. Each error message ends with `(PULSE_TOKENS_FILE=<path>)`. The messages never print token values, and the start log only counts tokens and locations. See [Locations and tokens](concepts.md#locations-and-tokens).
 
 ## Compose variables
 

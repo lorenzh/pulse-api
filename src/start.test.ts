@@ -372,3 +372,12 @@ test("shutdown during a retention run waits for the run, then closes: no write a
   assert.match(text, /retention: deleted 2500 results/);
   assert.equal(retentionTimers().length, 1, "no run was scheduled after stop");
 });
+
+test("a token validation error names the tokens file path and the setting", async () => {
+  const bad = join(dir, "short-tokens.json");
+  writeFileSync(bad, JSON.stringify({ tokens: [{ location: "eu", token: "short" }] }));
+  const message = await startupMessage({ PULSE_TOKENS_FILE: bad });
+  assert.ok(message.includes(bad), message);
+  assert.ok(message.includes("PULSE_TOKENS_FILE"), message);
+  assert.ok(!message.includes('"short"'), message);
+});

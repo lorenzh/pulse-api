@@ -21,16 +21,22 @@ export const HEARTBEAT_TICK_MS = 1000;
 
 /**
  * Judges every active heartbeat check. A check is overdue when more than `period + grace` passed
- * since the later of its last ping and `startedAt`. `startedAt` is the first time this process saw
- * the check or its period or grace changed, so the downtime of the api never opens an incident.
+ * since the later of its last ping and `startedAt`. `startedAt` is the start of the evaluator for
+ * checks present at the first tick, otherwise the time the check or its period or grace was first
+ * seen, so the downtime of the api never opens an incident.
  */
 export function createHeartbeatEvaluator({ service, metrics, now }: HeartbeatDeps): {
   tick(): void;
 } {
   const watches = new Map<string, Watch>();
+  const startedAt = now();
+  let isFirstTick = true;
   return {
     tick() {
       const t = now();
+      // Checks present at the first tick wait from the start of the evaluator, not from the tick.
+      const since = isFirstTick ? startedAt : t;
+      isFirstTick = false;
       const active = service.listHeartbeats();
       const ids = new Set(active.map((h) => h.id));
       for (const id of watches.keys()) if (!ids.has(id)) watches.delete(id);
@@ -38,7 +44,7 @@ export function createHeartbeatEvaluator({ service, metrics, now }: HeartbeatDep
         let w = watches.get(h.id);
         if (w === undefined || w.period !== h.period || w.grace !== h.grace) {
           metrics.trackHeartbeat(h.id);
-          w = { period: h.period, grace: h.grace, startedAt: t, base: t, missed: 0 };
+          w = { period: h.period, grace: h.grace, startedAt: since, base: since, missed: 0 };
           watches.set(h.id, w);
         }
         const base = Math.max(h.lastPingAt ?? Number.NEGATIVE_INFINITY, w.startedAt);

@@ -149,7 +149,7 @@ hb_page_has_check() {
 }
 
 notify_has() {
-  docker compose exec -T notify cat /data/incidents.jsonl | grep -qF -- "$1"
+  docker compose exec -T notify cat /data/incidents.jsonl | grep -qE -- "(^|[^0-9])$1"
 }
 
 # True once notify finished a good poll; that poll seeds the incidents that already exist.

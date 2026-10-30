@@ -59,8 +59,21 @@ test("an invalid tokens file exits 2", async () => {
 
 test("SIGTERM stops a running API with exit 0", async () => {
   const p = run({});
-  while (!p.out().includes('"listening"')) await new Promise((r) => setTimeout(r, 20));
-  p.child.kill("SIGTERM");
-  assert.equal(await p.exit, 0);
-  assert.match(p.out(), /"msg":"stopped"/);
+  try {
+    let hasExited = false;
+    void p.exit.then(() => {
+      hasExited = true;
+    });
+    const deadline = Date.now() + 10_000;
+    while (!p.out().includes('"listening"')) {
+      if (hasExited) assert.fail(`the API exited before it was ready: ${p.err()}`);
+      if (Date.now() > deadline) assert.fail("the API was not ready within 10 s");
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    p.child.kill("SIGTERM");
+    assert.equal(await p.exit, 0);
+    assert.match(p.out(), /"msg":"stopped"/);
+  } finally {
+    if (p.child.exitCode === null && p.child.signalCode === null) p.child.kill("SIGKILL");
+  }
 });
