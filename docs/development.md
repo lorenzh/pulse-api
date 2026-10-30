@@ -17,17 +17,17 @@ npm start
 
 ## Code layout
 
-| File               | Job                                                                      |
-| ------------------ | ------------------------------------------------------------------------ |
-| `src/main.ts`      | Reads the environment, wires the parts and starts the server.            |
-| `src/server.ts`    | HTTP routes, request validation and error mapping.                       |
-| `src/service.ts`   | All SQL, row mapping to contract types, quorum evaluation.               |
-| `src/state.ts`     | Pure rules: `applyResult` and `quorumStatus`.                            |
-| `src/db.ts`        | Schema and migrations.                                                   |
+| File               | Job                                                                                      |
+| ------------------ | ---------------------------------------------------------------------------------------- |
+| `src/main.ts`      | Reads the environment, wires the parts and starts the server.                            |
+| `src/server.ts`    | HTTP routes, request validation and error mapping.                                       |
+| `src/service.ts`   | All SQL, row mapping to contract types, quorum evaluation.                               |
+| `src/state.ts`     | Pure rules: `applyResult` and `quorumStatus`.                                            |
+| `src/db.ts`        | Schema and migrations.                                                                   |
 | `src/config.ts`    | Parsing of the checks file, the maintenance windows, the components and the tokens file. |
-| `src/tokens.ts`    | Token rules and bearer authentication.                                   |
-| `src/retention.ts` | Retention setting and the hourly cleanup.                                |
-| `src/heartbeat.ts` | The evaluator that writes `down` for heartbeat checks without a ping.    |
+| `src/tokens.ts`    | Token rules and bearer authentication.                                                   |
+| `src/retention.ts` | Retention setting and the hourly cleanup.                                                |
+| `src/heartbeat.ts` | The evaluator that writes `down` for heartbeat checks without a ping.                    |
 
 Types come from `@lorenzh/pulse-contract` (a Git dependency pinned to a full commit SHA). Import them with `import type` only.
 
