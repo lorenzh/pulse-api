@@ -6,6 +6,8 @@ import {
   type MaintenanceWindow,
   type TlsCheck,
 } from "@lorenzh/pulse-contract";
+import { z } from "zod";
+import { firstIssue, type Issue, pathName, unknownKey } from "./issue-path.ts";
 import { type ProbeToken, parseTokens, TokensError } from "./tokens.ts";
 
 export class ConfigError extends Error {
@@ -16,40 +18,7 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-function nonEmptyString(v: unknown): v is string {
-  return typeof v === "string" && v.trim() !== "";
-}
-
-/** An integer from 1 to MAX_TIMER_MS: the largest delay a timer takes. */
-function timerMs(v: unknown): v is number {
-  return typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= MAX_TIMER_MS;
-}
-
 const TIMER_RANGE = `an integer from 1 to ${MAX_TIMER_MS} (milliseconds)`;
-
-function intIn(v: unknown, min: number, max: number): v is number {
-  return typeof v === "number" && Number.isInteger(v) && v >= min && v <= max;
-}
-
-const TOP_KEYS = ["checks", "maintenance"];
-const COMMON_CHECK_KEYS = ["id", "name", "type", "timeoutMs", "keyword"];
-const HTTP_CHECK_KEYS = [
-  ...COMMON_CHECK_KEYS,
-  "url",
-  "intervalMs",
-  "retries",
-  "retryDelayMs",
-  "latencyObjectiveMs",
-];
-const TLS_CHECK_KEYS = [...COMMON_CHECK_KEYS, "host", "port", "warnDays", "intervalMs"];
-const HEARTBEAT_CHECK_KEYS = ["id", "name", "type", "period", "grace", "secret"];
-const MAINTENANCE_KEYS = ["checkId", "start", "end", "note"];
-
-/** Reject a key a typo or a stale option leaves behind: `unknown key "keywrod" in checks[2]`. */
-function rejectUnknownKeys(raw: Record<string, unknown>, allowed: string[], where: string): void {
-  const unknown = Object.keys(raw).find((k) => !allowed.includes(k));
-  if (unknown !== undefined) throw new ConfigError(`unknown key "${unknown}" in ${where}`);
-}
 
 const MAX_RETRIES = 10;
 const MAX_RETRY_DELAY_MS = 60000;
@@ -57,69 +26,177 @@ const DEFAULT_RETRY_DELAY_MS = 1000;
 const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_TLS_PORT = 443;
 const DEFAULT_WARN_DAYS = 14;
-
-function parseTls(raw: Record<string, unknown>, where: string, id: string, name: string): TlsCheck {
-  const host = raw.host;
-  if (
-    !nonEmptyString(host) ||
-    host !== host.trim() ||
-    /[\s/\\?#@]/.test(host) ||
-    host.includes("://") ||
-    // a colon is only valid in a bracketless IPv6 literal, which has at least two
-    (host.includes(":") && host.split(":").length < 3)
-  ) {
-    throw new ConfigError(`${where}.host must be a host name without scheme, port or path`);
-  }
-  const port = raw.port ?? DEFAULT_TLS_PORT;
-  if (!(typeof port === "number" && Number.isInteger(port) && port >= 1 && port <= 65535)) {
-    throw new ConfigError(`${where}.port must be an integer from 1 to 65535`);
-  }
-  const warnDays = raw.warnDays ?? DEFAULT_WARN_DAYS;
-  if (!(typeof warnDays === "number" && Number.isInteger(warnDays) && warnDays >= 0)) {
-    throw new ConfigError(`${where}.warnDays must be an integer of 0 or more (days)`);
-  }
-  if (!timerMs(raw.intervalMs)) {
-    throw new ConfigError(`${where}.intervalMs must be ${TIMER_RANGE}`);
-  }
-  return { id, name, type: "tls", host, port, warnDays, intervalMs: raw.intervalMs };
-}
-
 const MIN_HEARTBEAT_PERIOD_MS = 1000;
 const MAX_HEARTBEAT_MS = 86_400_000;
 const MIN_SECRET_LENGTH = 16;
 const MAX_SECRET_LENGTH = 128;
 const SECRET_PATTERN = /^[A-Za-z0-9._~-]+$/;
 
-/** Messages never contain the secret value. */
+/** A whole number from min to max; every failure reads `message`. */
+function intIn(min: number, max: number, message: string): z.ZodNumber {
+  return z.number({ error: message }).int(message).min(min, message).max(max, message);
+}
+
+/** An integer from 1 to MAX_TIMER_MS: the largest delay a timer takes. */
+function timerMs(): z.ZodNumber {
+  return intIn(1, MAX_TIMER_MS, `must be ${TIMER_RANGE}`);
+}
+
+const REQUIRED_TEXT = "is required and must be a non-empty string";
+
+function requiredText(message: string = REQUIRED_TEXT): z.ZodString {
+  return z.string({ error: message }).refine((v) => v.trim() !== "", message);
+}
+
+function isHostName(host: string): boolean {
+  return !(
+    host.trim() === "" ||
+    host !== host.trim() ||
+    /[\s/\\?#@]/.test(host) ||
+    host.includes("://") ||
+    // a colon is only valid in a bracketless IPv6 literal, which has at least two
+    (host.includes(":") && host.split(":").length < 3)
+  );
+}
+
+function protocolOf(url: string): string | undefined {
+  try {
+    return new URL(url).protocol;
+  } catch {
+    // not a URL: the caller reports it
+    return undefined;
+  }
+}
+
+const URL_TEXT = z
+  .string({ error: REQUIRED_TEXT })
+  .refine((v) => v.trim() !== "", REQUIRED_TEXT)
+  .refine((v) => protocolOf(v) !== undefined, "is not a valid URL")
+  .refine((v) => {
+    const protocol = protocolOf(v);
+    return protocol === "http:" || protocol === "https:";
+  }, "must be http or https");
+
+const KEYWORD = z
+  .string({ error: "must be a non-empty string" })
+  .min(1, "must be a non-empty string")
+  .optional();
+
+const ID_NAME = { id: requiredText(), name: requiredText() };
+
+const HTTP_SCHEMA = z.strictObject({
+  ...ID_NAME,
+  type: z.literal("http").optional(),
+  url: URL_TEXT,
+  intervalMs: timerMs(),
+  retries: intIn(0, MAX_RETRIES, `must be an integer from 0 to ${MAX_RETRIES}`).default(0),
+  retryDelayMs: intIn(
+    0,
+    MAX_RETRY_DELAY_MS,
+    `must be an integer from 0 to ${MAX_RETRY_DELAY_MS} (milliseconds)`,
+  ).default(DEFAULT_RETRY_DELAY_MS),
+  timeoutMs: timerMs().optional(),
+  latencyObjectiveMs: timerMs().optional(),
+  keyword: KEYWORD,
+});
+
+const TLS_HOST = "must be a host name without scheme, port or path";
+const TLS_SCHEMA = z.strictObject({
+  ...ID_NAME,
+  type: z.literal("tls"),
+  host: z.string({ error: TLS_HOST }).refine(isHostName, TLS_HOST),
+  port: intIn(1, 65535, "must be an integer from 1 to 65535").default(DEFAULT_TLS_PORT),
+  warnDays: z
+    .number({ error: "must be an integer of 0 or more (days)" })
+    .int("must be an integer of 0 or more (days)")
+    .min(0, "must be an integer of 0 or more (days)")
+    .default(DEFAULT_WARN_DAYS),
+  intervalMs: timerMs(),
+  timeoutMs: timerMs().optional(),
+  keyword: z.never({ error: "is not allowed on a tls check" }).optional(),
+});
+
+const SECRET_TEXT = `is required: ${MIN_SECRET_LENGTH} to ${MAX_SECRET_LENGTH} characters from A-Z a-z 0-9 . _ ~ -`;
+const HEARTBEAT_SCHEMA = z.strictObject({
+  ...ID_NAME,
+  type: z.literal("heartbeat"),
+  period: intIn(
+    MIN_HEARTBEAT_PERIOD_MS,
+    MAX_HEARTBEAT_MS,
+    `must be an integer from ${MIN_HEARTBEAT_PERIOD_MS} to ${MAX_HEARTBEAT_MS} (milliseconds)`,
+  ),
+  grace: intIn(
+    0,
+    MAX_HEARTBEAT_MS,
+    `must be an integer from 0 to ${MAX_HEARTBEAT_MS} (milliseconds)`,
+  ).default(0),
+  // The message never contains the secret value.
+  secret: z
+    .string({ error: SECRET_TEXT })
+    .min(MIN_SECRET_LENGTH, SECRET_TEXT)
+    .max(MAX_SECRET_LENGTH, SECRET_TEXT)
+    .regex(SECRET_PATTERN, SECRET_TEXT),
+});
+
+/** `unknown key "x" in checks[2]` or `checks[1].port must be ...`; never reads the input. */
+function describeIssue(issue: Issue, prefix: readonly PropertyKey[]): string {
+  const path = [...prefix, ...issue.path];
+  const key = unknownKey(issue);
+  if (key !== undefined) {
+    return `unknown key "${key}" in ${path.length === 0 ? "the top level" : pathName(path)}`;
+  }
+  return `${pathName(path)} ${issue.message}`;
+}
+
+function failWith(error: z.ZodError, prefix: readonly PropertyKey[]): never {
+  const issue = firstIssue(error.issues);
+  if (issue === undefined) throw new ConfigError("invalid config");
+  throw new ConfigError(describeIssue(issue, prefix));
+}
+
+function parseHttp(raw: Record<string, unknown>, where: (string | number)[]): HttpCheck {
+  const parsed = HTTP_SCHEMA.safeParse(raw);
+  if (!parsed.success) return failWith(parsed.error, where);
+  const v = parsed.data;
+  const timeout = v.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const worst = (v.retries + 1) * timeout + v.retries * v.retryDelayMs;
+  if (v.retries > 0 && worst > v.intervalMs) {
+    throw new ConfigError(
+      `${pathName(where)}: worst case ${worst} ms ((retries + 1) * timeoutMs + retries * retryDelayMs) exceeds intervalMs ${v.intervalMs}`,
+    );
+  }
+  const check: HttpCheck = {
+    id: v.id,
+    name: v.name,
+    url: v.url,
+    intervalMs: v.intervalMs,
+    retries: v.retries,
+    retryDelayMs: v.retryDelayMs,
+  };
+  if (v.latencyObjectiveMs !== undefined) check.latencyObjectiveMs = v.latencyObjectiveMs;
+  if (v.type === "http") check.type = "http";
+  if (v.keyword !== undefined) check.keyword = v.keyword;
+  if (v.timeoutMs !== undefined) check.timeoutMs = v.timeoutMs;
+  return check;
+}
+
+function parseTls(raw: Record<string, unknown>, where: (string | number)[]): TlsCheck {
+  const parsed = TLS_SCHEMA.safeParse(raw);
+  if (!parsed.success) return failWith(parsed.error, where);
+  const { id, name, host, port, warnDays, intervalMs, timeoutMs } = parsed.data;
+  const check: TlsCheck = { id, name, type: "tls", host, port, warnDays, intervalMs };
+  if (timeoutMs !== undefined) check.timeoutMs = timeoutMs;
+  return check;
+}
+
 function parseHeartbeat(
   raw: Record<string, unknown>,
-  where: string,
-  id: string,
-  name: string,
+  where: (string | number)[],
 ): { check: Check; secret: string } {
-  if (!intIn(raw.period, MIN_HEARTBEAT_PERIOD_MS, MAX_HEARTBEAT_MS)) {
-    throw new ConfigError(
-      `${where}.period must be an integer from ${MIN_HEARTBEAT_PERIOD_MS} to ${MAX_HEARTBEAT_MS} (milliseconds)`,
-    );
-  }
-  const grace = raw.grace ?? 0;
-  if (!intIn(grace, 0, MAX_HEARTBEAT_MS)) {
-    throw new ConfigError(
-      `${where}.grace must be an integer from 0 to ${MAX_HEARTBEAT_MS} (milliseconds)`,
-    );
-  }
-  const secret = raw.secret;
-  if (
-    typeof secret !== "string" ||
-    secret.length < MIN_SECRET_LENGTH ||
-    secret.length > MAX_SECRET_LENGTH ||
-    !SECRET_PATTERN.test(secret)
-  ) {
-    throw new ConfigError(
-      `${where}.secret is required: ${MIN_SECRET_LENGTH} to ${MAX_SECRET_LENGTH} characters from A-Z a-z 0-9 . _ ~ -`,
-    );
-  }
-  return { check: { id, name, type: "heartbeat", period: raw.period, grace }, secret };
+  const parsed = HEARTBEAT_SCHEMA.safeParse(raw);
+  if (!parsed.success) return failWith(parsed.error, where);
+  const { id, name, period, grace, secret } = parsed.data;
+  return { check: { id, name, type: "heartbeat", period, grace }, secret };
 }
 
 export interface ParsedChecks {
@@ -133,103 +210,43 @@ export function parseChecks(data: unknown): Check[] {
   return parseChecksWithSecrets(data).checks;
 }
 
+const TOP_SCHEMA = z.strictObject(
+  {
+    checks: z.array(z.unknown(), { error: 'config must be an object with a "checks" array' }),
+    // Checked after the checks: it needs their ids.
+    maintenance: z.unknown().optional(),
+  },
+  { error: 'config must be an object with a "checks" array' },
+);
+
 /** Validate a parsed checks file and return the heartbeat secrets with it; throws ConfigError. */
 export function parseChecksWithSecrets(data: unknown): ParsedChecks {
-  if (!isRecord(data) || !Array.isArray(data.checks)) {
+  const top = TOP_SCHEMA.safeParse(data);
+  if (!top.success) {
+    const issue = firstIssue(top.error.issues);
+    if (issue !== undefined && unknownKey(issue) !== undefined) return failWith(top.error, []);
     throw new ConfigError('config must be an object with a "checks" array');
   }
-  rejectUnknownKeys(data, TOP_KEYS, "the top level");
   const seen = new Set<string>();
   const checks: Check[] = [];
   const secrets = new Map<string, string>();
-  // eslint-disable-next-line sonarjs/cognitive-complexity -- splitting this validator/handler would be a behaviour-risking refactor
-  data.checks.forEach((raw: unknown, i: number) => {
-    const where = `checks[${i}]`;
-    if (!isRecord(raw)) throw new ConfigError(`${where} must be an object`);
-    for (const field of ["id", "name"]) {
-      if (!nonEmptyString(raw[field])) {
-        throw new ConfigError(`${where}.${field} is required and must be a non-empty string`);
-      }
-    }
-    const { id, name } = raw as { id: string; name: string };
+  top.data.checks.forEach((raw: unknown, i: number) => {
+    const where = ["checks", i];
+    if (!isRecord(raw)) throw new ConfigError(`${pathName(where)} must be an object`);
     const type = raw.type ?? "http";
     if (type !== "http" && type !== "tls" && type !== "heartbeat") {
-      throw new ConfigError(`${where}.type must be "http", "tls" or "heartbeat"`);
+      throw new ConfigError(`${pathName(where)}.type must be "http", "tls" or "heartbeat"`);
     }
+    let check: Check;
     if (type === "heartbeat") {
-      rejectUnknownKeys(raw, HEARTBEAT_CHECK_KEYS, where);
-      const parsed = parseHeartbeat(raw, where, id, name);
-      if (seen.has(id)) throw new ConfigError(`duplicate check id "${id}"`);
-      seen.add(id);
-      secrets.set(id, parsed.secret);
-      checks.push(parsed.check);
-      return;
-    }
-    rejectUnknownKeys(raw, type === "tls" ? TLS_CHECK_KEYS : HTTP_CHECK_KEYS, where);
-    let check: HttpCheck | TlsCheck;
-    if (type === "tls") {
-      check = parseTls(raw, where, id, name);
+      const parsed = parseHeartbeat(raw, where);
+      check = parsed.check;
+      secrets.set(check.id, parsed.secret);
     } else {
-      if (!nonEmptyString(raw.url)) {
-        throw new ConfigError(`${where}.url is required and must be a non-empty string`);
-      }
-      const url = raw.url;
-      let parsed: URL;
-      try {
-        parsed = new URL(url);
-      } catch {
-        throw new ConfigError(`${where}.url is not a valid URL`);
-      }
-      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-        throw new ConfigError(`${where}.url must be http or https`);
-      }
-      if (!timerMs(raw.intervalMs)) {
-        throw new ConfigError(`${where}.intervalMs must be ${TIMER_RANGE}`);
-      }
-      const retries = raw.retries ?? 0;
-      if (!intIn(retries, 0, MAX_RETRIES)) {
-        throw new ConfigError(`${where}.retries must be an integer from 0 to ${MAX_RETRIES}`);
-      }
-      const retryDelayMs = raw.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
-      if (!intIn(retryDelayMs, 0, MAX_RETRY_DELAY_MS)) {
-        throw new ConfigError(
-          `${where}.retryDelayMs must be an integer from 0 to ${MAX_RETRY_DELAY_MS} (milliseconds)`,
-        );
-      }
-      if (raw.timeoutMs !== undefined && !timerMs(raw.timeoutMs)) {
-        throw new ConfigError(`${where}.timeoutMs must be ${TIMER_RANGE}`);
-      }
-      if (retries > 0) {
-        const timeout = (raw.timeoutMs as number | undefined) ?? DEFAULT_TIMEOUT_MS;
-        const worst = (retries + 1) * timeout + retries * retryDelayMs;
-        if (worst > raw.intervalMs) {
-          throw new ConfigError(
-            `${where}: worst case ${worst} ms ((retries + 1) * timeoutMs + retries * retryDelayMs) exceeds intervalMs ${raw.intervalMs}`,
-          );
-        }
-      }
-      if (raw.latencyObjectiveMs !== undefined && !timerMs(raw.latencyObjectiveMs)) {
-        throw new ConfigError(`${where}.latencyObjectiveMs must be ${TIMER_RANGE}`);
-      }
-      check = { id, name, url, intervalMs: raw.intervalMs, retries, retryDelayMs };
-      if (raw.latencyObjectiveMs !== undefined) check.latencyObjectiveMs = raw.latencyObjectiveMs;
-      if (raw.type === "http") check.type = "http";
+      check = type === "tls" ? parseTls(raw, where) : parseHttp(raw, where);
     }
-    if (raw.timeoutMs !== undefined && !timerMs(raw.timeoutMs)) {
-      throw new ConfigError(`${where}.timeoutMs must be ${TIMER_RANGE}`);
-    }
-    if (raw.keyword !== undefined) {
-      if (check.type === "tls") {
-        throw new ConfigError(`${where}.keyword is not allowed on a tls check`);
-      }
-      if (typeof raw.keyword !== "string" || raw.keyword === "") {
-        throw new ConfigError(`${where}.keyword must be a non-empty string`);
-      }
-      check.keyword = raw.keyword;
-    }
-    if (seen.has(id)) throw new ConfigError(`duplicate check id "${id}"`);
-    seen.add(id);
-    if (raw.timeoutMs !== undefined) check.timeoutMs = raw.timeoutMs as number;
+    if (seen.has(check.id)) throw new ConfigError(`duplicate check id "${check.id}"`);
+    seen.add(check.id);
     checks.push(check);
   });
   return { checks, secrets };
@@ -264,18 +281,13 @@ function isRealCalendarTime(v: string): boolean {
   );
 }
 
-function parseInstant(v: unknown, where: string): number {
-  if (typeof v !== "string" || !ISO_WITH_OFFSET.test(v)) {
-    throw new ConfigError(
-      `${where} must be an ISO 8601 string with an explicit offset (Z or ±hh:mm)`,
-    );
-  }
-  const ms = Date.parse(v);
-  if (Number.isNaN(ms) || !isRealCalendarTime(v)) {
-    throw new ConfigError(`${where} is not a valid date`);
-  }
-  return ms;
-}
+const ISO_TEXT = "must be an ISO 8601 string with an explicit offset (Z or ±hh:mm)";
+
+const INSTANT = z
+  .string({ error: ISO_TEXT })
+  .regex(ISO_WITH_OFFSET, ISO_TEXT)
+  .refine((v) => !Number.isNaN(Date.parse(v)) && isRealCalendarTime(v), "is not a valid date")
+  .transform((v) => Date.parse(v));
 
 export interface Config {
   checks: Check[];
@@ -284,27 +296,33 @@ export interface Config {
   maintenance: MaintenanceWindow[];
 }
 
+function maintenanceSchema(ids: ReadonlySet<string>): z.ZodArray<z.ZodType<MaintenanceWindow>> {
+  const window = z.strictObject(
+    {
+      checkId: requiredText("must reference a configured check").refine(
+        (v) => ids.has(v),
+        "must reference a configured check",
+      ),
+      start: INSTANT,
+      end: INSTANT,
+      note: requiredText(),
+    },
+    { error: "must be an object" },
+  );
+  return z.array(window);
+}
+
 /** Validate a parsed config (checks plus optional maintenance windows); throws ConfigError. */
 export function parseConfig(data: unknown): Config {
   const { checks, secrets } = parseChecksWithSecrets(data);
   const raw = (data as Record<string, unknown>).maintenance;
   if (raw === undefined) return { checks, secrets, maintenance: [] };
   if (!Array.isArray(raw)) throw new ConfigError('"maintenance" must be an array');
-  const ids = new Set(checks.map((c) => c.id));
-  const maintenance = raw.map((w: unknown, i: number): MaintenanceWindow => {
-    const where = `maintenance[${i}]`;
-    if (!isRecord(w)) throw new ConfigError(`${where} must be an object`);
-    rejectUnknownKeys(w, MAINTENANCE_KEYS, where);
-    if (!nonEmptyString(w.checkId) || !ids.has(w.checkId)) {
-      throw new ConfigError(`${where}.checkId must reference a configured check`);
-    }
-    const start = parseInstant(w.start, `${where}.start`);
-    const end = parseInstant(w.end, `${where}.end`);
-    if (end <= start) throw new ConfigError(`${where}.end must be after start`);
-    if (!nonEmptyString(w.note)) {
-      throw new ConfigError(`${where}.note is required and must be a non-empty string`);
-    }
-    return { checkId: w.checkId, start, end, note: w.note };
+  const parsed = maintenanceSchema(new Set(checks.map((c) => c.id))).safeParse(raw);
+  if (!parsed.success) return failWith(parsed.error, ["maintenance"]);
+  const maintenance = parsed.data;
+  maintenance.forEach((w, i) => {
+    if (w.end <= w.start) throw new ConfigError(`maintenance[${i}].end must be after start`);
   });
   return { checks, secrets, maintenance };
 }

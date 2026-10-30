@@ -53,6 +53,12 @@ The checks file is invalid. The API prints one line `pulse-api: <path>: <message
 - `maintenance[<i>].start must be an ISO 8601 string with an explicit offset (Z or ±hh:mm)`
 - `maintenance[<i>].end must be after start`
 
+A wrong type reads like an out-of-range value, for example `checks[0].intervalMs must be an integer from 1 to 2147483647 (milliseconds)` for a string. The file is read with zod schemas, which report only the first problem, in this order: unknown keys, then the fields of the check. Messages that changed with the zod parser:
+
+- A field with the wrong type has the same message as an out-of-range value.
+- A `keyword` on a tls check is reported with the other field errors of that check (`checks[<i>].keyword is not allowed on a tls check`).
+- The first problem of an invalid check can differ when it has several, for example a check with an unknown key and a missing `id` reports the unknown key.
+
 See [checks.json](configuration.md#checksjson).
 
 ### `pulse-api: PULSE_RETENTION_DAYS: must be an integer >= 90`
