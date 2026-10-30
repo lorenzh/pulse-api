@@ -1,6 +1,6 @@
 // One run: a compose stack of the four services plus the bench target, driven by the fixed load.
 import { chmod, copyFile, mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { checksFileJson, tokensFileJson } from "./fixtures.ts";
 import { IDLE_S, runLoad } from "./load.ts";
 import { readContainerProcess, runChecked, runCommand } from "./measure.ts";
@@ -162,6 +162,7 @@ export async function runStack(
   composeFile: string,
   runDir: string,
   log: (line: string) => void,
+  failureLogFile: string,
 ): Promise<StackMetrics> {
   const project = `pulse-bench-${dirs.side}`;
   const compose = composeArgs(project, composeFile);
@@ -189,6 +190,11 @@ export async function runStack(
         for (const service of SERVICES) atWindowStart[service] = samples[service].cpuSeconds;
       },
     });
+    if (load.retriedGets + load.droppedPosts > 0) {
+      log(
+        `connections closed before a response: ${load.retriedGets} GETs retried, ${load.droppedPosts} POSTs dropped`,
+      );
+    }
     const end = await sampleAll(project);
     return {
       startupCpuMs: perService((s) => info(s).cpuMs),
@@ -200,6 +206,9 @@ export async function runStack(
       p95PostResultsMs: load.p95PostResultsMs,
       rps: load.rps,
     };
+  } catch (err) {
+    await dumpStack(compose, env, failureLogFile, log);
+    throw err;
   } finally {
     // A failing teardown must not hide the run's own error: report it and go on.
     const down = await runCommand(
@@ -211,6 +220,22 @@ export async function runStack(
     );
     if (down.code !== 0) log(`compose down failed: ${down.stderr.slice(-200)}`);
   }
+}
+
+/** Save container states and logs of a failed run before the teardown removes them. */
+async function dumpStack(
+  compose: string[],
+  env: Record<string, string>,
+  file: string,
+  log: (line: string) => void,
+): Promise<void> {
+  const ps = await runCommand("docker", [...compose, "ps", "-a"], { env });
+  const logs = await runCommand("docker", [...compose, "logs", "--timestamps", "--no-color"], {
+    env,
+  });
+  await mkdir(dirname(file), { recursive: true });
+  await writeFile(file, `${ps.stdout}${ps.stderr}\n${logs.stdout}${logs.stderr}`);
+  log(`stack state and logs: ${file}`);
 }
 
 async function sampleAll(

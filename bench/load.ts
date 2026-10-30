@@ -37,7 +37,14 @@ export interface LoadResult {
   p95GetChecksMs: number;
   p95PostResultsMs: number;
   rps: number;
+  /** GETs sent again after the connection closed before any response. */
+  retriedGets: number;
+  /** POSTs lost the same way; never sent again, because a repeated result is stored twice. */
+  droppedPosts: number;
 }
+
+/** More closed connections than this in one run fail it: then it is not the keep-alive race. */
+export const MAX_CONNECTION_RESETS = 5;
 
 export interface LoadOptions {
   apiUrl: string;
@@ -53,22 +60,51 @@ interface Stream {
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function timed(
+/**
+ * True for a connection the server closed before it sent any response. Bun reuses a pooled
+ * keep-alive connection that the api closes at its idle timeout at the same moment.
+ */
+export function isClosedBeforeResponse(err: unknown): boolean {
+  const e = err as { code?: unknown; message?: unknown } | null;
+  return (
+    e?.code === "ECONNRESET" ||
+    (typeof e?.message === "string" && e.message.includes("socket connection was closed"))
+  );
+}
+
+export interface Resets {
+  retriedGets: number;
+  droppedPosts: number;
+}
+
+export async function timed(
   url: string,
   init: RequestInit,
   expectedStatus: number,
   samples: number[] | undefined,
+  resets: Resets,
 ): Promise<void> {
+  const method = init.method ?? "GET";
   const start = performance.now();
-  const response = await fetch(url, init).catch((err: unknown) => {
-    throw new Error(
-      `${init.method ?? "GET"} ${url} after ${Math.round(performance.now() - start)} ms`,
-      { cause: err },
-    );
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, init);
+  } catch (err) {
+    const wrap = (cause: unknown): Error =>
+      new Error(`${method} ${url} after ${Math.round(performance.now() - start)} ms`, { cause });
+    if (!isClosedBeforeResponse(err)) throw wrap(err);
+    if (method !== "GET") {
+      resets.droppedPosts += 1;
+      return;
+    }
+    resets.retriedGets += 1;
+    response = await fetch(url, init).catch((retryErr: unknown) => {
+      throw wrap(retryErr);
+    });
+  }
   await response.arrayBuffer();
   if (response.status !== expectedStatus) {
-    throw new Error(`${init.method ?? "GET"} ${url}: status ${response.status}`);
+    throw new Error(`${method} ${url}: status ${response.status}`);
   }
   samples?.push(performance.now() - start);
 }
@@ -81,6 +117,7 @@ export async function runLoad(options: LoadOptions): Promise<LoadResult> {
   const postSamples: number[] = [];
   let measuring = false;
   let failure: Error | undefined;
+  const resets: Resets = { retriedGets: 0, droppedPosts: 0 };
   const fail = (err: unknown): void => {
     failure ??= err instanceof Error ? err : new Error(String(err));
   };
@@ -111,18 +148,20 @@ export async function runLoad(options: LoadOptions): Promise<LoadResult> {
           },
           204,
           measuring ? postSamples : undefined,
+          resets,
         );
       },
     },
     {
       rate: GET_CHECKS_RATE,
       sent: 0,
-      send: () => timed(`${options.apiUrl}/checks`, {}, 200, measuring ? getSamples : undefined),
+      send: () =>
+        timed(`${options.apiUrl}/checks`, {}, 200, measuring ? getSamples : undefined, resets),
     },
     {
       rate: GET_UPTIME_RATE,
       sent: 0,
-      send: () => timed(`${options.apiUrl}/uptime`, {}, 200, undefined),
+      send: () => timed(`${options.apiUrl}/uptime`, {}, 200, undefined, resets),
     },
   ];
 
@@ -132,6 +171,9 @@ export async function runLoad(options: LoadOptions): Promise<LoadResult> {
   const total = (WARMUP_S + DURATION_S) * 1000;
   for (;;) {
     const elapsed = performance.now() - start;
+    if (resets.retriedGets + resets.droppedPosts > MAX_CONNECTION_RESETS) {
+      fail(new Error(`more than ${MAX_CONNECTION_RESETS} connections closed before a response`));
+    }
     if (elapsed >= total || failure !== undefined) break;
     if (windowStart === undefined && elapsed >= WARMUP_S * 1000) {
       await options.onWindowStart();
@@ -157,5 +199,6 @@ export async function runLoad(options: LoadOptions): Promise<LoadResult> {
     p95GetChecksMs: percentile(getSamples, 0.95),
     p95PostResultsMs: percentile(postSamples, 0.95),
     rps: (getSamples.length + postSamples.length) / seconds,
+    ...resets,
   };
 }

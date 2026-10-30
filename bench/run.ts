@@ -136,10 +136,14 @@ async function measureRepoScripts(dirs: SideDirs, samples: Samples): Promise<voi
   }
 }
 
-async function measureStack(dirs: SideDirs, samples: Samples): Promise<void> {
+async function measureStack(
+  dirs: SideDirs,
+  samples: Samples,
+  failureLogFile: string,
+): Promise<void> {
   const runDir = join(WORK_ROOT, "run", dirs.side);
   await runChecked("rm", ["-rf", runDir]);
-  const m = await runStack(dirs, COMPOSE_FILE, runDir, log);
+  const m = await runStack(dirs, COMPOSE_FILE, runDir, log, failureLogFile);
   for (const service of SERVICES) {
     add(samples, service, "startup_cpu_ms", m.startupCpuMs[service]);
     add(samples, service, "startup_wall_ms", m.startupWallMs[service]);
@@ -207,7 +211,8 @@ async function main(): Promise<number> {
   for (let round = 1; round <= args.rounds; round++) {
     for (const side of SIDES) {
       log(`round ${round}/${args.rounds} side ${side}`);
-      await measureStack(dirs[side], samples[side]);
+      const failureLog = join(args.out, `failure-round${round}-${side}.log`);
+      await measureStack(dirs[side], samples[side], failureLog);
       await measureRepoScripts(dirs[side], samples[side]);
     }
   }
