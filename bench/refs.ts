@@ -1,4 +1,7 @@
-// Ref resolution per repository and side. Pure except for the injected `lsRemoteTags`.
+// Ref resolution per repository and side. Pure except for the injected `lsRemoteTags` and
+// `containsCommit`, which runs git.
+import { runCommand } from "./measure.ts";
+
 export const REPOS = ["api", "probe", "status", "notify", "contract", "kit", "config"] as const;
 export type RepoName = (typeof REPOS)[number];
 export type Baseline = Record<string, string>;
@@ -73,4 +76,23 @@ function complete(refs: Partial<Record<RepoName, string>>): Record<RepoName, str
     result[name] = ref;
   }
   return result;
+}
+
+/**
+ * True when the checkout at `dir` contains `commit` (its HEAD descends from it). Fetches the commit
+ * first when the clone lacks it: a ref older than the commit never brought it in.
+ */
+export async function containsCommit(dir: string, commit: string): Promise<boolean> {
+  const present = await runCommand("git", ["cat-file", "-e", `${commit}^{commit}`], { cwd: dir });
+  if (present.code !== 0) {
+    const fetched = await runCommand("git", ["fetch", "-q", "origin", commit], { cwd: dir });
+    if (fetched.code !== 0)
+      throw new Error(`cannot fetch ${commit} in ${dir}: ${fetched.stderr.trim()}`);
+  }
+  const result = await runCommand("git", ["merge-base", "--is-ancestor", commit, "HEAD"], {
+    cwd: dir,
+  });
+  if (result.code === 0) return true;
+  if (result.code === 1) return false;
+  throw new Error(`git merge-base --is-ancestor ${commit} in ${dir}: ${result.stderr.trim()}`);
 }

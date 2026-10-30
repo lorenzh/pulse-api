@@ -37,21 +37,30 @@ export function benchTokens(): { simulated: BenchToken[]; real: BenchToken } {
   };
 }
 
+/** The lorenzh/pulse-api commit that added both latency routes (F8, merged in #56). */
+const LATENCY_ROUTES_COMMIT = "f2f90cd81e4d977a29104d11de3607f3216807d3";
+
 /**
- * GET routes newer than the oldest api the bench compares against, by their name in the route
- * table of `src/server.ts`, with the metric each one feeds. Add a new measured route here.
+ * GET routes newer than the oldest api the bench compares against, each with the api commit that
+ * added it. An api has the route exactly when its ref contains that commit. Add a new measured
+ * route here.
  */
 export const OPTIONAL_ROUTES = {
-  "/latency": "p95_get_latency_ms",
-  "/checks/:id/latency": "p95_get_check_latency_ms",
+  "/latency": LATENCY_ROUTES_COMMIT,
+  "/checks/:id/latency": LATENCY_ROUTES_COMMIT,
 } as const;
 export type OptionalRoute = keyof typeof OPTIONAL_ROUTES;
 
-/** The optional routes absent from an api's route table, given the text of its `src/server.ts`. */
-export function routesMissingFrom(serverSource: string): OptionalRoute[] {
-  return (Object.keys(OPTIONAL_ROUTES) as OptionalRoute[]).filter(
-    (route) => !serverSource.includes(`"${route}"`),
-  );
+/** The routes whose introducing commit the api ref does not contain (`contains` asks git). */
+export async function routesMissingAt<R extends string>(
+  routes: Readonly<Record<R, string>>,
+  contains: (commit: string) => Promise<boolean>,
+): Promise<R[]> {
+  const missing: R[] = [];
+  for (const route of Object.keys(routes) as R[]) {
+    if (!(await contains(routes[route]))) missing.push(route);
+  }
+  return missing;
 }
 
 /** A p95 is null when the api lacks its route (`LoadOptions.missingRoutes`). */

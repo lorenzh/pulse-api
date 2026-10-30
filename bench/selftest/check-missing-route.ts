@@ -1,17 +1,44 @@
-// Self-test: a route side A's source lacks is reported, not compared; a 404 from a route that exists fails.
+// Self-test: a route whose commit side A lacks is reported, not compared; a 404 from a route A has fails.
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { type Budgets, buildRows, EMITTED_METRICS, isFailure, renderTable } from "../compare.ts";
-import { type Resets, routesMissingFrom, timed } from "../load.ts";
+import { OPTIONAL_ROUTES, type Resets, routesMissingAt, timed } from "../load.ts";
+import { runChecked } from "../measure.ts";
+import { containsCommit } from "../refs.ts";
 
-// Capability check from A's route table: only a route its source lacks is skipped on A.
-const oldApi = 'const ROUTES = ["/checks", "/uptime", "/components/uptime"];';
-const newApi = `const ROUTES = ["/checks", "/uptime", "/latency"];\n  return "/checks/:id/latency";`;
-assert.deepEqual(routesMissingFrom(oldApi), ["/latency", "/checks/:id/latency"]);
-assert.deepEqual(routesMissingFrom(newApi), []);
-assert.deepEqual(routesMissingFrom('"/latency"'), ["/checks/:id/latency"]);
+// The route check follows commit ancestry, not the text of server.ts.
+const repo = await mkdtemp(join(tmpdir(), "bench-routes-"));
+const git = (...args: string[]) =>
+  runChecked("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: repo });
+const commit = async (source: string): Promise<string> => {
+  await writeFile(join(repo, "server.ts"), source);
+  await git("add", "server.ts");
+  await git("commit", "-q", "-m", "c");
+  return (await git("rev-parse", "HEAD")).stdout.trim();
+};
+await git("init", "-q");
+const before = await commit('const ROUTES = ["/checks"];\n');
+const added = await commit('const ROUTES = ["/checks", "/latency"];\n');
+await commit("const ROUTES = ['/checks', '/latency'];\n"); // formatting only
+const routes = { "/latency": added };
+const missingAtHead = () => routesMissingAt(routes, (c) => containsCommit(repo, c));
+// A after the commit, with the route string reformatted: the route counts as present.
+assert.deepEqual(await missingAtHead(), []);
+// A before the commit: missing, so reported as not available on A.
+await git("checkout", "-q", before);
+assert.deepEqual(await missingAtHead(), ["/latency"]);
+// A side branch that has the route string but not the commit: still missing.
+await git("checkout", "-q", "-b", "side");
+await commit('const ROUTES = ["/checks", "/latency"];\n// no handler\n');
+assert.deepEqual(await missingAtHead(), ["/latency"]);
+await assert.rejects(containsCommit(repo, "0".repeat(40)), /cannot fetch/);
+await rm(repo, { recursive: true, force: true });
+assert.deepEqual(Object.keys(OPTIONAL_ROUTES), ["/latency", "/checks/:id/latency"]);
 
-// Every requested route must answer 200: a 404 from an A that has the route, or from B, fails.
+// Every requested route must answer 200: a 404 from an A after the commit, or from B, fails.
 const server = createServer((req, res) => {
   res.writeHead(req.url === "/old" ? 200 : 404).end();
 });

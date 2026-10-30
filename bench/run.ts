@@ -12,9 +12,16 @@ import {
   renderTable,
   type Samples,
 } from "./compare.ts";
-import { routesMissingFrom } from "./load.ts";
+import { OPTIONAL_ROUTES, routesMissingAt } from "./load.ts";
 import { runChecked } from "./measure.ts";
-import { type Baseline, REPOS, type RepoName, repoUrl, resolveRefs } from "./refs.ts";
+import {
+  type Baseline,
+  containsCommit,
+  REPOS,
+  type RepoName,
+  repoUrl,
+  resolveRefs,
+} from "./refs.ts";
 import { buildImages, imageSizeMB, runStack, SERVICES, type SideDirs } from "./stack.ts";
 
 const BENCH_DIR = dirname(fileURLToPath(import.meta.url));
@@ -110,7 +117,7 @@ async function prepareSide(side: Side, refs: Record<RepoName, string>): Promise<
   await runChecked("bun", [join(BENCH_DIR, "seed.ts"), apiDir, seedDb]);
   // Only A may predate a measured route; B must serve them all, so a 404 there fails the load.
   const missingRoutes =
-    side === "a" ? routesMissingFrom(await readFile(join(apiDir, "src", "server.ts"), "utf8")) : [];
+    side === "a" ? await routesMissingAt(OPTIONAL_ROUTES, (c) => containsCommit(apiDir, c)) : [];
   if (missingRoutes.length > 0) log(`api A lacks ${missingRoutes.join(", ")}: not measured on A`);
   const dirs: SideDirs = { side, work, seedDb, missingRoutes };
   log(`build images (${side})`);

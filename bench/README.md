@@ -26,7 +26,7 @@ Process numbers are read from inside the container: each service is PID 1, so `d
 
 ## The load
 
-The constants are in `bench/load.ts`. The api database is seeded with 20 checks and 30 days of 1-minute results (864 000 rows) by `bench/seed.ts`, using the `src/db.ts` of the version under test. Three simulated probes send together 30 `POST /results` per second, round robin over the checks. Besides that, 10 `GET /checks`, 1 `GET /uptime`, 1 `GET /latency` and 1 `GET /checks/:id/latency` per second. Every bench check has an `availabilityTarget` (99.5), so `GET /checks` builds an `slo` for each. Before the load, the harness looks up the latency routes in the route table of side A's `src/server.ts` (`OPTIONAL_ROUTES` in `bench/load.ts`). A route that A's source lacks is not requested on A, and its p95 metric is marked `not available on A`. Every route that is requested must answer `200` on both sides: a `404` from a route that A has, or from side B, fails the run. The real probe, status page and notify run as configured in `bench/compose.bench.yaml`; the probe checks the 20 checks every 10 s against a trivial `bench-target` container. Warm-up is 20 s, the measured window 60 s, idle 30 s. Keep `compose.bench.yaml` in step with the environment names of `compose.yaml`.
+The constants are in `bench/load.ts`. The api database is seeded with 20 checks and 30 days of 1-minute results (864 000 rows) by `bench/seed.ts`, using the `src/db.ts` of the version under test. Three simulated probes send together 30 `POST /results` per second, round robin over the checks. Besides that, 10 `GET /checks`, 1 `GET /uptime`, 1 `GET /latency` and 1 `GET /checks/:id/latency` per second. Every bench check has an `availabilityTarget` (99.5), so `GET /checks` builds an `slo` for each. Before the load, the harness checks for each latency route whether side A's api ref contains the commit that added it (`OPTIONAL_ROUTES` in `bench/load.ts`, `git merge-base --is-ancestor`). A route whose commit A does not contain is not requested on A, and its p95 metric is marked `not available on A`. Every route that is requested must answer `200` on both sides: a `404` from a route that A has, or from side B, fails the run. The real probe, status page and notify run as configured in `bench/compose.bench.yaml`; the probe checks the 20 checks every 10 s against a trivial `bench-target` container. Warm-up is 20 s, the measured window 60 s, idle 30 s. Keep `compose.bench.yaml` in step with the environment names of `compose.yaml`.
 
 ## Running it
 
@@ -47,7 +47,7 @@ One table per service, columns Metric, A, B, Change, Budget, Gating/Reported, Ve
 - `FAIL regression`: `B - A > max(A * thresholdPct / 100, floor)`. The defaults are 10 % and the floors `ms` 30, `s` 0.2, `MiB` 3. Improvements never fail.
 - `FAIL budget`: B is above the budget of `bench/budgets.json`.
 - `reported`: the metric does not gate.
-- `not available on A`: side A's api has no such route (see above). The A column shows `n/a`, the metric is not compared and does not fail.
+- `not available on A`: side A's api ref predates the commit that added the route (see above). The A column shows `n/a`, the metric is not compared and does not fail.
 
 Look at `samples.json` in the uploaded artifact for the raw values of every round. When a stack run fails, `failure-round<n>-<side>.log` in the artifact holds `docker compose ps -a` and the logs of every container of that stack.
 
