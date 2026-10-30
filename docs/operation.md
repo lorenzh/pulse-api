@@ -18,9 +18,9 @@ Everything else is kept in the database, so a restart loses no state. The check 
 
 The database is one SQLite file, at `PULSE_DB` (default `./pulse.db`, `/data/pulse.db` in the Docker image). The API does not set a journal mode, so SQLite uses its default (a rollback journal). In a run of the API with the example files, the directory held only `pulse.db`; there were no `-wal` or `-shm` files. A short-lived `pulse.db-journal` file can exist while a write runs.
 
-### Schema migrations
+### Schema
 
-The schema is created at start (`CREATE TABLE IF NOT EXISTS`). Then `src/db.ts` checks the columns of `results` and `checks` and adds the ones that are missing (`location`, `cert_days_left`, `attempts`, `late` and the check columns for TLS, retries and `keyword`), and creates the indexes `results_by_location` and `results_by_time`. Old rows get the defaults (`location` is `default`, `attempts` is 1). The `late` column is backfilled once, when it is added. There is no separate migration command, and no down migration.
+The schema is created at start (`CREATE TABLE IF NOT EXISTS`), with all tables and indexes in one step. There are no migrations: there is no upgrade path from database files of older versions. Delete the old file and start again, or keep the older version for it.
 
 ### Upgrades
 
@@ -28,7 +28,7 @@ The schema is created at start (`CREATE TABLE IF NOT EXISTS`). Then `src/db.ts` 
 2. Stop the API and start the new version with the same `PULSE_DB`.
 3. Look at the start log line to see that it came up (see [Logs](#logs)).
 
-A database that a newer version migrated may not work with an older version. Restore the backup to go back.
+Do not open a database file of an older version with this version. Restore the backup to go back.
 
 ### Backup and restore
 

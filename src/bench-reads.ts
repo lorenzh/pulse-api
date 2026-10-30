@@ -1,4 +1,4 @@
-// Not part of `npm test`. Usage: node src/bench-reads.ts [checks] [days]
+// Not part of `bun test`. Usage: bun src/bench-reads.ts [checks] [days]
 // Seeds an in-memory database with `checks` checks and `days` days of 1-minute results,
 // then prints the time of GET /checks and GET /uptime (service level, cache cleared each run).
 import { openDb } from "./db.ts";
@@ -23,11 +23,11 @@ const insert = db.prepare(
   "INSERT INTO results (check_id, timestamp, status, status_code, latency_ms, reason, location, attempts) VALUES (?, ?, 'up', 200, 5, NULL, 'default', 1)",
 );
 const perCheck = days * 24 * 60;
-db.exec("BEGIN");
+db.run("BEGIN");
 for (let i = 0; i < checkCount; i++) {
   for (let k = 0; k < perCheck; k++) insert.run(`c${i}`, now - k * MINUTE);
 }
-db.exec("COMMIT");
+db.run("COMMIT");
 console.log(`seeded ${checkCount * perCheck} results`);
 
 function time(label: string, fn: () => unknown): void {

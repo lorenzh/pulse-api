@@ -1,10 +1,6 @@
+import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
-import { test } from "node:test";
 import type {
   Check,
   CheckStatus,
@@ -48,18 +44,9 @@ test("config: latencyObjectiveMs accepted, copied and validated", () => {
   }
 });
 
-test("db: old database migrates; objective is served and can be cleared", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "pulse-api-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const path = join(dir, "old.db");
-  const old = new DatabaseSync(path);
-  old.exec(`
-    CREATE TABLE checks (id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL,
-      interval_ms INTEGER NOT NULL, timeout_ms INTEGER, state TEXT NOT NULL DEFAULT 'unknown',
-      consecutive_down INTEGER NOT NULL DEFAULT 0, last_result_at INTEGER, last_reason TEXT);
-    INSERT INTO checks (id, name, url, interval_ms) VALUES ('c1', 'C', 'http://x/', 1000);`);
-  old.close();
-  const s = createService(openDb(path));
+test("db: objective is served and can be cleared", () => {
+  const s = createService(openDb(":memory:"));
+  s.upsertChecks([check]);
   assert.equal("latencyObjectiveMs" in s.listChecks()[0]!, false);
   s.upsertChecks([{ ...check, latencyObjectiveMs: 500 }]);
   assert.equal((s.listChecks()[0] as HttpCheck).latencyObjectiveMs, 500);

@@ -1,6 +1,6 @@
+import { onTestFinished, test } from "bun:test";
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
-import { test } from "node:test";
 import type { CheckUptime } from "@lorenzh/pulse-contract";
 import { openDb } from "./db.ts";
 import { createManualIncidentStore } from "./manual-incidents.ts";
@@ -33,7 +33,7 @@ function setup() {
   }
   // Future-dated result is never deleted.
   insert.run(NOW + DAY, "up", "eu");
-  db.exec(
+  db.run(
     "INSERT INTO incidents (check_id, opened_at, resolved_at) VALUES ('a', 1, 2), ('a', 3, NULL)",
   );
   const timestamps = (): number[] =>
@@ -80,12 +80,16 @@ test("cleanup removes old rows but keeps newest per location, future rows and in
   assert.ok(timestamps().every((t) => t >= TODAY - 89 * DAY));
   assert.deepEqual(service.getUptime(), before);
   assert.equal(service.listIncidents().length, 2);
-  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM results WHERE timestamp > ?").get(NOW)?.n, 1);
+  assert.equal(
+    (db.prepare("SELECT COUNT(*) AS n FROM results WHERE timestamp > ?").get(NOW) as { n: number })
+      .n,
+    1,
+  );
 });
 
 test("a silent location keeps its newest result", async () => {
   const { service, db } = setup();
-  db.exec(
+  db.run(
     "DELETE FROM results WHERE location = 'us' AND timestamp > 0 AND timestamp > " +
       (TODAY - 90 * DAY),
   );
@@ -141,11 +145,11 @@ test("scheduler: runs at startup and hourly, errors do not stop it", async () =>
   await r.stop();
 });
 
-test("GET /uptime is identical before and after cleanup", async (t) => {
+test("GET /uptime is identical before and after cleanup", async () => {
   const { service } = setup();
   const server = createApiServer(service, { tokens: [] });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => server.close());
+  onTestFinished(() => server.close());
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/uptime`;
   const get = async (): Promise<CheckUptime[]> =>
     (await fetch(url)).json() as Promise<CheckUptime[]>;
@@ -240,9 +244,11 @@ test("cleanupResults: resolved manual incidents older than the window are delete
   assert.ok(store.get(recent.id));
   assert.ok(store.get(open.id));
   assert.equal(
-    db
-      .prepare("SELECT count(*) AS n FROM manual_incident_updates WHERE incident_id = ?")
-      .get(oldOne.id)?.n,
+    (
+      db
+        .prepare("SELECT count(*) AS n FROM manual_incident_updates WHERE incident_id = ?")
+        .get(oldOne.id) as { n: number }
+    ).n,
     0,
   );
 });

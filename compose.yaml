@@ -60,9 +60,9 @@ services:
   # Demo profile: docker compose --profile demo up demo-status
   demo-init:
     profiles: [demo]
-    image: node:24-alpine
+    image: oven/bun:1.4.0-alpine@sha256:07235578f79ef8c6f97d94aee7938e76f5cdba5f21ae5dbfdd3d3d38058437eb
     restart: "no"
-    command: ["node", "/demo/init.mjs"]
+    command: ["bun", "/demo/init.mjs"]
     volumes:
       - demo-config:/shared
       - ./compose/demo/init.mjs:/demo/init.mjs:ro
@@ -88,8 +88,8 @@ services:
 
   demo-targets:
     profiles: [demo]
-    image: node:24-alpine
-    command: ["node", "/demo/targets.mjs"]
+    image: oven/bun:1.4.0-alpine@sha256:07235578f79ef8c6f97d94aee7938e76f5cdba5f21ae5dbfdd3d3d38058437eb
+    command: ["bun", "/demo/targets.mjs"]
     volumes:
       - ./compose/demo/targets.mjs:/demo/targets.mjs:ro
 

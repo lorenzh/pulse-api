@@ -1,15 +1,15 @@
+import { afterAll, beforeAll, test } from "bun:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, before, test } from "node:test";
 
 const MAIN = new URL("./main.ts", import.meta.url).pathname;
 let dir: string;
 let env: Record<string, string>;
 
-before(() => {
+beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), "pulse-main-"));
   writeFileSync(
     join(dir, "checks.json"),
@@ -28,7 +28,7 @@ before(() => {
     PULSE_TOKENS_FILE: join(dir, "tokens.json"),
   };
 });
-after(() => rmSync(dir, { recursive: true, force: true }));
+afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 function run(extra: Record<string, string>) {
   const child = spawn(process.execPath, [MAIN], { env: { ...env, ...extra } });

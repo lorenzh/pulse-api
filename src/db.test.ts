@@ -1,52 +1,66 @@
+import { expect, test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
-import { test } from "node:test";
 import { openDb } from "./db.ts";
 
-test("migration creates the incident and per-location result indexes, also when run twice", () => {
+function namesOf(path: string, type: "table" | "index"): string[] {
+  const db = openDb(path);
+  const rows = db.prepare("SELECT name FROM sqlite_master WHERE type = ?").all(type);
+  db.close();
+  return rows.map((r) => String((r as { name: string }).name));
+}
+
+test("a fresh database file gets the full schema with all indexes, also when opened twice", () => {
   const dir = mkdtempSync(join(tmpdir(), "pulse-db-"));
   try {
     const path = join(dir, "t.db");
-    const names = (): string[] => {
-      const db = openDb(path);
-      const rows = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all();
-      db.close();
-      return rows.map((r) => String(r.name));
-    };
     for (const round of [1, 2]) {
-      const found = names();
-      assert.ok(found.includes("incidents_check_id"), `round ${round}`);
-      assert.ok(found.includes("results_by_location"), `round ${round}`);
+      const tables = namesOf(path, "table");
+      for (const t of [
+        "checks",
+        "results",
+        "incidents",
+        "manual_incidents",
+        "manual_incident_updates",
+      ]) {
+        assert.ok(tables.includes(t), `${t} in round ${round}`);
+      }
+      const indexes = namesOf(path, "index");
+      for (const i of [
+        "results_by_check",
+        "results_by_location",
+        "results_by_time",
+        "incidents_check_id",
+      ]) {
+        assert.ok(indexes.includes(i), `${i} in round ${round}`);
+      }
     }
+    const db = openDb(path);
+    const columns = (table: string): string[] =>
+      db
+        .prepare(`PRAGMA table_info(${table})`)
+        .all()
+        .map((r) => String((r as { name: string }).name));
+    for (const c of ["active", "type", "keyword", "grace_ms", "latency_objective_ms"]) {
+      assert.ok(columns("checks").includes(c), c);
+    }
+    for (const c of ["late", "location", "cert_days_left", "attempts"]) {
+      assert.ok(columns("results").includes(c), c);
+    }
+    db.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("migration adds the manual incident tables to an old database and keeps its data", () => {
-  const dir = mkdtempSync(join(tmpdir(), "pulse-db-"));
-  try {
-    const path = join(dir, "old.db");
-    const old = new DatabaseSync(path);
-    old.exec(`CREATE TABLE checks (id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL,
-      interval_ms INTEGER NOT NULL);
-      INSERT INTO checks (id, name, url, interval_ms) VALUES ('a', 'A', 'http://a/', 1000);`);
-    old.close();
-    for (const round of [1, 2]) {
-      const db = openDb(path);
-      const tables = db
-        .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
-        .all()
-        .map((r) => String(r.name));
-      assert.ok(tables.includes("manual_incidents"), `round ${round}`);
-      assert.ok(tables.includes("manual_incident_updates"), `round ${round}`);
-      assert.equal(db.prepare("SELECT count(*) AS n FROM checks").get()?.n, 1);
-      db.close();
-    }
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+test("foreign keys are enforced", () => {
+  const db = openDb(":memory:");
+  expect(() =>
+    db.run(
+      "INSERT INTO results (check_id, timestamp, status, latency_ms) VALUES ('nope', 1, 'up', 1)",
+    ),
+  ).toThrow();
+  db.close();
 });

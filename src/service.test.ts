@@ -1,8 +1,8 @@
+import { onTestFinished, test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
 import type { Check, Result } from "@lorenzh/pulse-contract";
 import { openDb } from "./db.ts";
 import { createService, UnknownCheckError } from "./service.ts";
@@ -100,9 +100,9 @@ test("service: results newest first with limit", () => {
   );
 });
 
-test("service: state and counter persist across reopening a file DB", (t) => {
+test("service: state and counter persist across reopening a file DB", () => {
   const dir = mkdtempSync(join(tmpdir(), "pulse-db-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "p.db");
   const db1 = openDb(path);
   const s1 = createService(db1);
@@ -126,4 +126,31 @@ test("service: state and counter persist across reopening a file DB", (t) => {
   );
   assert.equal(s2.listResults("c1", 10).length, 3);
   db2.close();
+});
+
+test("service: a failing upsert rolls back the whole transaction", () => {
+  const db = openDb(":memory:");
+  const s = createService(db);
+  s.upsertChecks([{ ...check, id: "keep" }]);
+  db.run(`CREATE TRIGGER boom BEFORE INSERT ON checks WHEN NEW.id = 'boom'
+    BEGIN SELECT RAISE(ABORT, 'boom'); END`);
+  assert.throws(
+    () =>
+      s.upsertChecks([
+        { ...check, id: "new" },
+        { ...check, id: "boom" },
+      ]),
+    /boom/,
+  );
+  assert.deepEqual(
+    s.listChecks().map((c) => c.id),
+    ["keep"],
+  );
+  assert.equal(s.hasCheck("new"), false);
+  // The connection is usable again: no transaction was left open.
+  s.upsertChecks([
+    { ...check, id: "keep" },
+    { ...check, id: "new" },
+  ]);
+  assert.equal(s.listChecks().length, 2);
 });

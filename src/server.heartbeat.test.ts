@@ -1,6 +1,6 @@
+import { afterAll, beforeAll, test } from "bun:test";
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
-import { after, before, test } from "node:test";
 import type { ChecksResponse, ErrorResponse } from "@lorenzh/pulse-contract";
 import { openDb } from "./db.ts";
 import { createMetrics } from "./metrics.ts";
@@ -31,11 +31,11 @@ const server = createApiServer(service, {
 });
 let base = "";
 
-before(async () => {
+beforeAll(async () => {
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
-after(async () => {
+afterAll(async () => {
   await new Promise<void>((r) => {
     server.close(() => r());
     server.closeAllConnections();

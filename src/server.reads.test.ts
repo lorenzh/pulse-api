@@ -1,7 +1,7 @@
+import type { Database } from "bun:sqlite";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
-import type { DatabaseSync } from "node:sqlite";
-import { test } from "node:test";
 import type { ErrorResponse, Incident, MaintenanceWindow, Result } from "@lorenzh/pulse-contract";
 import { openDb } from "./db.ts";
 import { createApiServer } from "./server.ts";
@@ -27,7 +27,7 @@ async function start(
   opts: {
     maintenance?: MaintenanceWindow[];
     notReady?: () => string | undefined;
-    prepare?: (s: Service, db: DatabaseSync) => void;
+    prepare?: (s: Service, db: Database) => void;
   } = {},
 ) {
   const db = openDb(":memory:");

@@ -1,5 +1,5 @@
+import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { assertDistinctFromProbeTokens, parseAdminTokens } from "./admin-tokens.ts";
 import { EXAMPLE_TOKENS, matchesAnyToken, TokensError } from "./tokens.ts";
 

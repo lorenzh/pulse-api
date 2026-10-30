@@ -1,6 +1,6 @@
+import { afterAll, beforeAll, test } from "bun:test";
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
-import { after, before, test } from "node:test";
 import {
   type Component,
   type ComponentsResponse,
@@ -50,14 +50,14 @@ const running = start(components);
 const empty = start([]);
 let base = "";
 let emptyBase = "";
-before(async () => {
+beforeAll(async () => {
   for (const s of [running.server, empty.server]) {
     await new Promise<void>((r) => s.listen(0, "127.0.0.1", r));
   }
   base = `http://127.0.0.1:${(running.server.address() as AddressInfo).port}`;
   emptyBase = `http://127.0.0.1:${(empty.server.address() as AddressInfo).port}`;
 });
-after(async () => {
+afterAll(async () => {
   for (const s of [running.server, empty.server]) {
     await new Promise<void>((r) => {
       s.close(() => r());

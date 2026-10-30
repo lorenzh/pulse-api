@@ -16,16 +16,16 @@ The shared tooling configuration lives in `lorenzh/pulse-config`. The other puls
 
 ## Quick start
 
-Requires Node >= 24.
+Requires Bun 1.4.0.
 
 ```sh
-npm ci
+bun install --frozen-lockfile
 cp checks.example.json checks.json
 cp tokens.example.json tokens.json   # replace the placeholder tokens
-npm start
+bun start
 ```
 
-`node:sqlite` prints an experimental warning on start; this is expected.
+The database is created with the current schema. There is no upgrade path from database files of older versions: delete the old file and start again.
 
 ### Docker Compose
 

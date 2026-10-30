@@ -4,16 +4,16 @@ This page holds what is specific to pulse-api. For how the repositories fit toge
 
 ## Run
 
-You need Node 24 or newer.
+You need Bun 1.4.0.
 
 ```sh
-npm ci
+bun install --frozen-lockfile
 cp checks.example.json checks.json
 cp tokens.example.json tokens.json   # edit the tokens first
-npm start
+bun start
 ```
 
-`npm ci` also installs the Lefthook pre-commit hook. Tests use a database in a `mkdtemp` directory, never `./pulse.db`.
+`bun install` also installs the Lefthook pre-commit hook. Tests use a database in a `mkdtemp` directory, never `./pulse.db`.
 
 ## Code layout
 
@@ -23,7 +23,7 @@ npm start
 | `src/server.ts`    | HTTP routes, request validation and error mapping.                                       |
 | `src/service.ts`   | All SQL, row mapping to contract types, quorum evaluation.                               |
 | `src/state.ts`     | Pure rules: `applyResult` and `quorumStatus`.                                            |
-| `src/db.ts`        | Schema and migrations.                                                                   |
+| `src/db.ts`        | Schema (current version only).                                                           |
 | `src/config.ts`    | Parsing of the checks file, the maintenance windows, the components and the tokens file. |
 | `src/tokens.ts`    | Token rules and bearer authentication.                                                   |
 | `src/retention.ts` | Retention setting and the hourly cleanup.                                                |
@@ -34,18 +34,18 @@ Types come from `@lorenzh/pulse-contract` (a Git dependency pinned to a full com
 ## Test
 
 ```sh
-npm run check                     # lint, typecheck and tests, as CI does
-node --test src/state.test.ts     # one file
-node --test --test-name-pattern "<text>"
+bun run check                     # lint, typecheck and tests, as CI does
+bun test src/state.test.ts        # one file
+bun test --test-name-pattern "<text>"
 ```
 
-`npm test` fails below 80 % line coverage. Tests sit next to the code as `src/<module>.test.ts`. Each service has a test that starts its real server on port `0` and drives it over HTTP. Write the failing test first. A change to an endpoint or a response shape gets such a test, typed by the contract.
+`bun test` fails below 80 % line coverage. Tests sit next to the code as `src/<module>.test.ts`. Each service has a test that starts its real server on port `0` and drives it over HTTP. Write the failing test first. A change to an endpoint or a response shape gets such a test, typed by the contract.
 
-`node src/bench-reads.ts [checks] [days]` seeds an in-memory database (default 100 checks, 90 days at a 1-minute interval) and prints the time of `GET /checks` and `GET /uptime`. It is not part of `npm test`.
+`bun src/bench-reads.ts [checks] [days]` seeds an in-memory database (default 100 checks, 90 days at a 1-minute interval) and prints the time of `GET /checks` and `GET /uptime`. It is not part of `bun test`.
 
 ## Lint and format
 
-Biome formats and lints (`npm run lint` to check, `npm run format` to fix). SonarJS runs through ESLint and limits cognitive complexity to 15 per function. The configuration comes from [pulse-config](https://github.com/lorenzh/pulse-config) (Biome, TypeScript, Lefthook and the ESLint setup) and is installed nested with TypeScript 6, while this repository uses TypeScript 7 (`.npmrc` sets `install-strategy=nested`). `eslint.config.js` also ignores `.repos/`. Never weaken the shared configuration to pass a check.
+Biome formats and lints (`bun run lint` to check, `bun run format` to fix). SonarJS runs through ESLint and limits cognitive complexity to 15 per function. The configuration comes from [pulse-config](https://github.com/lorenzh/pulse-config) (Biome, TypeScript, Lefthook and the ESLint setup) and brings TypeScript 6, while this repository uses TypeScript 7 (the `typescript7` dev dependency, run by `bun run typecheck`). `eslint.config.js` also ignores `.repos/`. Never weaken the shared configuration to pass a check.
 
 The Lefthook pre-commit hook (`lefthook.yml`) runs Biome and ESLint on staged files and rejects the commit on failure.
 

@@ -1,5 +1,5 @@
+import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { parseConfig } from "./config.ts";
 
 // eslint-disable-next-line sonarjs/no-clear-text-protocols -- plain http literal is a local test fixture

@@ -34,8 +34,8 @@ services:
 
   # Target of the check e2e-post in compose/e2e/checks.json: see compose/e2e/target.mjs.
   e2e-target:
-    image: node:24-alpine
-    command: ["node", "/e2e/target.mjs"]
+    image: oven/bun:1.4.0-alpine@sha256:07235578f79ef8c6f97d94aee7938e76f5cdba5f21ae5dbfdd3d3d38058437eb
+    command: ["bun", "/e2e/target.mjs"]
     environment:
       SVC_TOKEN: ${E2E_SVC_TOKEN:-e2e-svc-token-sentinel}
     volumes:

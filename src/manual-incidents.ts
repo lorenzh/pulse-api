@@ -1,4 +1,4 @@
-import type { DatabaseSync } from "node:sqlite";
+import type { Database } from "bun:sqlite";
 import {
   MANUAL_INCIDENT_MAX_UPDATES,
   type ManualIncident,
@@ -81,7 +81,7 @@ function resolveMessage(body: unknown): string {
 
 /** Store of manual incidents. Times come from `now`; update numbers are the row index. */
 export function createManualIncidentStore(
-  db: DatabaseSync,
+  db: Database,
   { now, componentIds, onEvent }: ManualIncidentDeps,
 ): ManualIncidentStore {
   const insertIncident = db.prepare(
@@ -127,19 +127,19 @@ export function createManualIncidentStore(
   };
 
   const rowOf = (id: number): IncidentRow => {
-    const row = selectOne.get(id) as IncidentRow | undefined;
-    if (row === undefined) throw new ManualIncidentNotFoundError(`unknown manual incident ${id}`);
+    const row = selectOne.get(id) as IncidentRow | null;
+    if (!row) throw new ManualIncidentNotFoundError(`unknown manual incident ${id}`);
     return row;
   };
 
   const inTransaction = <T>(fn: () => T): T => {
-    db.exec("BEGIN IMMEDIATE");
+    db.run("BEGIN IMMEDIATE");
     try {
       const out = fn();
-      db.exec("COMMIT");
+      db.run("COMMIT");
       return out;
     } catch (err) {
-      db.exec("ROLLBACK");
+      db.run("ROLLBACK");
       throw err;
     }
   };
@@ -183,8 +183,8 @@ export function createManualIncidentStore(
     },
 
     get(id) {
-      const row = selectOne.get(id) as IncidentRow | undefined;
-      return row === undefined ? undefined : toIncident(row);
+      const row = selectOne.get(id) as IncidentRow | null;
+      return row ? toIncident(row) : undefined;
     },
 
     create(body) {

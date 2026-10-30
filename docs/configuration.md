@@ -22,7 +22,7 @@ Example:
 
 ```sh
 PORT=3100 PULSE_DB=/var/lib/pulse/pulse.db PULSE_CHECKS_FILE=/etc/pulse/checks.json \
-  PULSE_TOKENS_FILE=/etc/pulse/tokens.json PULSE_RETENTION_DAYS=180 npm start
+  PULSE_TOKENS_FILE=/etc/pulse/tokens.json PULSE_RETENTION_DAYS=180 bun start
 ```
 
 ## Exit codes

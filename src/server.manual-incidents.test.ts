@@ -1,6 +1,6 @@
+import { afterAll, beforeAll, test } from "bun:test";
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
-import { after, before, test } from "node:test";
 import {
   type Component,
   type ErrorResponse,
@@ -46,14 +46,14 @@ const on = setup(true);
 const off = setup(false);
 let base = "";
 let offBase = "";
-before(async () => {
+beforeAll(async () => {
   for (const s of [on.server, off.server]) {
     await new Promise<void>((r) => s.listen(0, "127.0.0.1", r));
   }
   base = `http://127.0.0.1:${(on.server.address() as AddressInfo).port}`;
   offBase = `http://127.0.0.1:${(off.server.address() as AddressInfo).port}`;
 });
-after(async () => {
+afterAll(async () => {
   for (const s of [on.server, off.server]) {
     s.closeAllConnections();
     await new Promise<void>((r) => s.close(() => r()));

@@ -1,9 +1,5 @@
+import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
-import { test } from "node:test";
 import type { Check, Result } from "@lorenzh/pulse-contract";
 import { openDb } from "./db.ts";
 import { validateResult } from "./server.ts";
@@ -180,33 +176,4 @@ test("validateResult: location normalisation", () => {
   // eslint-disable-next-line sonarjs/no-unused-vars -- rest destructuring omits a property to build the test input
   const { location: _l, ...noLoc } = base;
   assert.equal((validateResult(noLoc, 1, () => undefined) as Result).location, "default");
-});
-
-test("migration: old database without location column", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "pulse-migrate-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const path = join(dir, "old.db");
-  const old = new DatabaseSync(path);
-  old.exec(`
-    CREATE TABLE checks (id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL,
-      interval_ms INTEGER NOT NULL, timeout_ms INTEGER, state TEXT NOT NULL DEFAULT 'unknown',
-      consecutive_down INTEGER NOT NULL DEFAULT 0, last_result_at INTEGER, last_reason TEXT);
-    CREATE TABLE results (id INTEGER PRIMARY KEY AUTOINCREMENT, check_id TEXT NOT NULL,
-      timestamp INTEGER NOT NULL, status TEXT NOT NULL, status_code INTEGER,
-      latency_ms REAL NOT NULL, reason TEXT);
-    INSERT INTO checks (id, name, url, interval_ms) VALUES ('c1', 'C1', 'http://x/', 1000);
-    INSERT INTO results (check_id, timestamp, status, status_code, latency_ms, reason)
-      VALUES ('c1', 5, 'up', 200, 1, NULL);
-  `);
-  old.close();
-  for (let i = 0; i < 2; i++) {
-    const migrated = openDb(path);
-    const s = createService(migrated);
-    assert.equal(s.listResults("c1", 10)[0]!.location, "default");
-    assert.deepEqual(
-      s.listChecks()[0]!.locations.map((l) => l.location),
-      ["default"],
-    );
-    migrated.close();
-  }
 });

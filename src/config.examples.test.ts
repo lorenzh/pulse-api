@@ -1,5 +1,5 @@
+import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { loadAdminTokens, loadChecks, loadConfig, loadTokens } from "./config.ts";
 
 const CHECKS_EXAMPLE = new URL("../checks.example.json", import.meta.url).pathname;
