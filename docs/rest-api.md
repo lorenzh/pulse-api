@@ -19,7 +19,7 @@ The API serves JSON over HTTP. The types come from [pulse-contract](https://gith
 General rules:
 
 - Errors have the body `{"error": "<message>"}` (`ErrorResponse`).
-- An unknown path gives `404` with `not found`. Another method on a known path gives `405` with `method not allowed`.
+- An unknown path gives `404` with `not found`. Another method on a known path gives `405` with `method not allowed` and, on `/healthz`, `/readyz` and `/metrics`, the header `Allow: GET`.
 - A request body over 1,000,000 bytes gives `413` with `request body too large`.
 - An unexpected failure gives `500` with `internal error`. The cause is written to stderr.
 - Timestamps are epoch milliseconds.
@@ -215,15 +215,15 @@ A ping stores an `up` result with `location` `heartbeat`, `statusCode` null, `la
 
 ## GET /healthz
 
-Liveness. Returns `200` with the body `ok` as long as the process answers. It does not access the database and also answers `200` while the API shuts down (it answered `503` then before; use `/readyz` for readiness).
+Liveness. Returns `200` with the body `ok` as long as the process answers. It does not access the database and also answers `200` while the API shuts down (it answered `503` then before; use `/readyz` for readiness). Any other method (also `HEAD`) gives `405` with `{"error":"method not allowed"}` and `Allow: GET`.
 
 ## GET /readyz
 
-Readiness, no token. Returns `200 ok` when `SELECT 1` works on the database and the API is not shutting down. Otherwise `503` with `shutting down` or `database unavailable`; the body never holds a database error text. The Docker `HEALTHCHECK` and the Compose gates use it.
+Readiness, no token. Returns `200 ok` when `SELECT 1` works on the database and the API is not shutting down. Otherwise `503` with `shutting down` or `database unavailable`; the body never holds a database error text. Any other method gives the same `405` as on `/healthz`. The Docker `HEALTHCHECK` and the Compose gates use it.
 
 ## GET /metrics
 
-Prometheus text format, no authentication. Counters live in memory and reset at restart.
+Prometheus text format, no authentication. Counters live in memory and reset at restart. Any other method gives the same `405` as on `/healthz`.
 
 | Series                               | Type      | Labels                                                                                      |
 | ------------------------------------ | --------- | ------------------------------------------------------------------------------------------- |
