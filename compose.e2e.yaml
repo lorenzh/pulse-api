@@ -14,8 +14,8 @@ services:
       - source: admin-tokens
         target: /run/pulse/admin-tokens.json
     volumes:
-      # Same target path as in compose.yaml, so this replaces the regular checks file.
-      - ./compose/e2e/checks.json:/config/checks.json:ro
+      # Same target path as in compose.yaml, so this replaces the regular read-only directory.
+      - ./compose/e2e/ro:/config:ro
       - ./compose/e2e/rw:/config-rw
 
   status:
@@ -38,7 +38,7 @@ services:
       e2e-target:
         condition: service_started
 
-  # Target of the check e2e-post in compose/e2e/checks.json: see compose/e2e/target.mjs.
+  # Target of the check e2e-post in compose/e2e/ro/checks.json: see compose/e2e/target.mjs.
   e2e-target:
     image: oven/bun:1.4.0-alpine@sha256:07235578f79ef8c6f97d94aee7938e76f5cdba5f21ae5dbfdd3d3d38058437eb
     command: ["bun", "/e2e/target.mjs"]

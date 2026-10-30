@@ -5,7 +5,7 @@ tokens.json
 admin-tokens.json
 .env
 !compose/checks.json
-!compose/e2e/checks.json
+!compose/e2e/ro/checks.json
 .bench/
 bench-out/
 compose/e2e/rw/
