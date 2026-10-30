@@ -71,6 +71,15 @@ CREATE TABLE IF NOT EXISTS manual_incident_updates (
   message TEXT NOT NULL,
   PRIMARY KEY (incident_id, n)
 );
+-- Daily p50/p95 of closed UTC days. IF NOT EXISTS: a file from an older release gets it on open.
+CREATE TABLE IF NOT EXISTS latency_daily (
+  check_id TEXT NOT NULL,
+  day INTEGER NOT NULL,
+  p50_ms REAL,
+  p95_ms REAL,
+  count INTEGER NOT NULL,
+  PRIMARY KEY (check_id, day)
+);
 `;
 
 export class SchemaVersionError extends Error {

@@ -96,6 +96,24 @@ The database file does not shrink after deletes. SQLite reuses the freed pages. 
 
 `GET /uptime` returns the uptime of the last 90 UTC calendar days per check. A day's uptime is `(up + degraded results) / all results * 100`, unrounded. `degraded` counts as up, all locations count, and maintenance is not subtracted. A day without results has `uptime: null`: it is not down.
 
+## Latency history and availability objective
+
+`GET /latency` and `GET /checks/:id/latency` return the p50 and p95 latency of the last 90 UTC calendar days, today last. Only HTTP checks have latency; heartbeat, TLS, tcp, dns and domain checks are left out.
+
+- A day counts the `up` and `degraded` results of all locations, late results included. `down` results carry no latency and are left out. `count` is the number of those results.
+- Percentiles are nearest-rank: the value at 1-based index `ceil(p * n)` of the sorted `latencyMs`, with no interpolation. p50 of 10, 20, 30, 40 is 20; p95 of 20 values is the 19th. The values are the reported `latencyMs`, so they are as precise as the probe's.
+- A day without such results has `p50Ms: null`, `p95Ms: null` and `count: 0`.
+- Closed days are stored once in the table `latency_daily` and never recomputed on read. A result that arrives late for a closed day does not change its stored percentiles. Today is computed from the results at every read (after the 5 s cache). A database file from an older release gets the table when it is opened. The rows are filled by a backfill at start and then hourly, off the request path; a read fills the days still missing for the checks it returns. The first backfill of a large history scans the results once.
+- Rollups are removed with the same cutoff as raw results (`PULSE_RETENTION_DAYS`, at least 90 days) and when their check is no longer in the database.
+
+A check or component with `availabilityTarget` carries `slo` in `GET /checks` and `GET /components`:
+
+- `target`: the configured percent. `windowDays`: always 30.
+- `availability`: percent over the last 30 UTC calendar days including today, from the same day buckets as `GET /uptime`: result-weighted, `degraded` counts as up, maintenance is not subtracted. A component merges its member checks as `GET /components/uptime` does. `null` without results.
+- `budgetRemaining`: `100 * (1 - (1 - availability/100) / (1 - target/100))`, in percent of the error budget. It can be negative. Target 99.9 with availability 99.95 gives 50; availability 99.8 gives -100. `null` when `availability` is `null`.
+
+The gauge `pulse_api_slo_budget_remaining_ratio{check}` and `{component}` carries the same budget as a ratio (0.5 is 50 %, -1 is -100 %), so it differs from `budgetRemaining` by the factor 100. It is omitted while the budget is `null`.
+
 ## Maintenance windows
 
 Maintenance windows are listed in `checks.json` (see [maintenance](configuration.md#maintenance)). A result is classified by its own timestamp.

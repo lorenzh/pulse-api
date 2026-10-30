@@ -375,6 +375,14 @@ wait_for "$T_FIRST_RESULT" "e2e-tcp-closed is down and the reason names the refu
 
 step "HTTP check with method, headers, body and JSON assertions"
 wait_for "$T_FIRST_RESULT" "e2e-post is up" post_check_is up
+
+today_utc=$(date -u +%Y-%m-%d)
+api /latency | jq -e --arg today "$today_utc" \
+  '.[] | select(.checkId == "e2e-post") | (.days | length) == 90 and (.days[-1] | .date == $today and .p50Ms != null and .p95Ms != null and .count > 0)' >/dev/null ||
+  fail "GET /latency has no latency values for today for e2e-post"
+echo "ok: GET /latency has values for today for e2e-post"
+api /latency | jq -e 'all(.[]; .checkId != "heartbeat-e2e" and .checkId != "e2e-tcp")' >/dev/null ||
+  fail "GET /latency lists a check without latency"
 [[ "$(hb_status "http://127.0.0.1:${api_port}/probe/checks")" == "401" ]] ||
   fail "GET /probe/checks without a token did not answer 401"
 echo "ok: GET /probe/checks needs a token"

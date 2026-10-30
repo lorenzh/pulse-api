@@ -7,7 +7,9 @@ import {
   type ComponentWithState,
   combineStates,
   type Incident,
+  type UptimeDay,
 } from "@lorenzh/pulse-contract";
+import { buildSlo, windowAvailability } from "./slo.ts";
 
 /** The combined state, window uptime and open incident ids of every component, in configured order. */
 export function componentsWithState(
@@ -15,6 +17,7 @@ export function componentsWithState(
   states: readonly { id: string; state: CheckState }[],
   uptime: readonly CheckUptime[],
   openIncidents: readonly Incident[],
+  sloDays: (checkId: string) => readonly UptimeDay[],
 ): ComponentWithState[] {
   const stateOf = new Map(states.map((s) => [s.id, s.state]));
   const uptimes = componentsUptime(components, uptime);
@@ -24,12 +27,42 @@ export function componentsWithState(
       .filter((incident) => component.checkIds.includes(incident.checkId))
       .map((incident) => incident.id)
       .sort((a, b) => a - b);
-    return {
+    const withState: ComponentWithState = {
       ...component,
       state: combineStates(memberStates),
       uptime: uptimes[i]?.uptime ?? null,
       incidentIds,
     };
+    if (component.availabilityTarget !== undefined) {
+      withState.slo = buildSlo(
+        component.availabilityTarget,
+        windowAvailability(component.checkIds.map(sloDays)),
+      );
+    }
+    return withState;
+  });
+}
+
+function memberDays(component: Component, uptime: readonly CheckUptime[]): UptimeDay[][] {
+  const daysOf = new Map(uptime.map((u) => [u.checkId, u.days]));
+  return component.checkIds.flatMap((id) => {
+    const days = daysOf.get(id);
+    return days === undefined ? [] : [days];
+  });
+}
+
+/** The error budget left, in percent, of every component with a target and results. */
+export function componentBudgets(
+  components: readonly Component[],
+  sloDays: (checkId: string) => readonly UptimeDay[],
+): { id: string; budgetRemaining: number }[] {
+  return components.flatMap((component) => {
+    if (component.availabilityTarget === undefined) return [];
+    const { budgetRemaining } = buildSlo(
+      component.availabilityTarget,
+      windowAvailability(component.checkIds.map(sloDays)),
+    );
+    return budgetRemaining === null ? [] : [{ id: component.id, budgetRemaining }];
   });
 }
 
@@ -38,13 +71,8 @@ export function componentsUptime(
   components: readonly Component[],
   uptime: readonly CheckUptime[],
 ): ComponentUptime[] {
-  const daysOf = new Map(uptime.map((u) => [u.checkId, u.days]));
   return components.map((component) => {
-    const members = component.checkIds.flatMap((id) => {
-      const days = daysOf.get(id);
-      return days === undefined ? [] : [days];
-    });
-    const { days, uptime: windowUptime } = aggregateUptime(members);
+    const { days, uptime: windowUptime } = aggregateUptime(memberDays(component, uptime));
     return { componentId: component.id, days, uptime: windowUptime };
   });
 }

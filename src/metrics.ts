@@ -44,12 +44,18 @@ export interface MetricsDeps {
   listStates?: () => readonly { id: string; state: CheckState }[];
   /** The probe locations at scrape time. */
   listLocations?: () => readonly Location[];
+  /** The error budget left, in percent, of every check and component that has an availability target and results. */
+  listBudgets?: () => {
+    checks: readonly { id: string; budgetRemaining: number }[];
+    components: readonly { id: string; budgetRemaining: number }[];
+  };
 }
 
 /** Counters live in memory and reset on restart; check states are read at every scrape. */
 export function createMetrics({
   listStates = () => [],
   listLocations = () => [],
+  listBudgets = () => ({ checks: [], components: [] }),
 }: MetricsDeps = {}): Metrics {
   const registry = createRegistry();
   const up = registry.gauge("pulse_up", "Whether the API is running.");
@@ -60,6 +66,10 @@ export function createMetrics({
   const locationLastResult = registry.gauge(
     "pulse_api_location_last_result_timestamp_seconds",
     "Newest accepted result timestamp of a probe location, in Unix seconds.",
+  );
+  const budgetRemaining = registry.gauge(
+    "pulse_api_slo_budget_remaining_ratio",
+    "Error budget left of the 30-day availability target, as a ratio (0.5 is 50 %, negative when exceeded).",
   );
   const ingested = registry.counter(
     "pulse_api_results_ingested_total",
@@ -117,6 +127,14 @@ export function createMetrics({
     locationLastResult.remove({});
     for (const { name, lastResultAt } of listLocations()) {
       locationLastResult.set(lastResultAt / 1000, { location: name });
+    }
+    budgetRemaining.remove({});
+    const budgets = listBudgets();
+    for (const { id, budgetRemaining: percent } of budgets.checks) {
+      budgetRemaining.set(percent / 100, { check: id });
+    }
+    for (const { id, budgetRemaining: percent } of budgets.components) {
+      budgetRemaining.set(percent / 100, { component: id });
     }
   });
 
