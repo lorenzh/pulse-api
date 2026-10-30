@@ -44,6 +44,10 @@ Open http://localhost:8080. Stop with `docker compose down`. The demo profile (`
 
 A check of type `heartbeat` is for cron jobs and workers. The job calls `POST|GET /heartbeat/<id>` with `Authorization: Bearer <secret>`; no ping within `period + grace` opens an incident, and the next ping resolves it. See [Configuration](docs/configuration.md#heartbeat-checks), [REST API](docs/rest-api.md#getpost-heartbeatidsecret) and [Operation](docs/operation.md#heartbeat-checks).
 
+## Manual incidents
+
+Operators post incidents with timed updates through `POST /manual-incidents`, `/manual-incidents/:id/updates` and `/manual-incidents/:id/resolve`, and read them from `GET /manual-incidents`. Writes need an admin token from `PULSE_API_ADMIN_TOKENS_FILE` (copy `admin-tokens.example.json`); without it they answer `404`. See [REST API](docs/rest-api.md#manual-incidents) for the shapes, limits and `curl` examples.
+
 ## Health and metrics
 
 `GET /healthz` is liveness: it answers `200 ok` without touching the database, also while the API shuts down. `GET /readyz` is readiness: `200 ok` when the database answers and the API is not shutting down, else `503` without error text. `GET /metrics` serves Prometheus text with check ids only: keep it on a private network. Logs are JSON lines (`PULSE_LOG_LEVEL`). The API stops cleanly on `SIGINT` and `SIGTERM` (exit 0). A configuration error prints one line `pulse-api: <message>` and exits with 2. See [Operation](docs/operation.md).

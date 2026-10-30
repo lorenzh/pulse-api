@@ -4,14 +4,15 @@ The API is configured by environment variables and two JSON files. It reads all 
 
 ## Environment variables
 
-| Variable               | Default         | Meaning                                                            |
-| ---------------------- | --------------- | ------------------------------------------------------------------ |
-| `PORT`                 | `3000`          | HTTP port. An integer from 0 to 65535.                             |
-| `PULSE_DB`             | `./pulse.db`    | Path of the SQLite file. It is created if it does not exist.       |
-| `PULSE_CHECKS_FILE`    | `./checks.json` | Path of the [checks file](#checksjson).                            |
-| `PULSE_TOKENS_FILE`    | `./tokens.json` | Path of the [tokens file](#tokensjson).                            |
-| `PULSE_RETENTION_DAYS` | `90`            | Days of raw results to keep. An integer of at least 90.            |
-| `PULSE_LOG_LEVEL`      | `info`          | `debug`, `info`, `warn` or `error`. Another value stops the start. |
+| Variable                      | Default         | Meaning                                                                                                   |
+| ----------------------------- | --------------- | --------------------------------------------------------------------------------------------------------- |
+| `PORT`                        | `3000`          | HTTP port. An integer from 0 to 65535.                                                                    |
+| `PULSE_DB`                    | `./pulse.db`    | Path of the SQLite file. It is created if it does not exist.                                              |
+| `PULSE_CHECKS_FILE`           | `./checks.json` | Path of the [checks file](#checksjson).                                                                   |
+| `PULSE_TOKENS_FILE`           | `./tokens.json` | Path of the [tokens file](#tokensjson).                                                                   |
+| `PULSE_API_ADMIN_TOKENS_FILE` | unset           | Path of the [admin tokens file](#admin-tokensjson). Unset turns the write routes of manual incidents off. |
+| `PULSE_RETENTION_DAYS`        | `90`            | Days of raw results to keep. An integer of at least 90.                                                   |
+| `PULSE_LOG_LEVEL`             | `info`          | `debug`, `info`, `warn` or `error`. Another value stops the start.                                        |
 
 The Docker image sets `NODE_ENV=production` and `PULSE_DB=/data/pulse.db`.
 
@@ -150,6 +151,18 @@ The file is `{"tokens": [{"location": "east", "token": "<secret>"}]}`. Keep it o
 | `token`    | String of at least 16 characters, unique across the file. A value that starts with `replace-with-` is rejected as a placeholder. |
 
 A token must not contain whitespace, must not start with `replace-with-` and must not be one of the public example tokens. A location may have several tokens. Create a token with `openssl rand -hex 32`. If the file is missing, not valid JSON or invalid, the API prints `pulse-api: <message>` and exits with code 2. Each error message ends with `(PULSE_TOKENS_FILE=<path>)`. The messages never print token values, and the start log only counts tokens and locations. See [Locations and tokens](concepts.md#locations-and-tokens).
+
+## admin-tokens.json
+
+Optional. Set `PULSE_API_ADMIN_TOKENS_FILE` to enable `POST`, `DELETE` on `/manual-incidents`. The file is `{"tokens": [{"name": "ops", "token": "<secret>"}]}`. Copy `admin-tokens.example.json` as a start and keep the file out of git.
+
+| Field    | Rule                                                                                                        |
+| -------- | ----------------------------------------------------------------------------------------------------------- |
+| `tokens` | Array with at least one entry.                                                                              |
+| `name`   | Non-empty string; only for your own bookkeeping.                                                            |
+| `token`  | The same rules as a probe token: 16 or more characters, no whitespace, not a placeholder or public example. |
+
+An admin token must differ from every probe token, and tokens must not repeat. Either error stops the start with `pulse-api: <message> (PULSE_API_ADMIN_TOKENS_FILE=<path>)` and exit code 2. Messages never print token values and the start log only counts tokens. Without the setting the write routes answer `404` and `GET /manual-incidents` lists only what the database already holds. The tokens are compared in constant time.
 
 ## Compose variables
 

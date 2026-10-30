@@ -22,6 +22,14 @@ const TOKEN_LENGTH_TEXT = `token must be a string of at least ${MIN_TOKEN_LENGTH
 const LOCATION_TEXT = "must be a non-empty string";
 const TOKENS_SHAPE = 'tokens file must be an object with a "tokens" array';
 
+/** The rules for one token value; the admin tokens file shares them. */
+export const tokenSchema = z
+  .string({ error: TOKEN_LENGTH_TEXT })
+  .min(MIN_TOKEN_LENGTH, TOKEN_LENGTH_TEXT)
+  .refine((v) => !v.startsWith(PLACEHOLDER_PREFIX), "still has the example placeholder token")
+  .refine((v) => !/\s/.test(v), "token must not contain whitespace")
+  .refine((v) => !EXAMPLE_TOKENS.includes(v), "uses a public example token: generate your own");
+
 // Unknown keys in an entry are ignored, as before. The token messages never contain a token.
 const ENTRY_SCHEMA = z.object(
   {
@@ -32,12 +40,7 @@ const ENTRY_SCHEMA = z.object(
         (v) => v.trim().length <= MAX_LOCATION_LENGTH,
         `must be at most ${MAX_LOCATION_LENGTH} characters`,
       ),
-    token: z
-      .string({ error: TOKEN_LENGTH_TEXT })
-      .min(MIN_TOKEN_LENGTH, TOKEN_LENGTH_TEXT)
-      .refine((v) => !v.startsWith(PLACEHOLDER_PREFIX), "still has the example placeholder token")
-      .refine((v) => !/\s/.test(v), "token must not contain whitespace")
-      .refine((v) => !EXAMPLE_TOKENS.includes(v), "uses a public example token: generate your own"),
+    token: tokenSchema,
   },
   { error: "must be an object" },
 );
@@ -96,6 +99,19 @@ const BEARER = /^bearer (\S+)$/i;
 
 function digest(value: string): Buffer {
   return createHash("sha256").update(value).digest();
+}
+
+/** True when `header` is a Bearer header whose token is one of `tokens`. Compares every token. */
+export function matchesAnyToken(tokens: readonly string[], header: string | undefined): boolean {
+  const presented = header === undefined ? undefined : BEARER.exec(header)?.[1];
+  if (presented === undefined) return false;
+  const wanted = digest(presented);
+  let isMatch = false;
+  // No early exit: every configured token is compared.
+  for (const token of tokens) {
+    if (timingSafeEqual(wanted, digest(token))) isMatch = true;
+  }
+  return isMatch;
 }
 
 /** Return the location bound to the bearer token in `header`, or undefined. */

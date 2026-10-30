@@ -1,0 +1,12 @@
+{
+  "channels": [
+    { "id": "log", "type": "file", "path": "/data/incidents.jsonl" },
+    { "id": "web", "type": "file", "path": "/data/manual-web.jsonl", "components": ["web"] },
+    {
+      "id": "public-api",
+      "type": "file",
+      "path": "/data/manual-public-api.jsonl",
+      "components": ["public-api"]
+    }
+  ]
+}

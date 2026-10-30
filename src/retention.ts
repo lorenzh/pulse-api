@@ -25,9 +25,11 @@ export interface CleanupDeps {
   sleep: (ms: number) => Promise<void>;
   /** Checked between batches; true ends the run after the batch in progress. */
   isAborted?: () => boolean;
+  /** Deletes manual incidents resolved before the cutoff and returns how many. */
+  deleteManualIncidents?: (cutoff: number) => number;
 }
 
-/** Delete expired results in short batches, yielding between them. Returns the rows deleted. */
+/** Delete expired results in short batches, yielding between them, and resolved manual incidents of the same age. Returns the rows deleted. */
 export async function cleanupResults(
   service: Pick<Service, "deleteExpiredResults">,
   {
@@ -36,10 +38,11 @@ export async function cleanupResults(
     batchSize = RETENTION_BATCH_SIZE,
     sleep,
     isAborted = () => false,
+    deleteManualIncidents,
   }: CleanupDeps,
 ): Promise<number> {
   const cutoff = retentionCutoff(now(), retentionDays);
-  let total = 0;
+  let total = deleteManualIncidents?.(cutoff) ?? 0;
   for (;;) {
     const deleted = service.deleteExpiredResults(cutoff, batchSize);
     total += deleted;

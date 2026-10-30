@@ -55,6 +55,12 @@ sqlite3 /path/to/pulse.db 'VACUUM'
 
 This command was not run for this page; it needs the `sqlite3` tool.
 
+## Manual incidents
+
+Enable them with `PULSE_API_ADMIN_TOKENS_FILE` (see [Configuration](configuration.md#admin-tokensjson)); the `curl` examples are in [REST API](rest-api.md#write-routes). Counters: `pulse_api_manual_incidents_created_total` and `pulse_api_manual_incidents_resolved_total`, without labels. The start log says `manualIncidents` is `writable` or `read-only` and counts `adminTokens`. The tables are created on start in an older database; nothing else changes. Rotate admin tokens like probe tokens: add the new one, restart, remove the old one, restart.
+
+Upgrade order: contract, then status and notify, then api. Status and notify treat a `404` from `/manual-incidents` of an older api as no incidents.
+
 ## Token rotation
 
 Tokens are read at start. Restart the API to rotate. A location may have several tokens, so rotation needs no gap:
@@ -101,7 +107,7 @@ Secret handling:
 The API writes JSON lines: `{"time":"<ISO 8601>","level":"info","msg":"...", ...fields}`. `info` and `debug` go to stdout, `warn` and `error` to stderr. `PULSE_LOG_LEVEL` (`debug`, `info`, `warn`, `error`; default `info`) sets the lowest level that is written. There is no log file.
 
 - `listening` (info): The API is ready. Fields: `port`, `checks`, `maintenanceWindows`, `checksFile`, `db`, `retentionDays`, `probeTokens`, `locations`, `tokensFile`.
-- `retention: deleted <n> results` (info): A cleanup deleted rows. Silent when it deletes none.
+- `retention: deleted <n> results` (info): A cleanup deleted rows (results and resolved manual incidents). Silent when it deletes none.
 - `retention failed: <message>` (info): A cleanup failed. The next run is still scheduled.
 - `check "<id>" removed from the checks file: incident resolved` (info): One line per incident resolved at start.
 - `request failed` (error): An unexpected failure in a request (`500`). The field `error` holds the stack.
