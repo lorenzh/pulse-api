@@ -40,12 +40,12 @@ const service = serviceModule.createService(db, { now: () => now });
 service.upsertChecks(JSON.parse(checksFileJson()).checks);
 
 const insert = db.prepare(
-  "INSERT INTO results (check_id, timestamp, status, status_code, latency_ms, reason, location, attempts) VALUES (?, ?, 'up', 200, 5, NULL, 'default', 1)",
+  "INSERT INTO results (check_id, timestamp, status, status_code, latency_ms, reason, location, attempts) VALUES (?, ?, 'up', 200, ?, NULL, 'default', 1)",
 );
 const perCheck = SEED_DAYS * 24 * 60;
 db.run("BEGIN");
 for (const id of checkIds()) {
-  for (let k = 0; k < perCheck; k++) insert.run(id, now - k * MINUTE);
+  for (let k = 0; k < perCheck; k++) insert.run(id, now - k * MINUTE, 5 + ((k * 7) % 300));
 }
 db.run("COMMIT");
 db.run("PRAGMA wal_checkpoint(TRUNCATE)");

@@ -169,6 +169,7 @@ export function validateResult(
 }
 
 const RESULTS_PATH = /^\/checks\/([^/]+)\/results$/;
+const LATENCY_PATH = /^\/checks\/([^/]+)\/latency$/;
 const MANUAL_PATH = /^\/manual-incidents(?:\/([^/]+)(?:\/(updates|resolve))?)?$/;
 const HEARTBEAT_PATH = /^\/heartbeat\/([^/]+)(?:\/([^/]+))?$/;
 const ADMIN_ROUTE = /^\/admin\/(config|checks|components|maintenance)(\/[^/]+)?$/;
@@ -177,6 +178,7 @@ const ROUTES = [
   "/checks",
   "/probe/checks",
   "/uptime",
+  "/latency",
   "/components",
   "/components/uptime",
   "/incidents",
@@ -198,6 +200,7 @@ function routeOf(rawUrl: string | undefined): string {
     return "unmatched";
   }
   if (RESULTS_PATH.test(path)) return "/checks/:id/results";
+  if (LATENCY_PATH.test(path)) return "/checks/:id/latency";
   if (HEARTBEAT_PATH.test(path)) return "/heartbeat/:id";
   const admin = ADMIN_ROUTE.exec(path);
   if (admin?.[1] !== undefined)
@@ -455,6 +458,16 @@ async function serveManualIncidents(
   if (id !== undefined) await writeManual(ops, req, res, action, id);
 }
 
+function decodeCheckId(encoded: string | undefined): string {
+  if (encoded === undefined) throw new HttpError(400, "bad check id");
+  try {
+    return decodeURIComponent(encoded);
+  } catch {
+    // decodeURIComponent throws URIError on malformed escapes: report it as a bad id
+    throw new HttpError(400, "bad check id");
+  }
+}
+
 // eslint-disable-next-line sonarjs/cognitive-complexity -- splitting this validator/handler would be a behaviour-risking refactor
 async function handle(
   ops: Ops,
@@ -482,12 +495,14 @@ async function handle(
     path === "/checks" ||
     path === "/probe/checks" ||
     path === "/uptime" ||
+    path === "/latency" ||
     path === "/components" ||
     path === "/components/uptime" ||
     path === "/incidents" ||
     path === "/locations" ||
     path === "/maintenance" ||
-    RESULTS_PATH.test(path);
+    RESULTS_PATH.test(path) ||
+    LATENCY_PATH.test(path);
   if (!known) throw new HttpError(404, "not found");
 
   if (path === "/results") {
@@ -550,6 +565,19 @@ async function handle(
     return;
   }
 
+  if (path === "/latency") {
+    sendJson(res, 200, service.getLatency());
+    return;
+  }
+
+  const latencyMatch = LATENCY_PATH.exec(path);
+  if (latencyMatch) {
+    const latency = service.getCheckLatency(decodeCheckId(latencyMatch[1]));
+    if (latency === undefined) throw new HttpError(404, "unknown check");
+    sendJson(res, 200, latency);
+    return;
+  }
+
   if (path === "/components") {
     const openIncidents = service.listIncidents("open");
     sendJson(
@@ -560,6 +588,7 @@ async function handle(
         service.listCheckStates(),
         service.getUptime(),
         openIncidents,
+        service.getSloDays,
       ),
     );
     return;
@@ -597,16 +626,7 @@ async function handle(
     return;
   }
 
-  let id: string;
-  try {
-    const encoded = RESULTS_PATH.exec(path)?.[1];
-    if (encoded === undefined) throw new HttpError(400, "bad check id");
-    id = decodeURIComponent(encoded);
-  } catch (err) {
-    if (err instanceof HttpError) throw err;
-    // decodeURIComponent throws URIError on malformed escapes: report it as a bad id
-    throw new HttpError(400, "bad check id");
-  }
+  const id = decodeCheckId(RESULTS_PATH.exec(path)?.[1]);
   const limit = Math.min(
     parseCount(url.searchParams.get("limit"), "limit", 1) ?? DEFAULT_LIMIT,
     MAX_LIMIT,

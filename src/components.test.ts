@@ -29,11 +29,13 @@ test("componentsWithState: combined state, weighted uptime, incident ids", () =>
     { id: "b", state: "down" as const },
     { id: "c", state: "unknown" as const },
   ];
-  const out = componentsWithState(components, states, uptime, [
-    incident(7, "b"),
-    incident(3, "a"),
-    incident(5, "b"),
-  ]);
+  const out = componentsWithState(
+    components,
+    states,
+    uptime,
+    [incident(7, "b"), incident(3, "a"), incident(5, "b")],
+    () => [],
+  );
   assert.deepEqual(
     out.map((c) => [c.id, c.state, c.uptime, c.incidentIds]),
     [
@@ -50,7 +52,7 @@ test("componentsWithState: maintenance next to up is ignored; all maintenance sh
     { id: "b", state: "up" as const },
     { id: "c", state: "maintenance" as const },
   ];
-  const out = componentsWithState(components, states, uptime, []);
+  const out = componentsWithState(components, states, uptime, [], () => []);
   assert.deepEqual(
     out.map((c) => c.state),
     ["up", "up", "maintenance"],

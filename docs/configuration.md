@@ -49,13 +49,14 @@ See `checks.example.json` for a complete example.
 
 ### Fields of every check
 
-| Field        | Required | Meaning                                                                                                  |
-| ------------ | -------- | -------------------------------------------------------------------------------------------------------- |
-| `id`         | yes      | Non-empty string, unique in the file.                                                                    |
-| `name`       | yes      | Non-empty string.                                                                                        |
-| `type`       | no       | `"http"` (default), `"tls"`, `"tcp"`, `"dns"`, `"domain"` or `"heartbeat"`. Any other value is rejected. |
-| `intervalMs` | yes      | Integer 1 to 2147483647, milliseconds between probes.                                                    |
-| `timeoutMs`  | no       | Integer 1 to 2147483647, milliseconds. When omitted, the probe uses its own default (5000).              |
+| Field                | Required | Meaning                                                                                                                                                                                                                                                               |
+| -------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                 | yes      | Non-empty string, unique in the file.                                                                                                                                                                                                                                 |
+| `name`               | yes      | Non-empty string.                                                                                                                                                                                                                                                     |
+| `type`               | no       | `"http"` (default), `"tls"`, `"tcp"`, `"dns"`, `"domain"` or `"heartbeat"`. Any other value is rejected.                                                                                                                                                              |
+| `intervalMs`         | yes      | Integer 1 to 2147483647, milliseconds between probes.                                                                                                                                                                                                                 |
+| `timeoutMs`          | no       | Integer 1 to 2147483647, milliseconds. When omitted, the probe uses its own default (5000).                                                                                                                                                                           |
+| `availabilityTarget` | no       | Number from 90 up to, but not including, 100: the 30-day availability objective in percent. Allowed on every check type, also `tls` and `heartbeat`. Absent means no objective. See [Availability objective](concepts.md#latency-history-and-availability-objective). |
 
 ### HTTP checks
 
@@ -214,13 +215,14 @@ The secret is kept in memory only. `GET /checks`, `/metrics`, incident reasons a
 
 `components` is an array of customer-facing groups of checks, served by `GET /components` and `GET /components/uptime`. A missing key means no components. Both routes are public like the other reads: the status page proxies them without a token. They are not part of `GET /probe/checks`.
 
-| Field         | Required | Meaning                                                                   |
-| ------------- | -------- | ------------------------------------------------------------------------- |
-| `id`          | yes      | `^[a-z0-9][a-z0-9._-]*$`, at most 64 characters, unique among components. |
-| `name`        | yes      | Plain text, 1 to 100 characters.                                          |
-| `description` | no       | Plain text, at most 500 characters.                                       |
-| `group`       | no       | Section heading, plain text, 1 to 100 characters.                         |
-| `checkIds`    | yes      | Non-empty list of configured check ids without duplicates.                |
+| Field                | Required | Meaning                                                                                                             |
+| -------------------- | -------- | ------------------------------------------------------------------------------------------------------------------- |
+| `id`                 | yes      | `^[a-z0-9][a-z0-9._-]*$`, at most 64 characters, unique among components.                                           |
+| `name`               | yes      | Plain text, 1 to 100 characters.                                                                                    |
+| `description`        | no       | Plain text, at most 500 characters.                                                                                 |
+| `group`              | no       | Section heading, plain text, 1 to 100 characters.                                                                   |
+| `checkIds`           | yes      | Non-empty list of configured check ids without duplicates.                                                          |
+| `availabilityTarget` | no       | As on a check: 90 up to, but not including, 100, percent. The availability of a component merges its member checks. |
 
 A check may be in several components. A component id may equal a check id. An unknown key, an unknown check id or a duplicate component id stops the start, for example `components[0].checkIds[1] must reference a configured check`. A change to components applies without a restart, like the rest of the file (see [Changing checks](operation.md#changing-checks)); an invalid file is not applied and the running components stay.
 

@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import type {
   Check,
+  CheckLatency,
   CheckState,
   CheckStateFields,
   CheckStatus,
@@ -22,6 +23,15 @@ import {
   jsonAssertSchema,
 } from "@lorenzh/pulse-contract";
 import { z } from "zod";
+import {
+  buildCheckLatency,
+  dayOf,
+  LATENCY_DAYS,
+  type LatencyRollup,
+  latencyWindow,
+  summarizeLatencies,
+} from "./latency.ts";
+import { buildSlo, SLO_WINDOW_DAYS, windowAvailability } from "./slo.ts";
 import { applyResult, DOWNS_TO_OPEN, quorumStatus } from "./state.ts";
 
 export const DEFAULT_LOCATION = "default";
@@ -143,6 +153,18 @@ export interface Service {
   ): Incident[];
   listMaintenance(checkId?: string): MaintenanceWindow[];
   getUptime(): CheckUptime[];
+  /** The last 30 UTC days of one check, oldest first, for the availability of a check or component. */
+  getSloDays(id: string): UptimeDay[];
+  /** The 90-day latency of every active HTTP check, in `listChecks` order. */
+  getLatency(): CheckLatency[];
+  /** The 90-day latency of one active HTTP check; undefined when unknown, inactive or not HTTP. */
+  getCheckLatency(id: string): CheckLatency | undefined;
+  /** Ids of the active HTTP checks, for the rollup runner. */
+  listLatencyCheckIds(): string[];
+  /** Store the rollup of every closed day in the window that has none. Returns the days written. */
+  fillLatencyRollups(checkId: string): number;
+  /** Delete rollups of days before the UTC day of `cutoff`, and of checks that no longer exist. */
+  deleteExpiredLatency(cutoff: number): number;
   /** True when the database answers a trivial query. */
   isDbReady(): boolean;
   /** Delete up to `limit` results older than `cutoff`, keeping the newest per check and location. Returns the count. */
@@ -223,6 +245,8 @@ export interface ServiceOptions {
   locationSilentMs?: number;
   /** Called after a transaction commits, once per incident opened or resolved. */
   onIncident?: (event: "opened" | "resolved") => void;
+  /** `availabilityTarget` per check id, read at every use so a reload takes effect. */
+  availabilityTargets?: () => ReadonlyMap<string, number>;
 }
 
 /** TLS and domain checks report `certDaysLeft`. */
@@ -311,6 +335,7 @@ export function createService(
     now = Date.now,
     log = () => undefined,
     onIncident = () => undefined,
+    availabilityTargets = () => new Map(),
     locationSilentMs,
   }: ServiceOptions = {},
 ): Service {
@@ -365,14 +390,19 @@ export function createService(
       // Generated samples are made here, never re-sent: two in one millisecond are both kept.
       at += 1;
     } while (changes === 0 && isGenerated);
+    if (changes > 0) closedTallies.get(result.checkId)?.delete(dayOf(result.timestamp));
     return changes > 0;
   };
-  let cache = new Map<"checks" | "uptime", { at: number; windows: string; value: unknown }>();
+  // Good and total results per closed UTC day of a check. A result stored for a closed day drops
+  // that day's entry, so a late result is counted at the next read.
+  type Tally = { good: number; total: number };
+  const closedTallies = new Map<string, Map<number, Tally>>();
+  let cache = new Map<string, { at: number; windows: string; value: unknown }>();
   const invalidate = (): void => {
     cache = new Map();
   };
   /** Reuse a fresh answer; an ingest, a config change or a retention delete clears all of them. */
-  function cached<T>(key: "checks" | "uptime", compute: () => T): T {
+  function cached<T>(key: string, compute: () => T): T {
     const hit = cache.get(key);
     const t = now();
     // A window that opens or closes changes the displayed state, so it also ends a cached answer.
@@ -466,6 +496,21 @@ export function createService(
             SUM(status != 'down') AS good, COUNT(*) AS total
      FROM results WHERE check_id = ? AND timestamp >= ? AND timestamp <= ?
      GROUP BY day`,
+  );
+  const dayLatencies = db.prepare(
+    `SELECT latency_ms FROM results
+     WHERE check_id = ? AND timestamp >= ? AND timestamp < ? AND status != 'down'
+     ORDER BY latency_ms`,
+  );
+  const storedRollups = db.prepare(
+    "SELECT day, p50_ms, p95_ms, count FROM latency_daily WHERE check_id = ? AND day >= ? AND day < ?",
+  );
+  const insertRollup = db.prepare(
+    "INSERT OR IGNORE INTO latency_daily (check_id, day, p50_ms, p95_ms, count) VALUES (?, ?, ?, ?, ?)",
+  );
+  const deleteOldRollups = db.prepare("DELETE FROM latency_daily WHERE day < ?");
+  const deleteOrphanRollups = db.prepare(
+    "DELETE FROM latency_daily WHERE check_id NOT IN (SELECT id FROM checks)",
   );
   const listResultsPage = db.prepare(
     "SELECT * FROM results WHERE check_id = ? AND timestamp < ? ORDER BY timestamp DESC, id DESC LIMIT ?",
@@ -649,7 +694,7 @@ export function createService(
 
   function computeChecks(): CheckWithState[] {
     const t = now();
-    return (
+    const checks = (
       db
         .prepare("SELECT * FROM checks WHERE active = 1 ORDER BY rowid")
         .all() as unknown as CheckRow[]
@@ -677,35 +722,115 @@ export function createService(
       }
       return c;
     });
+    addSlos(checks);
+    return checks;
+  }
+
+  /** One check's uptime days ending today, from the day-bucket query shared by every window. */
+  function uptimeOf(id: string, windowDays = UPTIME_DAYS): CheckUptime {
+    const t = now();
+    const today = Math.floor(t / DAY_MS);
+    const firstDay = today - (windowDays - 1);
+    const closed = closedTallies.get(id) ?? new Map<number, Tally>();
+    closedTallies.set(id, closed);
+    // Closed days are counted once; only today and days not seen yet are read from the results.
+    let firstRead = today;
+    for (let d = firstDay; d < today; d++) {
+      if (!closed.has(d)) {
+        firstRead = d;
+        break;
+      }
+    }
+    const fresh = new Map<number, Tally>();
+    for (const r of dailyUptime.all(id, firstRead * DAY_MS, t) as unknown as DayRow[]) {
+      fresh.set(Number(r.day), { good: Number(r.good), total: Number(r.total) });
+    }
+    for (let d = firstRead; d < today; d++) closed.set(d, fresh.get(d) ?? { good: 0, total: 0 });
+    let good = 0;
+    let total = 0;
+    const days: UptimeDay[] = [];
+    for (let d = firstDay; d <= today; d++) {
+      const agg = d === today ? fresh.get(d) : closed.get(d);
+      good += agg?.good ?? 0;
+      total += agg?.total ?? 0;
+      days.push({
+        date: new Date(d * DAY_MS).toISOString().slice(0, 10),
+        uptime: agg !== undefined && agg.total > 0 ? (agg.good / agg.total) * 100 : null,
+        results: agg?.total ?? 0,
+      });
+    }
+    return { checkId: id, days, uptime: total === 0 ? null : (good / total) * 100 };
   }
 
   function computeUptime(): CheckUptime[] {
-    const t = now();
-    const today = Math.floor(t / DAY_MS);
-    const firstDay = today - (UPTIME_DAYS - 1);
     const ids = db
       .prepare("SELECT id FROM checks WHERE active = 1 ORDER BY rowid")
       .all() as unknown as Pick<CheckRow, "id">[];
-    return ids.map(({ id }): CheckUptime => {
-      const byDay = new Map<number, { good: number; total: number }>();
-      for (const r of dailyUptime.all(id, firstDay * DAY_MS, t) as unknown as DayRow[]) {
-        byDay.set(Number(r.day), { good: Number(r.good), total: Number(r.total) });
+    return ids.map(({ id }) => uptimeOf(id));
+  }
+
+  const httpCheckIds = (): string[] =>
+    (
+      db
+        .prepare("SELECT id FROM checks WHERE active = 1 AND type = 'http' ORDER BY rowid")
+        .all() as unknown as Pick<CheckRow, "id">[]
+    ).map((r) => r.id);
+
+  /** The figures of one UTC day, computed from the results. Down results carry no latency. */
+  function rollupOfDay(checkId: string, day: number): LatencyRollup {
+    const rows = dayLatencies.all(checkId, day * DAY_MS, (day + 1) * DAY_MS) as unknown as {
+      latency_ms: number;
+    }[];
+    return summarizeLatencies(rows.map((r) => r.latency_ms));
+  }
+
+  function storedRollupsOf(checkId: string, today: number): Map<number, LatencyRollup> {
+    const rows = storedRollups.all(checkId, today - (LATENCY_DAYS - 1), today) as unknown as {
+      day: number;
+      p50_ms: number | null;
+      p95_ms: number | null;
+      count: number;
+    }[];
+    return new Map(
+      rows.map((r) => [r.day, { p50Ms: r.p50_ms, p95Ms: r.p95_ms, count: r.count }] as const),
+    );
+  }
+
+  /** Closed days without a row are computed and stored; an empty day gets a count 0 row. */
+  function fillRollups(checkId: string, today: number): Map<number, LatencyRollup> {
+    const rollups = storedRollupsOf(checkId, today);
+    const missing = latencyWindow(today).filter((day) => day < today && !rollups.has(day));
+    if (missing.length === 0) return rollups;
+    transaction(() => {
+      for (const day of missing) {
+        const rollup = rollupOfDay(checkId, day);
+        insertRollup.run(checkId, day, rollup.p50Ms, rollup.p95Ms, rollup.count);
+        rollups.set(day, rollup);
       }
-      let good = 0;
-      let total = 0;
-      const days: UptimeDay[] = [];
-      for (let d = firstDay; d <= today; d++) {
-        const agg = byDay.get(d);
-        good += agg?.good ?? 0;
-        total += agg?.total ?? 0;
-        days.push({
-          date: new Date(d * DAY_MS).toISOString().slice(0, 10),
-          uptime: agg ? (agg.good / agg.total) * 100 : null,
-          results: agg?.total ?? 0,
-        });
-      }
-      return { checkId: id, days, uptime: total === 0 ? null : (good / total) * 100 };
     });
+    return rollups;
+  }
+
+  function latencyOf(checkId: string): CheckLatency {
+    const today = dayOf(now());
+    const rollups = fillRollups(checkId, today);
+    // Today is never stored: it is still growing.
+    rollups.set(today, rollupOfDay(checkId, today));
+    return buildCheckLatency(checkId, today, rollups);
+  }
+
+  /** The last 30 UTC days of a check, from the same query as `/uptime`; a repeat read within 5 s is reused. */
+  const sloDays = (id: string): UptimeDay[] =>
+    cached(`slo:${id}`, () => uptimeOf(id, SLO_WINDOW_DAYS).days);
+
+  /** The `slo` of a check with a target, from the last 30 days of its uptime. */
+  function addSlos(checks: CheckWithState[]): void {
+    const targets = availabilityTargets();
+    if (targets.size === 0) return;
+    for (const c of checks) {
+      const target = targets.get(c.id);
+      if (target !== undefined) c.slo = buildSlo(target, windowAvailability([sloDays(c.id)]));
+    }
   }
 
   return {
@@ -878,6 +1003,30 @@ export function createService(
 
     getUptime() {
       return cached("uptime", computeUptime);
+    },
+
+    getSloDays: sloDays,
+
+    getLatency() {
+      return cached("latency", () => httpCheckIds().map(latencyOf));
+    },
+
+    getCheckLatency(id) {
+      if (!httpCheckIds().includes(id)) return undefined;
+      return cached(`latency:${id}`, () => latencyOf(id));
+    },
+
+    listLatencyCheckIds: httpCheckIds,
+
+    fillLatencyRollups(checkId) {
+      const today = dayOf(now());
+      const before = storedRollupsOf(checkId, today).size;
+      return fillRollups(checkId, today).size - before;
+    },
+
+    deleteExpiredLatency(cutoff) {
+      const old = Number(deleteOldRollups.run(dayOf(cutoff)).changes);
+      return old + Number(deleteOrphanRollups.run().changes);
     },
 
     deleteExpiredResults(cutoff, limit) {

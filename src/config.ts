@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import {
+  availabilityTargetSchema,
   type Check,
   type Component,
   type DnsCheck,
@@ -90,6 +91,8 @@ const KEYWORD = z
   .optional();
 
 const ID_NAME = { id: requiredText(), name: requiredText() };
+/** Percent, >= 90 and < 100; allowed on every check type. The contract owns the rule. */
+const AVAILABILITY_TARGET = availabilityTargetSchema.optional();
 
 const HTTP_SCHEMA = z.strictObject({
   ...ID_NAME,
@@ -105,6 +108,7 @@ const HTTP_SCHEMA = z.strictObject({
   timeoutMs: timerMs().optional(),
   latencyObjectiveMs: timerMs().optional(),
   keyword: KEYWORD,
+  availabilityTarget: AVAILABILITY_TARGET,
   // The contract validates these; see parseHttp.
   method: z.unknown().optional(),
   headers: z.unknown().optional(),
@@ -126,6 +130,7 @@ const TLS_SCHEMA = z.strictObject({
     .default(DEFAULT_WARN_DAYS),
   intervalMs: timerMs(),
   timeoutMs: timerMs().optional(),
+  availabilityTarget: AVAILABILITY_TARGET,
   keyword: z.never({ error: "is not allowed on a tls check" }).optional(),
   method: z.never({ error: "is not allowed on a tls check" }).optional(),
   headers: z.never({ error: "is not allowed on a tls check" }).optional(),
@@ -202,6 +207,7 @@ const HEARTBEAT_SCHEMA = z.strictObject({
     .min(MIN_SECRET_LENGTH, SECRET_TEXT)
     .max(MAX_SECRET_LENGTH, SECRET_TEXT)
     .regex(SECRET_PATTERN, SECRET_TEXT),
+  availabilityTarget: AVAILABILITY_TARGET,
 });
 
 /** `unknown key "x" in checks[2]` or `checks[1].port must be ...`; never reads the input. */
@@ -243,6 +249,7 @@ function parseHttp(raw: Record<string, unknown>, where: (string | number)[]): Ht
   if (v.type === "http") check.type = "http";
   if (v.keyword !== undefined) check.keyword = v.keyword;
   if (v.timeoutMs !== undefined) check.timeoutMs = v.timeoutMs;
+  if (v.availabilityTarget !== undefined) check.availabilityTarget = v.availabilityTarget;
   const request = { method: v.method, headers: v.headers, body: v.body };
   const rules = { expectedStatus: v.expectedStatus, jsonAssert: v.jsonAssert };
   const candidate = { ...check, ...request, ...rules };
@@ -266,9 +273,10 @@ function withoutUndefined(check: HttpCheck): HttpCheck {
 function parseTls(raw: Record<string, unknown>, where: (string | number)[]): TlsCheck {
   const parsed = TLS_SCHEMA.safeParse(raw);
   if (!parsed.success) return failWith(parsed.error, where);
-  const { id, name, host, port, warnDays, intervalMs, timeoutMs } = parsed.data;
+  const { id, name, host, port, warnDays, intervalMs, timeoutMs, availabilityTarget } = parsed.data;
   const check: TlsCheck = { id, name, type: "tls", host, port, warnDays, intervalMs };
   if (timeoutMs !== undefined) check.timeoutMs = timeoutMs;
+  if (availabilityTarget !== undefined) check.availabilityTarget = availabilityTarget;
   return check;
 }
 
@@ -278,8 +286,10 @@ function parseHeartbeat(
 ): { check: Check; secret: string } {
   const parsed = HEARTBEAT_SCHEMA.safeParse(raw);
   if (!parsed.success) return failWith(parsed.error, where);
-  const { id, name, period, grace, secret } = parsed.data;
-  return { check: { id, name, type: "heartbeat", period, grace }, secret };
+  const { id, name, period, grace, secret, availabilityTarget } = parsed.data;
+  const check: Check = { id, name, type: "heartbeat", period, grace };
+  if (availabilityTarget !== undefined) check.availabilityTarget = availabilityTarget;
+  return { check, secret };
 }
 
 const CHECK_TYPES = ["http", "tls", "tcp", "dns", "domain", "heartbeat"] as const;

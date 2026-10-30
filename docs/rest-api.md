@@ -11,6 +11,8 @@ The API serves JSON over HTTP. The types come from [pulse-contract](https://gith
 | `GET`         | `/checks`                  | none             | `ChecksResponse` (`CheckWithState[]`)                  |
 | `GET`         | `/checks/:id/results`      | none             | `ResultsResponse` (`Result[]`)                         |
 | `GET`         | `/uptime`                  | none             | `UptimeResponse` (`CheckUptime[]`)                     |
+| `GET`         | `/latency`                 | none             | `LatencyResponse` (`CheckLatency[]`)                   |
+| `GET`         | `/checks/:id/latency`      | none             | `CheckLatency`                                         |
 | `GET`         | `/components`              | none             | `ComponentsResponse` (`ComponentWithState[]`)          |
 | `GET`         | `/components/uptime`       | none             | `ComponentsUptimeResponse` (`ComponentUptime[]`)       |
 | `GET`         | `/incidents`               | none             | `IncidentsResponse` (`Incident[]`)                     |
@@ -168,6 +170,18 @@ Returns one `CheckUptime` per active check, in the order of `GET /checks`. Each 
 curl http://localhost:3000/uptime
 ```
 
+## GET /latency
+
+Returns one `CheckLatency` per active HTTP check, in the order of `GET /checks`. Each has `checkId` and `days`: exactly 90 UTC calendar days, oldest first, the last is today. A day has `date`, `p50Ms`, `p95Ms` (nearest-rank, `null` without results) and `count`. See [Latency history](concepts.md#latency-history-and-availability-objective).
+
+```sh
+curl http://localhost:3000/latency
+```
+
+## GET /checks/:id/latency
+
+Returns the `CheckLatency` of one active HTTP check. An unknown or inactive id, and a check without latency (heartbeat, TLS, tcp, dns, domain), answer `404` with `unknown check`. A malformed id escape gives `400`. Same headers and read cache as the other reads.
+
 ## GET /components
 
 Returns one `ComponentWithState` per component of the checks file, in configured order, or `[]` without components. It carries the configured fields (`id`, `name`, `description`, `group`, `checkIds`) plus:
@@ -175,6 +189,7 @@ Returns one `ComponentWithState` per component of the checks file, in configured
 - `state`: the combined state of the member checks, including `maintenance`. First match wins: any `down` gives `down`; any `degraded` gives `degraded`; else, after dropping `maintenance` and `unknown`, any `up` gives `up`; else any `maintenance` gives `maintenance`; else `unknown`.
 - `uptime`: the 90-day window value of `GET /components/uptime`, `null` when no member has results.
 - `incidentIds`: ids of the open incidents of the member checks, ascending.
+- `slo`: only with an `availabilityTarget`: `{target, windowDays: 30, availability, budgetRemaining}`, as in [Latency history](concepts.md#latency-history-and-availability-objective).
 
 ## GET /components/uptime
 
@@ -182,7 +197,7 @@ Returns one `ComponentUptime` (`componentId`, `days`, `uptime`) per component, i
 
 ## Read cache
 
-`GET /checks` and `GET /uptime` answers are reused for up to 5 s. Every ingest (`POST /results`, a heartbeat ping or expiry), a checks file load and every retention delete clears the cache, so a result is visible right after it is accepted. The TTL only bounds changes made by the clock; a maintenance window that opens or closes also ends a cached answer.
+`GET /checks`, `GET /uptime`, `GET /latency` and `GET /checks/:id/latency` answers are reused for up to 5 s. Every ingest (`POST /results`, a heartbeat ping or expiry), a checks file load and every retention delete clears the cache, so a result is visible right after it is accepted. The TTL only bounds changes made by the clock; a maintenance window that opens or closes also ends a cached answer.
 
 ## GET /incidents
 
@@ -325,17 +340,18 @@ Readiness, no token. Returns `200 ok` when `SELECT 1` works on the database and 
 
 Prometheus text format, no authentication. Counters live in memory and reset at restart. Any other method gives the same `405` as on `/healthz`.
 
-| Series                                             | Type      | Labels                                                                                      |
-| -------------------------------------------------- | --------- | ------------------------------------------------------------------------------------------- |
-| `pulse_up`                                         | gauge     | none. Always `1`.                                                                           |
-| `pulse_api_check_state`                            | gauge     | `check`, `state`. `1` for the current state of each check, `0` for the others.              |
-| `pulse_api_results_ingested_total`                 | counter   | `location`. A repeated post is not counted.                                                 |
-| `pulse_api_location_last_result_timestamp_seconds` | gauge     | `location`. `lastResultAt` of `GET /locations` in Unix seconds, read at the scrape.         |
-| `pulse_api_result_latency_seconds`                 | histogram | `check`. The latency the probe reported. Buckets 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10 s.     |
-| `pulse_api_incidents_opened_total`                 | counter   | none                                                                                        |
-| `pulse_api_incidents_resolved_total`               | counter   | none                                                                                        |
-| `pulse_api_http_requests_total`                    | counter   | `route` (a pattern such as `/checks/:id/results`, `/heartbeat/:id`, or `unmatched`), `code` |
-| `pulse_heartbeat_pings_total`                      | counter   | `check`. Accepted pings. Failed pings are only in the request counter, with code 401.       |
-| `pulse_heartbeat_missed_total`                     | counter   | `check`. One per `period` elapsed after the deadline `period + grace`.                      |
+| Series                                             | Type      | Labels                                                                                                                                   |
+| -------------------------------------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `pulse_up`                                         | gauge     | none. Always `1`.                                                                                                                        |
+| `pulse_api_check_state`                            | gauge     | `check`, `state`. `1` for the current state of each check, `0` for the others.                                                           |
+| `pulse_api_results_ingested_total`                 | counter   | `location`. A repeated post is not counted.                                                                                              |
+| `pulse_api_location_last_result_timestamp_seconds` | gauge     | `location`. `lastResultAt` of `GET /locations` in Unix seconds, read at the scrape.                                                      |
+| `pulse_api_result_latency_seconds`                 | histogram | `check`. The latency the probe reported. Buckets 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10 s.                                                  |
+| `pulse_api_slo_budget_remaining_ratio`             | gauge     | `check` or `component`. Error budget left as a ratio (0.5 is 50 %, negative when exceeded). Omitted without a target or without results. |
+| `pulse_api_incidents_opened_total`                 | counter   | none                                                                                                                                     |
+| `pulse_api_incidents_resolved_total`               | counter   | none                                                                                                                                     |
+| `pulse_api_http_requests_total`                    | counter   | `route` (a pattern such as `/checks/:id/results`, `/checks/:id/latency`, `/heartbeat/:id`, or `unmatched`), `code`                       |
+| `pulse_heartbeat_pings_total`                      | counter   | `check`. Accepted pings. Failed pings are only in the request counter, with code 401.                                                    |
+| `pulse_heartbeat_missed_total`                     | counter   | `check`. One per `period` elapsed after the deadline `period + grace`.                                                                   |
 
 The labels hold check ids and locations only. Check URLs, hosts, keywords, reasons and tokens never appear. The check ids are still configuration, so do not publish `/metrics` on a public network: scrape it from the private network, as with the read routes above.

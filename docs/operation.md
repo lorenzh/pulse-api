@@ -29,6 +29,17 @@ The schema is versioned with `PRAGMA user_version`. At start the API creates mis
 
 A new check type (tcp, dns, domain) needs every probe location updated first. An old probe logs `skipping invalid check <id>: ...` for a type it does not know, keeps running the other checks, and the new check stays `unknown` for that location. That `unknown` state is expected until the probe is updated. Order: update the contract users (probes, status), then add the check to the checks file.
 
+The table `latency_daily` (daily p50 and p95 per check) is created with `CREATE TABLE IF NOT EXISTS` on every open, so a file from an older release gets it without a numbered step and `user_version` does not change. Back it up with the database file; it can be rebuilt from the results, so restoring a file without it is safe. The backfill refills the closed days at the next start.
+
+#### Rolling out latency history and availability objectives
+
+Roll out in this order:
+
+1. Contract release with `CheckLatency`, `Slo` and `availabilityTarget`.
+2. Probes: bump their contract pin to `6401721768c1996192c5cdadef7835d852015248` or later. A probe validates every check it receives and skips one with a field its contract does not know.
+3. This API. `GET /probe/checks` is built from the stored check columns and never carries `availabilityTarget`, `slo` or any latency field, so an API upgrade does not break a probe that has not been updated. Setting `availabilityTarget` in the checks file is therefore safe before step 2, but the probes do not need the field to measure.
+4. The status page: its proxy must allow `/api/latency` before it can draw the chart.
+
 ### Upgrades
 
 1. Back up the database file (see below).
@@ -50,7 +61,7 @@ To restore, stop the API, put the file back at `PULSE_DB` and start the API. Wit
 
 ## Retention and disk space
 
-Cleanup of old results runs at start and then hourly. See [Retention](concepts.md#retention) for the rules. Set the number of days with `PULSE_RETENTION_DAYS`.
+Cleanup of old results runs at start and then hourly. See [Retention](concepts.md#retention) for the rules. Set the number of days with `PULSE_RETENTION_DAYS`. The latency rollups (`latency_daily`, one small row per HTTP check and day) are deleted with the same cutoff, which is never inside the 90-day window, and when their check is gone.
 
 Rows per check per day are `86400 / interval_s * locations`. A row takes roughly 100 bytes with its indexes in a measured database of minimal rows (129,600 rows, 60 s interval, about 13 MB). Allow about 250 bytes for rows with reasons. Example: 60 s interval, 1 location and 90 days give 129,600 rows, roughly 30 MB per check.
 

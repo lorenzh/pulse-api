@@ -12,6 +12,7 @@ import {
 } from "@lorenzh/pulse-kit";
 import { createAdminHandler } from "./admin-routes.ts";
 import { assertDistinctFromProbeTokens } from "./admin-tokens.ts";
+import { componentBudgets } from "./components.ts";
 import { ConfigError, loadAdminTokens, loadTokens } from "./config.ts";
 import { nodeConfigFs } from "./config-fs.ts";
 import { createConfigHolder } from "./config-holder.ts";
@@ -20,6 +21,7 @@ import { createConfigReloader, loadInitialConfig, startConfigPolling } from "./c
 import type { WriteFs } from "./config-write.ts";
 import { createConfigWriter } from "./config-write.ts";
 import { createHeartbeatEvaluator, startHeartbeatEvaluator } from "./heartbeat.ts";
+import { startLatencyRollup } from "./latency-rollup.ts";
 import { readLocationSilentMs } from "./location-silence.ts";
 import { createManualIncidentStore } from "./manual-incidents.ts";
 import { createMetrics } from "./metrics.ts";
@@ -158,9 +160,28 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
   const metrics = createMetrics({
     listStates: () => service.listCheckStates(),
     listLocations: () => service.listLocations(),
+    listBudgets: () => ({
+      checks: service
+        .listChecks()
+        .flatMap((c) =>
+          c.slo?.budgetRemaining == null
+            ? []
+            : [{ id: c.id, budgetRemaining: c.slo.budgetRemaining }],
+        ),
+      components: componentBudgets(holder.get().components, service.getSloDays),
+    }),
   });
   const service = createService(db, {
+    now: deps.now,
     maintenance: () => holder.get().maintenance,
+    availabilityTargets: () =>
+      new Map(
+        holder
+          .get()
+          .checks.flatMap((c) =>
+            c.availabilityTarget === undefined ? [] : [[c.id, c.availabilityTarget] as const],
+          ),
+      ),
     ...(locationSilentMs === undefined ? {} : { locationSilentMs }),
     log: (line) => logger.info(line),
     onIncident: (event) => metrics.recordIncident(event),
@@ -182,6 +203,16 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     clearTimeout: deps.clearTimeout,
     log: (line) => logger.info(line),
     deleteManualIncidents: (cutoff) => manualIncidents.deleteResolvedBefore(cutoff),
+    deleteLatencyRollups: (cutoff) => service.deleteExpiredLatency(cutoff),
+  });
+
+  const latencyRollup = startLatencyRollup({
+    service,
+    sleep: deps.sleep,
+    ...(deps.retentionIntervalMs === undefined ? {} : { intervalMs: deps.retentionIntervalMs }),
+    setTimeout: (fn, ms) => deps.setTimeout(() => void fn(), ms),
+    clearTimeout: deps.clearTimeout,
+    log: (line) => logger.info(line),
   });
 
   const heartbeat = startHeartbeatEvaluator({
@@ -257,6 +288,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     });
   } catch (err) {
     await retention.stop();
+    await latencyRollup.stop();
     heartbeat.stop();
     polling.stop();
     removeSignal?.();
@@ -287,7 +319,9 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
   const shutdown = async (): Promise<void> => {
     isShuttingDown = true;
     // Stop both timers first, so no run starts while the server drains.
-    const retentionEnded = retention.stop();
+    const retentionEnded = Promise.all([retention.stop(), latencyRollup.stop()]).then(
+      () => undefined,
+    );
     heartbeat.stop();
     polling.stop();
     removeSignal?.();
