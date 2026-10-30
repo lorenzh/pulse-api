@@ -57,6 +57,15 @@ test("an invalid tokens file exits 2", async () => {
   assert.match(p.err(), /^pulse-api: .*\n$/);
 });
 
+test("a malformed checks file exits 2 without quoting its content", async () => {
+  const bad = join(dir, "bad-checks.json");
+  writeFileSync(bad, '{"checks":[{"headers":{"X":HSEC},"body":BSEC}]}');
+  const p = run({ PULSE_CHECKS_FILE: bad });
+  assert.equal(await p.exit, 2);
+  assert.match(p.err(), /^pulse-api: .*not valid JSON\n$/);
+  for (const secret of ["HSEC", "BSEC"]) assert.ok(!p.err().includes(secret));
+});
+
 test("SIGTERM stops a running API with exit 0", async () => {
   const p = run({});
   try {

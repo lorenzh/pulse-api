@@ -49,6 +49,15 @@ test("config: loadChecks reads files and reports errors", (t) => {
   const broken = join(dir, "broken.json");
   writeFileSync(broken, "{");
   assert.throws(() => loadChecks(broken), /not valid JSON/);
+  const leaky = join(dir, "leaky.json");
+  writeFileSync(leaky, '{"checks":[{"headers":{"X":HSEC},"body":BSEC}]}');
+  assert.throws(
+    () => loadChecks(leaky),
+    (err: Error) =>
+      err.message === `checks file ${leaky} is not valid JSON` &&
+      !err.message.includes("HSEC") &&
+      !err.message.includes("BSEC"),
+  );
   assert.throws(() => loadChecks(join(dir, "missing.json")), /cannot read/);
 });
 

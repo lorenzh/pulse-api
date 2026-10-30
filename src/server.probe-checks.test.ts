@@ -110,6 +110,11 @@ test("GET /checks omits headers, body and assertions and the default options", a
 });
 
 test("/metrics never holds a header value, an env name or a body", async () => {
+  const probe = await fetch(`${base}/probe/checks`, {
+    headers: { authorization: `Bearer ${TOKEN}` },
+  });
+  // The secrets are stored and served to probes, so their absence below is not vacuous.
+  assert.deepEqual(await probe.json(), checks);
   await fetch(`${base}/checks`);
   const text = await (await fetch(`${base}/metrics`)).text();
   for (const secret of [HEADER_SECRET, ENV_NAME, BODY_SECRET]) assert.ok(!text.includes(secret));

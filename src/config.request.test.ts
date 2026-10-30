@@ -51,6 +51,11 @@ test("config: rejects bad options with the field path", () => {
 });
 
 test("config: an error message never quotes a header value or a body", () => {
+  // The same options without the one bad field are accepted and kept, so the check below
+  // fails on the bad field and not on an unknown option.
+  const valid = { method: "POST", headers: { Authorization: SECRET }, body: SECRET };
+  const [kept] = parseChecks({ checks: [{ ...ok, ...valid }] });
+  assert.deepEqual(kept, { ...ok, retries: 0, retryDelayMs: 1000, ...valid });
   const message = messageOf({
     ...ok,
     method: "POST",

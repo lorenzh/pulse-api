@@ -366,7 +366,8 @@ function readJson(path: string): unknown {
   try {
     return JSON.parse(text);
   } catch (err) {
-    throw new ConfigError(`checks file ${path} is not valid JSON: ${(err as Error).message}`);
+    // The JSON parser message can quote file content (a header value or a body), so it is left out.
+    throw new ConfigError(`checks file ${path} is not valid JSON`, { cause: err });
   }
 }
 
