@@ -1,24 +1,16 @@
+import { type Env, readMs } from "@lorenzh/pulse-kit";
 import { DAY_MS, type Service, UPTIME_DAYS } from "./service.ts";
 
 export const RETENTION_BATCH_SIZE = 1000;
 export const RETENTION_INTERVAL_MS = 3_600_000;
 const DEFAULT_RETENTION_DAYS = UPTIME_DAYS;
 
-export class RetentionConfigError extends Error {
-  override name = "RetentionConfigError";
-}
-
-/** Parse `PULSE_RETENTION_DAYS`: unset or empty gives the default, else an integer >= UPTIME_DAYS. */
-export function parseRetentionDays(raw: string | undefined): number {
-  const text = raw?.trim() ?? "";
-  if (text === "") return DEFAULT_RETENTION_DAYS;
-  const days = Number(text);
-  if (!/^\d+$/.test(text) || !Number.isSafeInteger(days) || days < UPTIME_DAYS) {
-    throw new RetentionConfigError(
-      `PULSE_RETENTION_DAYS must be an integer >= ${UPTIME_DAYS}, got "${text}"`,
-    );
-  }
-  return days;
+/** Read `PULSE_RETENTION_DAYS`: unset or empty gives the default, else an integer >= UPTIME_DAYS. */
+export function readRetentionDays(env: Env): number {
+  return readMs(env, "PULSE_RETENTION_DAYS", {
+    fallback: DEFAULT_RETENTION_DAYS,
+    min: UPTIME_DAYS,
+  });
 }
 
 /** First instant kept: the start of the UTC day `retentionDays - 1` days before today. */

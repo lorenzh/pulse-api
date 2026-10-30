@@ -47,7 +47,7 @@ function run(extra: Record<string, string>) {
 test("a bad setting exits 2 with one line and no stack", async () => {
   const p = run({ PULSE_RETENTION_DAYS: "abc" });
   assert.equal(await p.exit, 2);
-  assert.equal(p.err(), 'pulse-api: PULSE_RETENTION_DAYS must be an integer >= 90, got "abc"\n');
+  assert.equal(p.err(), "pulse-api: PULSE_RETENTION_DAYS: must be an integer >= 90\n");
 });
 
 test("an invalid tokens file exits 2", async () => {

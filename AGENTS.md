@@ -28,6 +28,7 @@ repository. Node 24+ with native type stripping, ESM, npm, strict TypeScript (`t
 - Services talk to each other only over HTTP at run time, in the shapes the contract defines.
 - Pin the contract dependency to a full commit SHA on its `main`; update the pin when the spec needs a newer contract.
 - A change that needs a contract change waits for the merged contract change. Never copy contract types into a service.
+- Use `pulse-kit`, `pulse-contract` or an approved package before writing infrastructure code (settings, logging, metrics, ops endpoints, shutdown, HTTP helpers). Propose an addition to `pulse-kit` instead of a local helper. Pin `@lorenzh/pulse-kit` to a full commit SHA on its `main`.
 - Edit only this repository. Other repositories in the workspace are read-only context.
 - Do not add `.factory/`, plan, or note files to this repository.
 

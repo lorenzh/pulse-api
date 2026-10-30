@@ -8,6 +8,7 @@ import {
   WIRE_VERSION,
   WIRE_VERSION_HEADER,
 } from "@lorenzh/pulse-contract";
+import { BodyError, handleOps, readBody, readJsonBody, sendJson } from "@lorenzh/pulse-kit";
 import { createMetrics, type Metrics } from "./metrics.ts";
 import {
   DEFAULT_LOCATION,
@@ -47,21 +48,6 @@ class HttpError extends Error {
   }
 }
 
-function sendJson(
-  res: ServerResponse,
-  status: number,
-  body: unknown,
-  headers: Record<string, string> = {},
-): void {
-  const text = JSON.stringify(body);
-  res.writeHead(status, {
-    ...headers,
-    "content-type": "application/json",
-    "content-length": Buffer.byteLength(text),
-  });
-  res.end(text);
-}
-
 function sendError(
   res: ServerResponse,
   status: number,
@@ -72,15 +58,12 @@ function sendError(
   sendJson(res, status, body, headers);
 }
 
-async function readBody(req: IncomingMessage, maxBytes = MAX_BODY): Promise<string> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += (chunk as Buffer).length;
-    if (size > maxBytes) throw new HttpError(413, "request body too large");
-    chunks.push(chunk as Buffer);
-  }
-  return Buffer.concat(chunks).toString("utf8");
+/** Map a body failure to the HttpError the API answers with. */
+function bodyFailure(err: unknown): unknown {
+  if (!(err instanceof BodyError)) return err;
+  if (err.code === "too-large") return new HttpError(413, "request body too large");
+  if (err.code === "invalid-json") return new HttpError(400, "body is not valid JSON");
+  return new HttpError(400, "request body could not be read");
 }
 
 function isFiniteNumber(v: unknown): v is number {
@@ -203,14 +186,6 @@ function routeOf(rawUrl: string | undefined): string {
   return ROUTES.find((r) => r === path) ?? "unmatched";
 }
 
-function sendText(res: ServerResponse, status: number, text: string, type = "text/plain"): void {
-  res.writeHead(status, {
-    "content-type": `${type}; charset=utf-8`,
-    "content-length": Buffer.byteLength(text),
-  });
-  res.end(text);
-}
-
 type Ops = {
   service: Service;
   metrics: Metrics;
@@ -262,7 +237,11 @@ async function servePing(
   if (!isValid || id === undefined) {
     throw new HttpError(401, "unauthorized", { "www-authenticate": "Bearer" });
   }
-  await readBody(req, MAX_PING_BODY);
+  try {
+    await readBody(req, MAX_PING_BODY);
+  } catch (err) {
+    throw bodyFailure(err);
+  }
   try {
     ops.service.ingest({
       checkId: id,
@@ -283,28 +262,18 @@ async function servePing(
 }
 
 /** Serve `/healthz`, `/readyz` and `/metrics`. Returns false for any other path. None needs auth. */
-function serveOps(ops: Ops, path: string, method: string, res: ServerResponse): boolean {
-  if (path !== "/healthz" && path !== "/readyz" && path !== "/metrics") return false;
-  if (method !== "GET") throw new HttpError(405, "method not allowed");
-  if (path === "/metrics") {
-    sendText(
-      res,
-      200,
-      ops.metrics.render(ops.service.listCheckStates()),
-      "text/plain; version=0.0.4",
-    );
-    return true;
-  }
-  if (path === "/healthz") {
+function serveOps(ops: Ops, req: IncomingMessage, res: ServerResponse): boolean {
+  return handleOps(req, res, {
     // Liveness only: no database access, and 200 also while shutting down.
-    sendText(res, 200, "ok\n");
-    return true;
-  }
-  const reason = ops.notReadyReason();
-  if (reason !== undefined) sendText(res, 503, `${reason}\n`);
-  else if (!ops.service.isDbReady()) sendText(res, 503, "database unavailable\n");
-  else sendText(res, 200, "ok\n");
-  return true;
+    live: () => ({ ready: true }),
+    ready: () => {
+      const reason = ops.notReadyReason();
+      if (reason !== undefined) return { ready: false, reason };
+      if (!ops.service.isDbReady()) return { ready: false, reason: "database unavailable" };
+      return { ready: true };
+    },
+    metrics: () => ops.metrics.render(),
+  });
 }
 
 /** A query integer of at least `min`; undefined when absent, a 400 when malformed. */
@@ -332,7 +301,7 @@ async function handle(
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname;
   const method = req.method ?? "GET";
-  if (serveOps(ops, path, method, res)) return;
+  if (serveOps(ops, req, res)) return;
   const ping = HEARTBEAT_PATH.exec(path);
   if (ping) return servePing(ops, now, req, res, ping);
   const known =
@@ -352,10 +321,9 @@ async function handle(
     }
     let parsed: unknown;
     try {
-      parsed = JSON.parse(await readBody(req));
+      parsed = await readJsonBody(req, { maxBytes: MAX_BODY });
     } catch (err) {
-      if (err instanceof HttpError) throw err;
-      throw new HttpError(400, "body is not valid JSON");
+      throw bodyFailure(err);
     }
     const result = validateResult(parsed, now(), (id) => service.findActiveCheck(id));
     if (typeof result === "string") throw new HttpError(400, result);
@@ -452,7 +420,7 @@ export function createApiServer(service: Service, options: ApiServerOptions): Se
   const now = options.now ?? Date.now;
   const ops: Ops = {
     service,
-    metrics: options.metrics ?? createMetrics(),
+    metrics: options.metrics ?? createMetrics({ listStates: () => service.listCheckStates() }),
     notReadyReason: options.notReadyReason ?? (() => undefined),
     heartbeatSecrets: options.heartbeatSecrets ?? new Map(),
   };

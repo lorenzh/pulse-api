@@ -116,7 +116,7 @@ test("a ping to an inactive check answers 204 and records nothing", async () => 
   const r = await fetch(`${base}/heartbeat/off`, { headers: bearer("other-secret-0123456789abc") });
   assert.equal(r.status, 204);
   assert.equal(service.listResults("off", 10).length, 0);
-  assert.doesNotMatch(metrics.render([]), /pulse_heartbeat_pings_total\{check="off"\}/);
+  assert.doesNotMatch(metrics.render(), /pulse_heartbeat_pings_total\{check="off"\}/);
 });
 
 test("a probe token cannot ping and the ping secret cannot post /results", async () => {

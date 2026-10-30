@@ -5,9 +5,9 @@ import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { after, before, test } from "node:test";
 import type { ChecksResponse } from "@lorenzh/pulse-contract";
+import { type LogLevel, StartupError } from "@lorenzh/pulse-kit";
 import { openDb } from "./db.ts";
-import type { LogLevel } from "./log.ts";
-import { type StartDeps, StartupError, startApi } from "./start.ts";
+import { type StartDeps, startApi } from "./start.ts";
 
 const TOKEN = "test-token-east-0123456789abcdef";
 const SECRET_URL = "https://user:hunter2@internal.example/path";
@@ -47,7 +47,7 @@ function deps(env: Record<string, string>, extra: Partial<StartDeps> = {}) {
     sleep: () => new Promise<void>(() => undefined),
     setTimeout: () => undefined,
     clearTimeout: () => undefined,
-    write: (line, level) => lines.push({ line, level }),
+    write: (level, line) => lines.push({ line, level }),
     openDb: (path) => openDb(path),
     ...extra,
   };
