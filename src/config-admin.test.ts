@@ -542,6 +542,9 @@ for (const step of ["writeTemp", "rename", "fsyncDir"] as const) {
     assert.equal(r.status, 500);
     JSON.parse(readFileSync(file, "utf8"));
     if (step !== "fsyncDir") assert.equal(readFileSync(file, "utf8"), before);
+    // Nothing is applied before the directory fsync succeeds.
+    assert.equal(await b.revision(), rev);
+    assert.deepEqual(await checkIds(b), ["api", "web"]);
     assert.deepEqual(
       readdirSync(dir).filter((n) => n.endsWith(".tmp")),
       [],
@@ -565,6 +568,86 @@ test("admin: EXDEV on rename answers 503 naming the cause", async () => {
     readdirSync(dir).filter((n) => n.endsWith(".tmp")),
     [],
   );
+});
+
+// ---- review fix: apply and reload failures, DELETE body limit, status order ----
+
+type Db = ReturnType<typeof openDb>;
+const FAIL_UPSERT =
+  "CREATE TEMP TRIGGER fail_upsert BEFORE UPDATE ON checks BEGIN SELECT RAISE(ABORT, 'locked'); END";
+
+async function bootWithDb(extra: Partial<StartDeps> = {}): Promise<{ b: Booted; db: () => Db }> {
+  let db: Db | undefined;
+  const b = await boot(BASE_FILE, {
+    openDb: (path) => {
+      db = openDb(path);
+      return db;
+    },
+    ...extra,
+  });
+  return {
+    b,
+    db: () => {
+      assert.ok(db);
+      return db;
+    },
+  };
+}
+
+test("review fix: a reload the database rejects keeps the running config and revision", async () => {
+  const { b, db } = await bootWithDb();
+  const before = await (await b.call("GET", "/admin/config")).json();
+  db().prepare(FAIL_UPSERT).run();
+  writeExternal({ ...BASE_FILE, components: [{ id: "changed", name: "C", checkIds: ["web"] }] });
+  b.poll();
+  assert.ok(b.lines.some((l) => l.line.includes("config reload rejected")));
+  assert.deepEqual(await (await b.call("GET", "/admin/config")).json(), before);
+});
+
+test("review fix: an apply failure after the rename syncs the directory and keeps memory consistent", async () => {
+  let dirSyncs = 0;
+  const { b, db } = await bootWithDb({
+    configFs: {
+      ...nodeConfigFs,
+      fsyncDir: (d) => {
+        dirSyncs += 1;
+        nodeConfigFs.fsyncDir(d);
+      },
+    },
+  });
+  const before = await (await b.call("GET", "/admin/config")).json();
+  db().prepare(FAIL_UPSERT).run();
+  const r = await b.call("POST", "/admin/checks", { body: NEW_CHECK, ifMatch: await b.revision() });
+  assert.equal(r.status, 500);
+  assert.match(((await r.json()) as { error: string }).error, /stored, but applying it failed/);
+  assert.equal(dirSyncs, 1, "the directory is synced before the apply");
+  assert.ok(readFileSync(file, "utf8").includes('"new"'), "the file is the source of truth");
+  assert.deepEqual(await (await b.call("GET", "/admin/config")).json(), before);
+  db().prepare("DROP TRIGGER fail_upsert").run();
+  b.poll();
+  assert.ok((await checkIds(b)).includes("new"), "the next reload applies the stored file");
+});
+
+test("review fix: a DELETE body over the limit answers 413 and deletes nothing", async () => {
+  const b = await boot({ ...BASE_FILE, checks: [...BASE_FILE.checks, NEW_CHECK] });
+  const r = await b.call("DELETE", "/admin/checks/new", {
+    raw: "x".repeat(1_100_000),
+    ifMatch: await b.revision(),
+  });
+  assert.equal(r.status, 413);
+  assert.ok((await checkIds(b)).includes("new"));
+});
+
+test("review fix: 400 and 428 come before an unknown id, in the spec order", async () => {
+  const b = await boot();
+  const rev = await b.revision();
+  assert.equal((await b.call("PUT", "/admin/checks/web", { body: NEW_CHECK })).status, 400);
+  assert.equal((await b.call("DELETE", "/admin/maintenance/nope")).status, 428);
+  assert.equal((await b.call("DELETE", "/admin/checks/%E0%A4%A")).status, 428);
+  assert.equal((await b.call("DELETE", "/admin/maintenance/nope", { ifMatch: rev })).status, 404);
+  assert.equal((await b.call("DELETE", "/admin/checks/%E0%A4%A", { ifMatch: rev })).status, 404);
+  const stale = `"sha256-${"0".repeat(64)}"`;
+  assert.equal((await b.call("DELETE", "/admin/maintenance/nope", { ifMatch: stale })).status, 412);
 });
 
 // ---- heartbeat secrets ----

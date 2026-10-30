@@ -5,7 +5,7 @@ import {
   type ErrorResponse,
   isAdminRevision,
 } from "@lorenzh/pulse-contract";
-import { BodyError, readJsonBody, sendJson } from "@lorenzh/pulse-kit";
+import { BodyError, readBody, readJsonBody, sendJson } from "@lorenzh/pulse-kit";
 import type { ConfigEdit, ConfigKind, ConfigWriter, WriteFailure } from "./config-write.ts";
 import { ConfigWriteError } from "./config-write.ts";
 import type { ConfigWriteAction, ConfigWriteResult, Metrics } from "./metrics.ts";
@@ -70,9 +70,9 @@ function etag(revision: string): Record<string, string> {
   return { [ADMIN_ETAG_HEADER]: `"${revision}"` };
 }
 
-/** The revision of an `If-Match` header: required, quoted, and never `*`. */
-function ifMatchOf(header: string | undefined): string {
-  if (header === undefined) throw new RouteError(428, "If-Match is required");
+/** The revision of an `If-Match` header: quoted and never `*`; undefined when missing (428 later). */
+function ifMatchOf(header: string | undefined): string | undefined {
+  if (header === undefined) return undefined;
   const quoted = /^"([^"]*)"$/.exec(header.trim());
   const value = quoted?.[1];
   if (value === undefined || !isAdminRevision(value)) {
@@ -81,9 +81,12 @@ function ifMatchOf(header: string | undefined): string {
   return value;
 }
 
-async function readBodyJson(req: IncomingMessage): Promise<unknown> {
+/** The JSON body; a DELETE body is read only to enforce the size limit, then dropped. */
+async function readBodyJson(req: IncomingMessage, isDelete: boolean): Promise<unknown> {
   try {
-    return await readJsonBody(req, { maxBytes: ADMIN_MAX_BODY_BYTES });
+    if (!isDelete) return await readJsonBody(req, { maxBytes: ADMIN_MAX_BODY_BYTES });
+    await readBody(req, ADMIN_MAX_BODY_BYTES);
+    return undefined;
   } catch (err) {
     if (!(err instanceof BodyError)) throw err;
     if (err.code === "too-large") throw new RouteError(413, "request body too large");
@@ -93,16 +96,15 @@ async function readBodyJson(req: IncomingMessage): Promise<unknown> {
 
 // eslint-disable-next-line sonarjs/function-return-type -- an id is text, a window position is a number
 function decodeRef(kind: ConfigKind, raw: string): string | number {
+  // A malformed escape or a non-numeric index names nothing: the writer answers 404 for it after
+  // the checks that come first in the status order.
   let text: string;
   try {
     text = decodeURIComponent(raw);
   } catch {
-    // A malformed escape cannot name anything: it reads as an unknown id.
-    throw new RouteError(404, "not found");
+    return raw;
   }
-  if (kind !== "maintenance") return text;
-  if (!/^\d{1,9}$/.test(text)) throw new RouteError(404, "not found");
-  return Number(text);
+  return kind === "maintenance" && /^\d{1,9}$/.test(text) ? Number(text) : text;
 }
 
 function bodyId(body: unknown): unknown {
@@ -153,12 +155,12 @@ export function createAdminHandler(
     tokenName: string,
   ): Promise<void> => {
     const { kind, ref } = target;
-    const hasBody = action !== "delete";
-    const body = hasBody ? await readBodyJson(req) : undefined;
+    const body = await readBodyJson(req, action === "delete");
     const ifMatch = ifMatchOf(req.headers["if-match"]);
     if (action === "replace" && kind !== "maintenance" && bodyId(body) !== ref) {
       throw new RouteError(400, "body id must equal the id in the path");
     }
+    if (ifMatch === undefined) throw new RouteError(428, "If-Match is required");
     try {
       deps.writer.assertWritable();
     } catch (err) {

@@ -354,7 +354,7 @@ export function createConfigWriter(deps: WriterDeps): ConfigWriter {
     return bytes;
   };
 
-  /** Temp file, fsync, a second revision check, rename, fsync of the directory. */
+  /** Temp file, fsync, a second revision check, rename, fsync of the directory, then apply. */
   const store = (data: Buffer, ifMatch: string, config: Config): void => {
     const temp = `${path}.${deps.tempSuffix()}.tmp`;
     let isRenamed = false;
@@ -364,11 +364,21 @@ export function createConfigWriter(deps: WriterDeps): ConfigWriter {
       assertCurrent(ifMatch);
       fs.rename(temp, path);
       isRenamed = true;
-      deps.reloader.adopt(data, config);
       fs.fsyncDir(dir);
     } catch (err) {
       if (!isRenamed) removeQuietly(fs, temp);
       throw mapFsError(err);
+    }
+    try {
+      deps.reloader.adopt(data, config);
+    } catch (err) {
+      // The file is stored and stays the source of truth: the running config and revision are
+      // unchanged, and the next reload applies the file.
+      throw new ConfigWriteError(
+        "error",
+        `checks file stored, but applying it failed (${codeOf(err)}); the next reload applies it`,
+        { cause: err },
+      );
     }
   };
 

@@ -196,8 +196,9 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
       path: checksFile,
       fs: configFs,
       onApply: (next) => {
-        holder.set(next);
+        // SQLite first, in one transaction: a failed update leaves the holder and revision as they were.
         service.upsertChecks(next.checks);
+        holder.set(next);
       },
       log: (line) => logger.warn(line),
       metrics,

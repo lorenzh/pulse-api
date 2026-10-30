@@ -222,7 +222,7 @@ The secret is kept in memory only. `GET /checks`, `/metrics`, incident reasons a
 | `group`       | no       | Section heading, plain text, 1 to 100 characters.                         |
 | `checkIds`    | yes      | Non-empty list of configured check ids without duplicates.                |
 
-A check may be in several components. A component id may equal a check id. An unknown key, an unknown check id or a duplicate component id stops the start, for example `components[0].checkIds[1] must reference a configured check`. Components are read at start only.
+A check may be in several components. A component id may equal a check id. An unknown key, an unknown check id or a duplicate component id stops the start, for example `components[0].checkIds[1] must reference a configured check`. A change to components applies without a restart, like the rest of the file (see [Changing checks](operation.md#changing-checks)); an invalid file is not applied and the running components stay.
 
 ## tokens.json
 
