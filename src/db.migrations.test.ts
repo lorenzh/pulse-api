@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -144,4 +144,38 @@ test("a file from a newer program is refused", () => {
   expect(() => openDb(path)).toThrow(
     `database schema version ${SCHEMA_VERSION + 1} is newer than this program supports (${SCHEMA_VERSION}); downgrades are not supported`,
   );
+});
+
+/** The SQL texts `openDb` runs through `query` while it opens `path`. */
+function queriesOnOpen(path: string, steps?: readonly string[]): string[] {
+  const spy = spyOn(Database.prototype, "query");
+  try {
+    (steps === undefined ? openDb(path) : openDb(path, steps)).close();
+    return spy.mock.calls.map((c) => String(c[0]));
+  } finally {
+    spy.mockRestore();
+  }
+}
+
+test("the foreign key check runs only after a migration step, not on a fresh or current file", () => {
+  const path = join(dir, "spy.db");
+  expect(queriesOnOpen(path)).not.toContain("PRAGMA foreign_key_check");
+  expect(queriesOnOpen(path)).not.toContain("PRAGMA foreign_key_check");
+  const old = join(dir, "old.db");
+  makeV0(old);
+  expect(queriesOnOpen(old)).toContain("PRAGMA foreign_key_check");
+});
+
+test("a migration that leaves a row with a broken foreign key is refused and rolled back", () => {
+  const path = join(dir, "orphan.db");
+  makeV0(path);
+  const raw = new Database(path);
+  raw.run(
+    "INSERT INTO results (check_id, timestamp, status, latency_ms) VALUES ('gone', 9, 'up', 1)",
+  );
+  raw.close();
+  expect(() => openDb(path)).toThrow("schema migration left rows that break a foreign key");
+  const after = new Database(path);
+  expect(version(after)).toBe(0);
+  after.close();
 });

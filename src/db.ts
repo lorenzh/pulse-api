@@ -89,6 +89,9 @@ function migrate(db: Database, steps: readonly string[]): void {
       `database schema version ${current} is newer than this program supports (${steps.length}); downgrades are not supported`,
     );
   }
+  // A fresh file has no rows to check; a current file runs no step. Both skip the slow full-table check.
+  const fresh = db.query("SELECT 1 FROM sqlite_master LIMIT 1").get() === null;
+  const checkForeignKeys = !fresh && current < steps.length;
   // PRAGMA foreign_keys is a no-op inside a transaction, so it is switched around it.
   db.run("PRAGMA foreign_keys = OFF");
   try {
@@ -99,7 +102,7 @@ function migrate(db: Database, steps: readonly string[]): void {
         db.run(steps[n - 1] ?? "");
         db.run(`PRAGMA user_version = ${n}`);
       }
-      const broken = db.query("PRAGMA foreign_key_check").all();
+      const broken = checkForeignKeys ? db.query("PRAGMA foreign_key_check").all() : [];
       if (broken.length > 0) {
         throw new SchemaVersionError("schema migration left rows that break a foreign key");
       }
