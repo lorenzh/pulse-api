@@ -7,6 +7,10 @@ export const PROBE_LOCATIONS = 3;
 export const POST_RATE = 30;
 export const GET_CHECKS_RATE = 10;
 export const GET_UPTIME_RATE = 1;
+export const GET_LATENCY_RATE = 1;
+export const GET_CHECK_LATENCY_RATE = 1;
+/** Availability objective of every bench check, so `GET /checks` builds an `slo` for each. */
+export const AVAILABILITY_TARGET = 99.5;
 export const WARMUP_S = 20;
 export const DURATION_S = 60;
 export const IDLE_S = 30;
@@ -33,9 +37,39 @@ export function benchTokens(): { simulated: BenchToken[]; real: BenchToken } {
   };
 }
 
+/** The lorenzh/pulse-api commit that added both latency routes (F8, merged in #56). */
+const LATENCY_ROUTES_COMMIT = "f2f90cd81e4d977a29104d11de3607f3216807d3";
+
+/**
+ * GET routes newer than the oldest api the bench compares against, each with the api commit that
+ * added it. An api has the route exactly when its ref contains that commit. Add a new measured
+ * route here.
+ */
+export const OPTIONAL_ROUTES = {
+  "/latency": LATENCY_ROUTES_COMMIT,
+  "/checks/:id/latency": LATENCY_ROUTES_COMMIT,
+} as const;
+export type OptionalRoute = keyof typeof OPTIONAL_ROUTES;
+
+/** The routes whose introducing commit the api ref does not contain (`contains` asks git). */
+export async function routesMissingAt<R extends string>(
+  routes: Readonly<Record<R, string>>,
+  contains: (commit: string) => Promise<boolean>,
+): Promise<R[]> {
+  const missing: R[] = [];
+  for (const route of Object.keys(routes) as R[]) {
+    if (!(await contains(routes[route]))) missing.push(route);
+  }
+  return missing;
+}
+
+/** A p95 is null when the api lacks its route (`LoadOptions.missingRoutes`). */
 export interface LoadResult {
   p95GetChecksMs: number;
   p95PostResultsMs: number;
+  p95GetLatencyMs: number | null;
+  p95GetCheckLatencyMs: number | null;
+  /** Requests of all five streams that finished in the measured window, per second. */
   rps: number;
   /** GETs sent again after the connection closed before any response. */
   retriedGets: number;
@@ -50,6 +84,8 @@ export interface LoadOptions {
   apiUrl: string;
   /** Called once when warm-up ends, right before the measured window starts. */
   onWindowStart: () => Promise<void>;
+  /** Routes the api does not have (from its source): not requested, their p95 is null. */
+  missingRoutes?: readonly OptionalRoute[];
 }
 
 interface Stream {
@@ -93,6 +129,8 @@ export async function timed(
     const wrap = (cause: unknown): Error =>
       new Error(`${method} ${url} after ${Math.round(performance.now() - start)} ms`, { cause });
     if (!isClosedBeforeResponse(err)) throw wrap(err);
+    // One line per reset, so a failed run shows which route and how fast the close came.
+    console.log(`[bench] closed before a response: ${wrap(err).message}`);
     if (method !== "GET") {
       resets.droppedPosts += 1;
       return;
@@ -122,12 +160,27 @@ export async function drain(pending: Iterable<Promise<void>>, resets: Resets): P
   checkResets(resets);
 }
 
+function rateIfPresent(
+  missing: readonly OptionalRoute[] | undefined,
+  route: OptionalRoute,
+  rate: number,
+): number {
+  return missing?.includes(route) ? 0 : rate;
+}
+
+function p95IfSent(rate: number, samples: number[]): number | null {
+  return rate === 0 ? null : percentile(samples, 0.95);
+}
+
 /** Run warm-up and the measured window. Open loop: requests start on a fixed schedule. */
 export async function runLoad(options: LoadOptions): Promise<LoadResult> {
   const { simulated } = benchTokens();
   const ids = checkIds();
   const getSamples: number[] = [];
   const postSamples: number[] = [];
+  const uptimeSamples: number[] = [];
+  const latencySamples: number[] = [];
+  const checkLatencySamples: number[] = [];
   let measuring = false;
   let failure: Error | undefined;
   const resets: Resets = { retriedGets: 0, droppedPosts: 0 };
@@ -135,7 +188,13 @@ export async function runLoad(options: LoadOptions): Promise<LoadResult> {
     failure ??= err instanceof Error ? err : new Error(String(err));
   };
 
-  const streams: Stream[] = [
+  const latencyRate = rateIfPresent(options.missingRoutes, "/latency", GET_LATENCY_RATE);
+  const checkLatencyRate = rateIfPresent(
+    options.missingRoutes,
+    "/checks/:id/latency",
+    GET_CHECK_LATENCY_RATE,
+  );
+  const allStreams: Stream[] = [
     {
       rate: POST_RATE,
       sent: 0,
@@ -174,9 +233,30 @@ export async function runLoad(options: LoadOptions): Promise<LoadResult> {
     {
       rate: GET_UPTIME_RATE,
       sent: 0,
-      send: () => timed(`${options.apiUrl}/uptime`, {}, 200, undefined, resets),
+      send: () =>
+        timed(`${options.apiUrl}/uptime`, {}, 200, measuring ? uptimeSamples : undefined, resets),
+    },
+    {
+      rate: latencyRate,
+      sent: 0,
+      send: () =>
+        timed(`${options.apiUrl}/latency`, {}, 200, measuring ? latencySamples : undefined, resets),
+    },
+    {
+      rate: checkLatencyRate,
+      sent: 0,
+      send: (i) =>
+        timed(
+          `${options.apiUrl}/checks/${ids[i % ids.length]}/latency`,
+          {},
+          200,
+          measuring ? checkLatencySamples : undefined,
+          resets,
+        ),
     },
   ];
+  // A stream of a route the api lacks never starts.
+  const streams = allStreams.filter((stream) => stream.rate > 0);
 
   const pending = new Set<Promise<void>>();
   const start = performance.now();
@@ -213,7 +293,15 @@ export async function runLoad(options: LoadOptions): Promise<LoadResult> {
   return {
     p95GetChecksMs: percentile(getSamples, 0.95),
     p95PostResultsMs: percentile(postSamples, 0.95),
-    rps: (getSamples.length + postSamples.length) / seconds,
+    p95GetLatencyMs: p95IfSent(latencyRate, latencySamples),
+    p95GetCheckLatencyMs: p95IfSent(checkLatencyRate, checkLatencySamples),
+    rps:
+      (getSamples.length +
+        postSamples.length +
+        uptimeSamples.length +
+        latencySamples.length +
+        checkLatencySamples.length) /
+      seconds,
     ...resets,
   };
 }

@@ -126,7 +126,7 @@ curl http://localhost:3000/checks
 
 ## GET /probe/checks
 
-Needs the probe `Authorization: Bearer <token>` header, like `POST /results`. Answers `401` without a valid token and `405` for other methods. Returns every active check as written in the checks file (`Check[]`), without state, including `method`, `headers`, `body`, `expectedStatus` and `jsonAssert`. A header value `{"env": "NAME"}` is served as it is: the probe resolves it. Literal header values and bodies are served in clear text, so keep the probe tokens secret.
+Needs the probe `Authorization: Bearer <token>` header, like `POST /results`. Answers `401` without a valid token and `405` for other methods. Returns every active check as written in the checks file (`Check[]`), without state, including `method`, `headers`, `body`, `expectedStatus` and `jsonAssert`. `availabilityTarget` is omitted on purpose, even when the check has one: a probe does not need it, and an older probe would skip a check with a field it does not know. A header value `{"env": "NAME"}` is served as it is: the probe resolves it. Literal header values and bodies are served in clear text, so keep the probe tokens secret.
 
 ```sh
 curl -H "Authorization: Bearer $PULSE_PROBE_TOKEN" http://localhost:3000/probe/checks

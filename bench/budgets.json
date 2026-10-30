@@ -40,6 +40,16 @@
       "unit": "ms",
       "gating": false
     },
+    "p95_get_latency_ms": {
+      "budget": 53,
+      "unit": "ms",
+      "gating": false
+    },
+    "p95_get_check_latency_ms": {
+      "budget": 55,
+      "unit": "ms",
+      "gating": false
+    },
     "rps": {
       "budget": 40,
       "unit": "req/s",

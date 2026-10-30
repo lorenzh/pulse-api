@@ -4,17 +4,24 @@ import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  type Budgets,
+  buildRows,
   EMITTED_METRICS,
   isFailure,
-  judge,
   missingBudgets,
   parseBudgets,
-  type Row,
   renderTable,
+  type Samples,
 } from "./compare.ts";
-import { median, runChecked } from "./measure.ts";
-import { type Baseline, REPOS, type RepoName, repoUrl, resolveRefs } from "./refs.ts";
+import { OPTIONAL_ROUTES, routesMissingAt } from "./load.ts";
+import { runChecked } from "./measure.ts";
+import {
+  type Baseline,
+  containsCommit,
+  REPOS,
+  type RepoName,
+  repoUrl,
+  resolveRefs,
+} from "./refs.ts";
 import { buildImages, imageSizeMB, runStack, SERVICES, type SideDirs } from "./stack.ts";
 
 const BENCH_DIR = dirname(fileURLToPath(import.meta.url));
@@ -25,7 +32,6 @@ const BUILD_REPOS: readonly RepoName[] = ["contract", "kit"];
 
 type Side = "a" | "b";
 const SIDES: readonly Side[] = ["a", "b"];
-type Samples = Record<string, Record<string, number[]>>;
 
 interface Args {
   a: string;
@@ -109,7 +115,11 @@ async function prepareSide(side: Side, refs: Record<RepoName, string>): Promise<
   await runChecked("rm", ["-rf", dirname(seedDb)]);
   await mkdir(dirname(seedDb), { recursive: true });
   await runChecked("bun", [join(BENCH_DIR, "seed.ts"), apiDir, seedDb]);
-  const dirs: SideDirs = { side, work, seedDb };
+  // Only A may predate a measured route; B must serve them all, so a 404 there fails the load.
+  const missingRoutes =
+    side === "a" ? await routesMissingAt(OPTIONAL_ROUTES, (c) => containsCommit(apiDir, c)) : [];
+  if (missingRoutes.length > 0) log(`api A lacks ${missingRoutes.join(", ")}: not measured on A`);
+  const dirs: SideDirs = { side, work, seedDb, missingRoutes };
   log(`build images (${side})`);
   await buildImages(dirs, COMPOSE_FILE, join(WORK_ROOT, "run", side));
   return dirs;
@@ -140,6 +150,7 @@ async function measureStack(
   dirs: SideDirs,
   samples: Samples,
   failureLogFile: string,
+  missingOnA: Set<string>,
 ): Promise<void> {
   const runDir = join(WORK_ROOT, "run", dirs.side);
   await runChecked("rm", ["-rf", runDir]);
@@ -154,33 +165,15 @@ async function measureStack(
   }
   add(samples, "api", "p95_get_checks_ms", m.p95GetChecksMs);
   add(samples, "api", "p95_post_results_ms", m.p95PostResultsMs);
-  add(samples, "api", "rps", m.rps);
-}
-
-function buildRows(budgets: Budgets, a: Samples, b: Samples): Row[] {
-  const rows: Row[] = [];
-  for (const [service, metrics] of Object.entries(EMITTED_METRICS)) {
-    for (const metric of metrics) {
-      const budget = budgets[service]?.[metric];
-      const aValues = a[service]?.[metric];
-      const bValues = b[service]?.[metric];
-      // A missing metric fails the whole run; it is never skipped.
-      if (budget === undefined || aValues === undefined || bValues === undefined) {
-        throw new Error(`missing metric ${service}.${metric}`);
-      }
-      const aMedian = median(aValues);
-      const bMedian = median(bValues);
-      rows.push({
-        service,
-        metric,
-        a: aMedian,
-        b: bMedian,
-        budget,
-        verdict: judge(aMedian, bMedian, budget),
-      });
-    }
+  for (const [metric, value] of [
+    ["p95_get_latency_ms", m.p95GetLatencyMs],
+    ["p95_get_check_latency_ms", m.p95GetCheckLatencyMs],
+  ] as const) {
+    // Null only for a route that side A's source lacks (see prepareSide).
+    if (value === null) missingOnA.add(`api.${metric}`);
+    else add(samples, "api", metric, value);
   }
-  return rows;
+  add(samples, "api", "rps", m.rps);
 }
 
 async function main(): Promise<number> {
@@ -208,15 +201,16 @@ async function main(): Promise<number> {
     b: await prepareSide("b", refs.b),
   };
   const samples: Record<Side, Samples> = { a: {}, b: {} };
+  const missingOnA = new Set<string>();
   for (let round = 1; round <= args.rounds; round++) {
     for (const side of SIDES) {
       log(`round ${round}/${args.rounds} side ${side}`);
       const failureLog = join(args.out, `failure-round${round}-${side}.log`);
-      await measureStack(dirs[side], samples[side], failureLog);
+      await measureStack(dirs[side], samples[side], failureLog, missingOnA);
       await measureRepoScripts(dirs[side], samples[side]);
     }
   }
-  const rows = buildRows(budgets, samples.a, samples.b);
+  const rows = buildRows(budgets, samples.a, samples.b, missingOnA);
   const table = renderTable(rows);
   console.log(table);
   await mkdir(args.out, { recursive: true });

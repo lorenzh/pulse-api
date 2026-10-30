@@ -2,7 +2,7 @@
 import { chmod, copyFile, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { checksFileJson, tokensFileJson } from "./fixtures.ts";
-import { IDLE_S, runLoad } from "./load.ts";
+import { IDLE_S, type OptionalRoute, runLoad } from "./load.ts";
 import { readContainerProcess, runChecked, runCommand } from "./measure.ts";
 
 export const SERVICES = ["api", "probe", "status", "notify"] as const;
@@ -24,6 +24,8 @@ export interface SideDirs {
   work: Record<string, string>;
   /** Seeded database of this side's api. */
   seedDb: string;
+  /** Measured routes this side's api lacks; always empty for side B. */
+  missingRoutes: OptionalRoute[];
 }
 
 export interface StackMetrics {
@@ -34,6 +36,8 @@ export interface StackMetrics {
   loadCpuS: Record<ServiceName, number>;
   p95GetChecksMs: number;
   p95PostResultsMs: number;
+  p95GetLatencyMs: number | null;
+  p95GetCheckLatencyMs: number | null;
   rps: number;
 }
 
@@ -185,6 +189,7 @@ export async function runStack(
     const atWindowStart: Partial<Record<ServiceName, number>> = {};
     const load = await runLoad({
       apiUrl: `http://127.0.0.1:${info("api").port}`,
+      missingRoutes: dirs.missingRoutes,
       onWindowStart: async () => {
         const samples = await sampleAll(project);
         for (const service of SERVICES) atWindowStart[service] = samples[service].cpuSeconds;
@@ -204,6 +209,8 @@ export async function runStack(
       loadCpuS: perService((s) => end[s].cpuSeconds - (atWindowStart[s] ?? 0)),
       p95GetChecksMs: load.p95GetChecksMs,
       p95PostResultsMs: load.p95PostResultsMs,
+      p95GetLatencyMs: load.p95GetLatencyMs,
+      p95GetCheckLatencyMs: load.p95GetCheckLatencyMs,
       rps: load.rps,
     };
   } catch (err) {
