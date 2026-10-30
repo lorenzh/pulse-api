@@ -287,7 +287,12 @@ regular_services=$(COMPOSE_FILE=compose.yaml docker compose config --services | 
 [[ "$regular_services" == "api notify probe status" ]] ||
   fail "the regular stack has the services: ${regular_services}"
 regular_demo_services=$(COMPOSE_FILE=compose.yaml docker compose --profile demo config --services | sort | paste -sd' ' -)
-[[ "$regular_demo_services" != *e2e* ]] || fail "the regular stack lists an e2e service"
+# Expected: the regular services plus every service of compose.yaml in the demo profile.
+expected_demo_services=$(COMPOSE_FILE=compose.yaml docker compose --profile demo config --format json |
+  jq -r '.services | to_entries[] | select((.value.profiles // []) | index("demo")) | .key' |
+  cat <(printf '%s\n' $regular_services) - | sort | paste -sd' ' -)
+[[ "$regular_demo_services" == "$expected_demo_services" ]] ||
+  fail "the regular stack with the demo profile has the services: ${regular_demo_services} (expected: ${expected_demo_services})"
 echo "ok: the regular stack has exactly api, notify, probe and status"
 checks_backup=$(mktemp)
 cp "$checks_file" "$checks_backup"

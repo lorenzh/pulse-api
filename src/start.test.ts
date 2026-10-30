@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { ChecksResponse } from "@lorenzh/pulse-contract";
 import { type LogLevel, StartupError } from "@lorenzh/pulse-kit";
 import { openDb } from "./db.ts";
+import { createManualIncidentStore } from "./manual-incidents.ts";
 import { type StartDeps, startApi } from "./start.ts";
 
 const TOKEN = "test-token-east-0123456789abcdef";
@@ -442,4 +443,24 @@ test("admin token startup errors name the setting and never print a token", asyn
     JSON.stringify({ tokens: [{ name: "ops", token: "replace-with-x-0123456789" }] }),
   );
   assert.match(await startupMessage({ PULSE_API_ADMIN_TOKENS_FILE: example }), /placeholder/);
+});
+
+test("without the admin tokens setting the reads still list the stored incidents", async () => {
+  const db = openDb(":memory:");
+  const store = createManualIncidentStore(db, { now: () => NOW, componentIds: new Set() });
+  const stored = store.create({ title: "t", impact: "none", componentIds: [], message: "m" });
+  const { base } = deps({}, { openDb: () => db });
+  const api = await startApi(base);
+  try {
+    const r = await fetch(`http://127.0.0.1:${api.port}/manual-incidents`);
+    assert.equal(r.status, 200);
+    const body: unknown = await r.json();
+    assert.ok(Array.isArray(body));
+    assert.deepEqual(
+      body.map((i: { id: number }) => i.id),
+      [stored.id],
+    );
+  } finally {
+    await api.close();
+  }
 });
