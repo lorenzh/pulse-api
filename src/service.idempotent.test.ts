@@ -93,11 +93,60 @@ test("POST /results twice: 204 both times, one row, one metric count", async () 
   }
 });
 
-test("ingest: two heartbeat samples in one millisecond are both kept", () => {
+const HB: Check = { id: "hb", name: "HB", type: "heartbeat", period: 1000, grace: 0 };
+
+test("ingest: two generated heartbeat samples in one millisecond are both kept", () => {
   const s = createService(openDb(":memory:"));
-  s.upsertChecks([{ id: "hb", name: "HB", type: "heartbeat", period: 1000, grace: 0 }]);
+  s.upsertChecks([HB]);
   const ping: Result = { ...down(10, "heartbeat"), checkId: "hb", status: "up", reason: null };
-  assert.equal(s.ingest(ping), true);
-  assert.equal(s.ingest(ping), true);
+  assert.equal(s.ingest(ping, true), true);
+  assert.equal(s.ingest(ping, true), true);
   assert.equal(s.listResults("hb", 10).length, 2);
+});
+
+test("POST /results twice for a heartbeat check: one row, no second state change", async () => {
+  const service = createService(openDb(":memory:"));
+  service.upsertChecks([HB]);
+  const server = createApiServer(service, {
+    tokens: [{ location: "default", token: TOKEN }],
+    now: () => 1000,
+    metrics: createMetrics(),
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    const statuses: number[] = [];
+    for (let i = 0; i < 2; i++) {
+      const res = await fetch(`${base}/results`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}` },
+        body: JSON.stringify({ ...down(500), checkId: "hb" }),
+      });
+      statuses.push(res.status);
+    }
+    assert.deepEqual(statuses, [204, 204]);
+    assert.deepEqual(
+      service.listResults("hb", 10).map((r) => r.timestamp),
+      [500],
+    );
+    assert.equal(service.listChecks()[0]?.consecutiveDown, 3);
+  } finally {
+    await new Promise<void>((r) => {
+      server.close(() => r());
+      server.closeAllConnections();
+    });
+  }
+});
+
+test("ingest: a rolled-back result does not mark its location reporting", () => {
+  const db = openDb(":memory:");
+  const s = createService(db, { now: () => 1000, locationSilentMs: 500 });
+  s.upsertChecks([CHECK]);
+  // The result row is written, then the state update fails and the transaction rolls back.
+  db.run(
+    "CREATE TRIGGER fail_state BEFORE UPDATE ON checks BEGIN SELECT RAISE(ABORT, 'injected'); END",
+  );
+  assert.throws(() => s.ingest(down(900, "east")), /injected/);
+  assert.equal(s.listResults("c1", 10).length, 0);
+  assert.deepEqual(s.listLocations(), []);
 });

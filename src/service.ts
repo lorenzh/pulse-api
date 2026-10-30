@@ -115,9 +115,10 @@ export interface Service {
   upsertChecks(checks: Check[]): void;
   /**
    * Store a result. Idempotent on (check, location, timestamp): a repeat changes nothing and
-   * returns false; a new result returns true.
+   * returns false; a new result returns true. `isGenerated` marks a sample the api made itself (a
+   * heartbeat ping or the evaluator's down result): two of those in one millisecond are both kept.
    */
-  ingest(result: Result): boolean;
+  ingest(result: Result, isGenerated?: boolean): boolean;
   /** Every probe location seen, sorted by name, with its state at the current time. */
   listLocations(): Location[];
   listChecks(): CheckWithState[];
@@ -334,7 +335,7 @@ export function createService(
     return Math.max(MIN_LOCATION_SILENT_MS, 3 * largest);
   };
   /** Insert one result row; false when the (check, location, timestamp) sample is stored already. */
-  const storeSample = (result: Result, isLate: boolean, isHeartbeat: boolean): boolean => {
+  const storeSample = (result: Result, isLate: boolean, isGenerated: boolean): boolean => {
     let at = result.timestamp;
     let changes = 0;
     do {
@@ -350,9 +351,9 @@ export function createService(
         result.attempts ?? 1,
         isLate ? 1 : 0,
       ).changes;
-      // Heartbeat samples are made here, never re-sent: two in one millisecond are both kept.
+      // Generated samples are made here, never re-sent: two in one millisecond are both kept.
       at += 1;
-    } while (changes === 0 && isHeartbeat);
+    } while (changes === 0 && isGenerated);
     return changes > 0;
   };
   let cache = new Map<"checks" | "uptime", { at: number; windows: string; value: unknown }>();
@@ -717,7 +718,7 @@ export function createService(
       for (let i = 0; i < resolved; i++) onIncident("resolved");
     },
 
-    ingest(result) {
+    ingest(result, isGenerated = false) {
       let incidentEvent: "opened" | "resolved" | undefined;
       let isNew = true;
       invalidate();
@@ -735,11 +736,10 @@ export function createService(
         const isLate =
           !isHeartbeat && newest !== null && newest !== undefined && result.timestamp < newest;
         // A repeat of a stored sample (a probe re-sending after a lost answer) changes nothing.
-        if (!storeSample(result, isLate, isHeartbeat)) {
+        if (!storeSample(result, isLate, isGenerated)) {
           isNew = false;
           return;
         }
-        trackLocation(result.location, result.timestamp);
         // A late result is history only: it must not rewrite live state or incidents.
         if (isLate) return;
         // Older than the newest result of any location: history and quorum input only.
@@ -791,6 +791,8 @@ export function createService(
           result.checkId,
         );
       });
+      // Only after the commit: a rolled-back result must not mark its location reporting.
+      if (isNew) trackLocation(result.location, result.timestamp);
       if (incidentEvent !== undefined) onIncident(incidentEvent);
       return isNew;
     },

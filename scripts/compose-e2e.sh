@@ -507,13 +507,12 @@ assert_absent "GET /metrics" "$(api /metrics)"
 if grep -qF -- "$e2e_admin_token" <<<"$(docker compose logs --no-color)"; then fail "the logs show the admin token"; fi
 echo "ok: the container logs show no admin token"
 
-# results_have_no_gap <since-ms> <interval-ms>: the results of status-page from <since-ms> on are
-# ascending, no further apart than 1.5 x the interval, and one is newer than the outage.
-results_have_no_gap() {
-  api "/checks/status-page/results?limit=200" | jq -e --argjson since "$1" --argjson interval "$2" '
-    [.[].timestamp | select(. >= $since)] | sort as $t
-    | ($t | length) > 2
-    and ([range(1; $t | length) | $t[.] - $t[. - 1]] | all(. <= $interval * 1.5))' >/dev/null
+# shellcheck source=scripts/outage-history.sh
+source scripts/outage-history.sh
+
+# outage_replayed <start-ms> <end-ms>: the stored status-page history covers the outage.
+outage_replayed() {
+  api "/checks/status-page/results?limit=200" | history_covers_outage "$1" "$2" 10000
 }
 
 locations_report() {
@@ -521,13 +520,14 @@ locations_report() {
 }
 
 step "Probe outage: buffered results are replayed"
-outage_since=$(($(date +%s) * 1000))
+outage_start=$(($(date +%s) * 1000))
 docker compose stop api
 sleep "$OUTAGE_SECONDS"
 docker compose start api
+outage_end=$(($(date +%s) * 1000))
 wait_for "$T_UP" "api answers after the outage" api /checks
 wait_for "$T_REPLAY" "GET /locations shows the probe location reporting" locations_report
-wait_for "$T_REPLAY" "status-page results cover the outage without a gap" results_have_no_gap "$outage_since" 10000
+wait_for "$T_REPLAY" "status-page results cover the outage without a gap" outage_replayed "$outage_start" "$outage_end"
 
 step "Reload the checks"
 jq '.checks += [{id: "e2e-api", name: "E2E api", url: "http://api:3000/checks", intervalMs: 10000, timeoutMs: 2000}]' \

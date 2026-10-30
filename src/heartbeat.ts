@@ -60,16 +60,19 @@ export function createHeartbeatEvaluator({ service, metrics, now }: HeartbeatDep
           w.missed = missed;
         }
         if (h.state === "down" || h.isInMaintenance) continue;
-        service.ingest({
-          checkId: h.id,
-          timestamp: t,
-          status: "down",
-          statusCode: null,
-          latencyMs: 0,
-          reason: `no ping within ${h.period + h.grace}ms`,
-          location: HEARTBEAT_LOCATION,
-          attempts: 1,
-        });
+        service.ingest(
+          {
+            checkId: h.id,
+            timestamp: t,
+            status: "down",
+            statusCode: null,
+            latencyMs: 0,
+            reason: `no ping within ${h.period + h.grace}ms`,
+            location: HEARTBEAT_LOCATION,
+            attempts: 1,
+          },
+          true,
+        );
       }
     },
   };

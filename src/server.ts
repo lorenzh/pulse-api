@@ -266,16 +266,19 @@ async function servePing(
     throw bodyFailure(err);
   }
   try {
-    ops.service.ingest({
-      checkId: id,
-      timestamp: now(),
-      status: "up",
-      statusCode: null,
-      latencyMs: 0,
-      reason: null,
-      location: HEARTBEAT_LOCATION,
-      attempts: 1,
-    });
+    ops.service.ingest(
+      {
+        checkId: id,
+        timestamp: now(),
+        status: "up",
+        statusCode: null,
+        latencyMs: 0,
+        reason: null,
+        location: HEARTBEAT_LOCATION,
+        attempts: 1,
+      },
+      true,
+    );
     ops.metrics.recordHeartbeatPing(id);
   } catch (err) {
     // An inactive check records nothing, but the job keeps working.

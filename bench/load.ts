@@ -39,7 +39,7 @@ export interface LoadResult {
   rps: number;
   /** GETs sent again after the connection closed before any response. */
   retriedGets: number;
-  /** POSTs lost the same way; never sent again, because a repeated result is stored twice. */
+  /** POSTs lost the same way; never sent again: an api from before the unique result key stores a repeat twice. */
   droppedPosts: number;
 }
 

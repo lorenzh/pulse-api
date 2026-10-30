@@ -133,7 +133,7 @@ No probe has posted a result yet. Check that the probe runs, that it reaches the
 
 ## A location is `silent` in `GET /locations`
 
-The API received no accepted result from that location for longer than the silent threshold. Check that the probe runs, that it reaches the API and that it logs no `401` or `403`. A probe that cannot reach the API buffers its results and the location turns `reporting` again as soon as it delivers. `PULSE_LOCATION_SILENT_MS` changes the threshold. After an API restart a location is `silent` until its probe posts.
+The API received no accepted result from that location for longer than the silent threshold. Check that the probe runs, that it reaches the API and that it logs no `401` or `403`. A probe that cannot reach the API buffers its results and the location turns `reporting` again as soon as it delivers. `PULSE_LOCATION_SILENT_MS` changes the threshold. After an API restart each location counts as seen at the timestamp of its newest stored result: it is `reporting` while that result is younger than the threshold and `silent` after that, until its probe posts again.
 
 ## The status page is stale
 
