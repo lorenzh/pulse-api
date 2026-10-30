@@ -12,6 +12,8 @@ export const METRIC_KEYS = [
   "startup_wall_ms",
   "p95_get_checks_ms",
   "p95_post_results_ms",
+  "p95_get_latency_ms",
+  "p95_get_check_latency_ms",
   "rps",
   "image_mb",
 ] as const;
@@ -37,6 +39,8 @@ export const EMITTED_METRICS: Readonly<Record<string, readonly MetricKey[]>> = {
     "startup_wall_ms",
     "p95_get_checks_ms",
     "p95_post_results_ms",
+    "p95_get_latency_ms",
+    "p95_get_check_latency_ms",
     "rps",
     "image_mb",
   ],

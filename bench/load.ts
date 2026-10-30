@@ -7,6 +7,10 @@ export const PROBE_LOCATIONS = 3;
 export const POST_RATE = 30;
 export const GET_CHECKS_RATE = 10;
 export const GET_UPTIME_RATE = 1;
+export const GET_LATENCY_RATE = 1;
+export const GET_CHECK_LATENCY_RATE = 1;
+/** Availability objective of every bench check, so `GET /checks` builds an `slo` for each. */
+export const AVAILABILITY_TARGET = 99.5;
 export const WARMUP_S = 20;
 export const DURATION_S = 60;
 export const IDLE_S = 30;
@@ -36,6 +40,9 @@ export function benchTokens(): { simulated: BenchToken[]; real: BenchToken } {
 export interface LoadResult {
   p95GetChecksMs: number;
   p95PostResultsMs: number;
+  p95GetLatencyMs: number;
+  p95GetCheckLatencyMs: number;
+  /** Requests of all five streams that finished in the measured window, per second. */
   rps: number;
   /** GETs sent again after the connection closed before any response. */
   retriedGets: number;
@@ -128,6 +135,9 @@ export async function runLoad(options: LoadOptions): Promise<LoadResult> {
   const ids = checkIds();
   const getSamples: number[] = [];
   const postSamples: number[] = [];
+  const uptimeSamples: number[] = [];
+  const latencySamples: number[] = [];
+  const checkLatencySamples: number[] = [];
   let measuring = false;
   let failure: Error | undefined;
   const resets: Resets = { retriedGets: 0, droppedPosts: 0 };
@@ -174,7 +184,26 @@ export async function runLoad(options: LoadOptions): Promise<LoadResult> {
     {
       rate: GET_UPTIME_RATE,
       sent: 0,
-      send: () => timed(`${options.apiUrl}/uptime`, {}, 200, undefined, resets),
+      send: () =>
+        timed(`${options.apiUrl}/uptime`, {}, 200, measuring ? uptimeSamples : undefined, resets),
+    },
+    {
+      rate: GET_LATENCY_RATE,
+      sent: 0,
+      send: () =>
+        timed(`${options.apiUrl}/latency`, {}, 200, measuring ? latencySamples : undefined, resets),
+    },
+    {
+      rate: GET_CHECK_LATENCY_RATE,
+      sent: 0,
+      send: (i) =>
+        timed(
+          `${options.apiUrl}/checks/${ids[i % ids.length]}/latency`,
+          {},
+          200,
+          measuring ? checkLatencySamples : undefined,
+          resets,
+        ),
     },
   ];
 
@@ -213,7 +242,15 @@ export async function runLoad(options: LoadOptions): Promise<LoadResult> {
   return {
     p95GetChecksMs: percentile(getSamples, 0.95),
     p95PostResultsMs: percentile(postSamples, 0.95),
-    rps: (getSamples.length + postSamples.length) / seconds,
+    p95GetLatencyMs: percentile(latencySamples, 0.95),
+    p95GetCheckLatencyMs: percentile(checkLatencySamples, 0.95),
+    rps:
+      (getSamples.length +
+        postSamples.length +
+        uptimeSamples.length +
+        latencySamples.length +
+        checkLatencySamples.length) /
+      seconds,
     ...resets,
   };
 }

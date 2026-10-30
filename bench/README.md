@@ -4,19 +4,21 @@
 
 ## What is measured
 
-| Metric key            | Meaning                                                     | Services                   | Gates |
-| --------------------- | ----------------------------------------------------------- | -------------------------- | ----- |
-| `startup_cpu_ms`      | CPU time (utime + stime) at the first `200` of `/readyz`    | api, probe, status, notify | yes   |
-| `load_cpu_s`          | CPU time during the 60 s measured load window               | api, probe, status, notify | yes   |
-| `idle_rss_mib`        | `VmRSS` after startup and 30 s without requests             | api, probe, status, notify | yes   |
-| `peak_rss_mib`        | `VmHWM` at the end of the load phase                        | api, probe, status, notify | yes   |
-| `test_cpu_s`          | CPU time of `bun run test` in the repository                | all seven repositories     | yes   |
-| `build_cpu_s`         | CPU time of `bun run build`                                 | contract, kit              | yes   |
-| `startup_wall_ms`     | Wall time from `compose up` to the first `200` of `/readyz` | api, probe, status, notify | no    |
-| `p95_get_checks_ms`   | p95 latency of `GET /checks` under load                     | api                        | no    |
-| `p95_post_results_ms` | p95 latency of `POST /results` under load                   | api                        | no    |
-| `rps`                 | Requests per second that were served in the window          | api                        | no    |
-| `image_mb`            | `docker image inspect` size                                 | api, probe, status, notify | no    |
+| Metric key                 | Meaning                                                     | Services                   | Gates |
+| -------------------------- | ----------------------------------------------------------- | -------------------------- | ----- |
+| `startup_cpu_ms`           | CPU time (utime + stime) at the first `200` of `/readyz`    | api, probe, status, notify | yes   |
+| `load_cpu_s`               | CPU time during the 60 s measured load window               | api, probe, status, notify | yes   |
+| `idle_rss_mib`             | `VmRSS` after startup and 30 s without requests             | api, probe, status, notify | yes   |
+| `peak_rss_mib`             | `VmHWM` at the end of the load phase                        | api, probe, status, notify | yes   |
+| `test_cpu_s`               | CPU time of `bun run test` in the repository                | all seven repositories     | yes   |
+| `build_cpu_s`              | CPU time of `bun run build`                                 | contract, kit              | yes   |
+| `startup_wall_ms`          | Wall time from `compose up` to the first `200` of `/readyz` | api, probe, status, notify | no    |
+| `p95_get_checks_ms`        | p95 latency of `GET /checks` under load                     | api                        | no    |
+| `p95_post_results_ms`      | p95 latency of `POST /results` under load                   | api                        | no    |
+| `p95_get_latency_ms`       | p95 latency of `GET /latency` under load                    | api                        | no    |
+| `p95_get_check_latency_ms` | p95 latency of `GET /checks/:id/latency` under load         | api                        | no    |
+| `rps`                      | Requests per second of all five streams in the window       | api                        | no    |
+| `image_mb`                 | `docker image inspect` size                                 | api, probe, status, notify | no    |
 
 Only CPU time and memory gate. Hosted runners are too noisy for wall-clock numbers, so latency, throughput and wall-clock startup are only reported. Image size is deterministic, but gating it is not a decision that was made, so it is reported too.
 
@@ -24,7 +26,7 @@ Process numbers are read from inside the container: each service is PID 1, so `d
 
 ## The load
 
-The constants are in `bench/load.ts`. The api database is seeded with 20 checks and 30 days of 1-minute results (864 000 rows) by `bench/seed.ts`, using the `src/db.ts` of the version under test. Three simulated probes send together 30 `POST /results` per second, round robin over the checks. Besides that, 10 `GET /checks` and 1 `GET /uptime` per second. The real probe, status page and notify run as configured in `bench/compose.bench.yaml`; the probe checks the 20 checks every 10 s against a trivial `bench-target` container. Warm-up is 20 s, the measured window 60 s, idle 30 s. Keep `compose.bench.yaml` in step with the environment names of `compose.yaml`.
+The constants are in `bench/load.ts`. The api database is seeded with 20 checks and 30 days of 1-minute results (864 000 rows) by `bench/seed.ts`, using the `src/db.ts` of the version under test. Three simulated probes send together 30 `POST /results` per second, round robin over the checks. Besides that, 10 `GET /checks`, 1 `GET /uptime`, 1 `GET /latency` and 1 `GET /checks/:id/latency` per second. Every bench check has an `availabilityTarget` (99.5), so `GET /checks` builds an `slo` for each. A side A that does not serve the latency routes fails the run with a `404`. The real probe, status page and notify run as configured in `bench/compose.bench.yaml`; the probe checks the 20 checks every 10 s against a trivial `bench-target` container. Warm-up is 20 s, the measured window 60 s, idle 30 s. Keep `compose.bench.yaml` in step with the environment names of `compose.yaml`.
 
 ## Running it
 
@@ -64,4 +66,4 @@ The scripts in `bench/selftest/check-*.ts` use `node:assert` and cover the media
 
 ## Initial budgets
 
-The budgets are the median of A over one local A = A run (1 round) plus 30 % headroom, rounded up (CPU seconds to 0.1, with a lower bound of 0.5 s; other units to whole numbers). Reported metrics carry their reference value; `rps` is the measured value, not a limit. The floors of `test_cpu_s` for contract (2 s) and config (3 s) are widened because their test suites varied by about 20 % between two runs of the same commit. Re-set the budgets from the first nightly runs.
+The budgets are the median of A over one local A = A run (1 round) plus 30 % headroom, rounded up (CPU seconds to 0.1, with a lower bound of 0.5 s; other units to whole numbers). The two latency budgets come from one local run on 1 M-scale seed data (p95 40.6 ms and 41.8 ms, plus 30 %, rounded up); `rps` of that run was 43 req/s with all five streams, above the older budget of 40, which is left unchanged and only reported. Reported metrics carry their reference value; `rps` is the measured value, not a limit. The floors of `test_cpu_s` for contract (2 s) and config (3 s) are widened because their test suites varied by about 20 % between two runs of the same commit. Re-set the budgets from the first nightly runs.

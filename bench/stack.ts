@@ -34,6 +34,8 @@ export interface StackMetrics {
   loadCpuS: Record<ServiceName, number>;
   p95GetChecksMs: number;
   p95PostResultsMs: number;
+  p95GetLatencyMs: number;
+  p95GetCheckLatencyMs: number;
   rps: number;
 }
 
@@ -204,6 +206,8 @@ export async function runStack(
       loadCpuS: perService((s) => end[s].cpuSeconds - (atWindowStart[s] ?? 0)),
       p95GetChecksMs: load.p95GetChecksMs,
       p95PostResultsMs: load.p95PostResultsMs,
+      p95GetLatencyMs: load.p95GetLatencyMs,
+      p95GetCheckLatencyMs: load.p95GetCheckLatencyMs,
       rps: load.rps,
     };
   } catch (err) {

@@ -154,6 +154,8 @@ async function measureStack(
   }
   add(samples, "api", "p95_get_checks_ms", m.p95GetChecksMs);
   add(samples, "api", "p95_post_results_ms", m.p95PostResultsMs);
+  add(samples, "api", "p95_get_latency_ms", m.p95GetLatencyMs);
+  add(samples, "api", "p95_get_check_latency_ms", m.p95GetCheckLatencyMs);
   add(samples, "api", "rps", m.rps);
 }
 
