@@ -1,13 +1,13 @@
 # Install
 
-You can run pulse-api with Node directly, as a single Docker image, or as part of the full pulse stack with Docker Compose.
+You can run pulse-api with Bun directly, as a single Docker image, or as part of the full pulse stack with Docker Compose.
 
-## With npm
+## With Bun
 
-You need Node 24 or newer.
+You need Bun 1.4.0.
 
 ```sh
-npm ci
+bun install --frozen-lockfile
 cp checks.example.json checks.json
 cp tokens.example.json tokens.json
 ```
@@ -15,10 +15,10 @@ cp tokens.example.json tokens.json
 Edit `tokens.json` first. The API rejects the placeholder tokens of the example file. Create a token with `openssl rand -hex 32` (see [Locations and tokens](concepts.md#locations-and-tokens)). Then start the API:
 
 ```sh
-npm start
+bun start
 ```
 
-It listens on port 3000. The database is `./pulse.db`. `node:sqlite` prints an experimental warning on start; this is expected. All settings are in [Configuration](configuration.md).
+It listens on port 3000. The database is `./pulse.db`. All settings are in [Configuration](configuration.md).
 
 Check that it runs:
 
@@ -52,7 +52,7 @@ Stop the stack with `docker compose down`. The `api-data` and `notify-data` volu
 
 The API stays non-public (`127.0.0.1:3000`). Port 8080 of `pulse-status` exposes a filtered, read-only subset of it: `GET /api/uptime`, `/api/checks`, `/api/maintenance` and `/api/incidents?status=open|resolved`. No other API path is proxied. The status page `/` and its static assets are served as well. Check targets, reasons and keywords are hidden by default (`PULSE_STATUS_HIDE_DETAILS`, see the pulse-status docs). If you show details, reasons can still reveal hosts or IPs.
 
-All images run as the non-root `node` user. `status` and `notify` wait for `api` to be healthy. `probe` waits for `api` and `status` to be healthy.
+All images run as the non-root `bun` user. `status` and `notify` wait for `api` to be healthy. `probe` waits for `api` and `status` to be healthy.
 
 ### The `.env` file
 
@@ -105,7 +105,7 @@ docker run --rm -p 3000:3000 \
   pulse-api:local
 ```
 
-The image runs as the non-root `node` user with `node src/main.ts`. It owns `/data` (database at `PULSE_DB=/data/pulse.db`), exposes port 3000 and has a healthcheck on `GET /readyz`. It contains no checks or tokens file: mount them.
+The image runs as the non-root `bun` user with `bun src/main.ts`. It owns `/data` (database at `PULSE_DB=/data/pulse.db`), exposes port 3000 and has a healthcheck on `GET /readyz`. It contains no checks or tokens file: mount them.
 
 ## Demo profile
 

@@ -158,7 +158,7 @@ notify_has() {
 # True once notify finished a good poll; that poll seeds the incidents that already exist.
 # grep without -q reads all input, so pipefail never sees node die of SIGPIPE.
 notify_has_polled() {
-  docker compose exec -T notify node -e \
+  docker compose exec -T notify bun -e \
     "fetch('http://127.0.0.1:9100/metrics').then(async (r) => console.log(await r.text()))" |
     grep -E '^pulse_notify_polls_total\{outcome="ok"\} [1-9]'
 }
@@ -332,7 +332,7 @@ post_check_is() { # post_check_is <state>
 }
 
 set_target_mode() { # set_target_mode <mode>
-  docker compose exec -T e2e-target node -e \
+  docker compose exec -T e2e-target bun -e \
     "fetch('http://127.0.0.1:8000/mode/$1', { method: 'POST' }).then((r) => process.exit(r.status === 204 ? 0 : 1))"
 }
 

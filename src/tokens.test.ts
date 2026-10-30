@@ -1,6 +1,6 @@
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
-import { test } from "node:test";
 import { authenticate, EXAMPLE_TOKENS, parseTokens, TokensError } from "./tokens.ts";
 
 const A = "token-a-0123456789abcdef";

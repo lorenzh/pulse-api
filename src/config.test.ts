@@ -1,8 +1,8 @@
+import { onTestFinished, test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
 import { ConfigError, loadChecks, parseChecks } from "./config.ts";
 
 const ok = { id: "a", name: "A", url: "http://localhost:1/", intervalMs: 1000 };
@@ -40,9 +40,9 @@ test("config: duplicate id message", () => {
   assert.throws(() => parseChecks({ checks: [ok, ok] }), /duplicate check id "a"/);
 });
 
-test("config: loadChecks reads files and reports errors", (t) => {
+test("config: loadChecks reads files and reports errors", () => {
   const dir = mkdtempSync(join(tmpdir(), "pulse-cfg-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
   const good = join(dir, "good.json");
   writeFileSync(good, JSON.stringify({ checks: [ok] }));
   assert.deepEqual(loadChecks(good), [withRetryDefaults(ok)]);

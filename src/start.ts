@@ -1,5 +1,5 @@
+import type { Database } from "bun:sqlite";
 import type { AddressInfo } from "node:net";
-import type { DatabaseSync } from "node:sqlite";
 import {
   createLogger,
   type LogLevel,
@@ -29,7 +29,7 @@ export interface StartDeps {
   clearTimeout: (handle: unknown) => void;
   /** Receives one JSON log line without the newline. */
   write: (level: LogLevel, line: string) => void;
-  openDb: (path: string) => DatabaseSync;
+  openDb: (path: string) => Database;
   /** Bound for the shutdown; defaults to SHUTDOWN_TIMEOUT_MS. */
   shutdownTimeoutMs?: number;
   /** Time between retention runs; a test hook, the production interval is fixed at one hour. */
@@ -52,7 +52,7 @@ function errorText(err: unknown): string {
 
 /** Load the configuration, open the database and listen. Every configuration error is a StartupError. */
 export async function startApi(deps: StartDeps): Promise<RunningApi> {
-  let db: DatabaseSync | undefined;
+  let db: Database | undefined;
   try {
     return await run(deps, (opened) => {
       db = opened;
@@ -64,7 +64,7 @@ export async function startApi(deps: StartDeps): Promise<RunningApi> {
   }
 }
 
-async function run(deps: StartDeps, onDb: (db: DatabaseSync) => void): Promise<RunningApi> {
+async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<RunningApi> {
   const { env } = deps;
   const logger = createLogger({
     level: readLogLevel(env),
@@ -98,7 +98,7 @@ async function run(deps: StartDeps, onDb: (db: DatabaseSync) => void): Promise<R
     }
   }
 
-  let db: DatabaseSync;
+  let db: Database;
   try {
     db = deps.openDb(dbPath);
   } catch (err) {

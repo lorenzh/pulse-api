@@ -1,6 +1,6 @@
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
-import { test } from "node:test";
 import { openDb } from "./db.ts";
 import { createApiServer } from "./server.ts";
 import { createService } from "./service.ts";
@@ -22,9 +22,9 @@ function setup(now = () => NOW) {
     "INSERT INTO results (check_id, timestamp, status, latency_ms, location) VALUES (?, ?, ?, 1, ?)",
   );
   const add = (t: number, status: string, n = 1, id = "a", loc = "default") => {
-    db.exec("BEGIN");
+    db.run("BEGIN");
     for (let i = 0; i < n; i++) insert.run(id, t, status, loc);
-    db.exec("COMMIT");
+    db.run("COMMIT");
   };
   return { db, service, add };
 }
@@ -103,7 +103,7 @@ test("uptime: moving the clock one day shifts the window", () => {
 
 test("uptime: 130k rows aggregate quickly", () => {
   const { service, add, db } = setup();
-  db.exec("BEGIN");
+  db.run("BEGIN");
   const insert = db.prepare(
     "INSERT INTO results (check_id, timestamp, status, latency_ms) VALUES ('a', ?, ?, 1)",
   );
@@ -116,7 +116,7 @@ test("uptime: 130k rows aggregate quickly", () => {
     all++;
     insert.run(t, status);
   }
-  db.exec("COMMIT");
+  db.run("COMMIT");
   // eslint-disable-next-line sonarjs/void-use -- void marks the intentionally unused helper in this benchmark-style test
   void add;
   assert.ok(all > 125_000);

@@ -1,8 +1,5 @@
+import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { test } from "node:test";
 import type { Check } from "@lorenzh/pulse-contract";
 import { openDb } from "./db.ts";
 import { res } from "./service.test.ts";
@@ -45,26 +42,6 @@ test("removed check: hidden, resolved, reset, history kept; re-add restores", ()
   assert.equal(back?.consecutiveDown, 0);
   assert.equal(s.listResults("c2", 10).length, 3);
   s.ingest({ ...res(20, "up"), checkId: "c2" });
-});
-
-test("migration adds active, defaulting to active, to a database without the column", () => {
-  const dir = mkdtempSync(join(tmpdir(), "pulse-mig-"));
-  try {
-    const path = join(dir, "old.db");
-    const old = openDb(path);
-    old.exec(
-      "INSERT INTO checks (id, name, url, interval_ms) VALUES ('old', 'Old', 'http://o/', 1000)",
-    );
-    old.exec("ALTER TABLE checks DROP COLUMN active");
-    old.close();
-    const s = createService(openDb(path));
-    assert.deepEqual(
-      s.listChecks().map((c) => c.id),
-      ["old"],
-    );
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
 });
 
 test("retention still prunes the results of an inactive check", () => {

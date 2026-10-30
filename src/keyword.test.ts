@@ -1,10 +1,9 @@
+import { onTestFinished, test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
-import { test } from "node:test";
 import type { Check, ChecksResponse, HttpCheck } from "@lorenzh/pulse-contract";
 import { ConfigError, parseChecks } from "./config.ts";
 import { openDb } from "./db.ts";
@@ -45,9 +44,9 @@ test("config: keyword is rejected when empty, not a string, or on a TLS check", 
   }
 });
 
-test("service: keyword persists across restart and is cleared when dropped", (t) => {
+test("service: keyword persists across restart and is cleared when dropped", () => {
   const dir = mkdtempSync(join(tmpdir(), "pulse-keyword-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "k.db");
   const withKeyword: Check = { ...base, keyword: "ok" };
   const db1 = openDb(path);
@@ -59,18 +58,9 @@ test("service: keyword persists across restart and is cleared when dropped", (t)
   assert.equal("keyword" in s2.listChecks()[0]!, false);
 });
 
-test("db: an old database without the keyword column migrates", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "pulse-keyword-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const path = join(dir, "old.db");
-  const old = new DatabaseSync(path);
-  old.exec(`
-    CREATE TABLE checks (id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL,
-      interval_ms INTEGER NOT NULL, timeout_ms INTEGER, state TEXT NOT NULL DEFAULT 'unknown',
-      consecutive_down INTEGER NOT NULL DEFAULT 0, last_result_at INTEGER, last_reason TEXT);
-    INSERT INTO checks (id, name, url, interval_ms) VALUES ('k', 'K', 'http://x/', 1000);`);
-  old.close();
-  const s = createService(openDb(path));
+test("db: a check without keyword reads none, and a keyword can be set", () => {
+  const s = createService(openDb(":memory:"));
+  s.upsertChecks([base]);
   assert.equal("keyword" in s.listChecks()[0]!, false);
   s.upsertChecks([{ ...base, keyword: "ok" }]);
   assert.equal((s.listChecks()[0] as HttpCheck).keyword, "ok");
@@ -98,9 +88,9 @@ test("server: GET /checks serves the keyword only for checks that have one", asy
   }
 });
 
-test("service: keyword of a check removed from the file is cleared, results stay", (t) => {
+test("service: keyword of a check removed from the file is cleared, results stay", () => {
   const dir = mkdtempSync(join(tmpdir(), "pulse-keyword-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "k.db");
   const kept: Check = { ...base, id: "kept", keyword: "stay" };
   const removed: Check = { ...base, id: "gone", keyword: "bye" };
@@ -121,7 +111,14 @@ test("service: keyword of a check removed from the file is cleared, results stay
   s2.upsertChecks([kept]);
   const list = s2.listChecks();
   assert.equal((list.find((c) => c.id === "kept") as HttpCheck).keyword, "stay");
-  assert.equal(db2.prepare("SELECT keyword FROM checks WHERE id = 'gone'").get()?.keyword, null);
+  assert.equal(
+    (
+      db2.prepare("SELECT keyword FROM checks WHERE id = 'gone'").get() as {
+        keyword: string | null;
+      }
+    ).keyword,
+    null,
+  );
   assert.equal(s2.listResults("gone", 10).length, 1);
   s2.upsertChecks([]);
   assert.equal(

@@ -1,5 +1,5 @@
+import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import type { Result } from "@lorenzh/pulse-contract";
 import { openDb } from "./db.ts";
 import {

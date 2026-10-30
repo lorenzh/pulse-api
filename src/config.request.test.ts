@@ -1,5 +1,5 @@
+import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { ConfigError, parseChecks } from "./config.ts";
 
 const ok = { id: "a", name: "A", url: "http://localhost:1/", intervalMs: 1000 };

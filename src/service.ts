@@ -1,4 +1,4 @@
-import type { DatabaseSync } from "node:sqlite";
+import type { Database } from "bun:sqlite";
 import type {
   Check,
   CheckState,
@@ -130,7 +130,7 @@ export interface Service {
   deleteExpiredResults(cutoff: number, limit: number): number;
 }
 
-/** A row of `checks` as returned by node:sqlite; nullable columns are typed as such. */
+/** A row of `checks` as returned by bun:sqlite; nullable columns are typed as such. */
 interface CheckRow {
   id: string;
   name: string;
@@ -199,7 +199,7 @@ export interface ServiceOptions {
 }
 
 export function createService(
-  db: DatabaseSync,
+  db: Database,
   {
     maintenance = [],
     now = Date.now,
@@ -299,8 +299,8 @@ export function createService(
   );
   const latestPerLocation = (checkId: string): ResultRow[] =>
     (locationsOf.all(checkId, checkId) as unknown as { l: string }[]).flatMap(({ l }) => {
-      const row = latestOfLocation.get(checkId, l) as ResultRow | undefined;
-      return row === undefined ? [] : [row];
+      const row = latestOfLocation.get(checkId, l) as ResultRow | null;
+      return row ? [row] : [];
     });
   const dailyUptime = db.prepare(
     `SELECT CAST(timestamp / ${DAY_MS} AS INTEGER) AS day,
@@ -422,12 +422,12 @@ export function createService(
   }
 
   function transaction(fn: () => void): void {
-    db.exec("BEGIN");
+    db.run("BEGIN");
     try {
       fn();
-      db.exec("COMMIT");
+      db.run("COMMIT");
     } catch (err) {
-      db.exec("ROLLBACK");
+      db.run("ROLLBACK");
       throw err;
     }
   }
@@ -644,7 +644,7 @@ export function createService(
           {
             state: row.state,
             consecutiveDown,
-            incidentOpen: hasOpen.get(result.checkId) !== undefined,
+            incidentOpen: hasOpen.get(result.checkId) != null,
           },
           combined,
         );
@@ -738,12 +738,12 @@ export function createService(
     },
 
     hasCheck(id) {
-      return getCheck.get(id) !== undefined;
+      return getCheck.get(id) != null;
     },
 
     findActiveCheck(id) {
-      const row = getActiveCheck.get(id) as CheckRow | undefined;
-      return row === undefined ? undefined : toCheck(row);
+      const row = getActiveCheck.get(id) as CheckRow | null;
+      return row ? toCheck(row) : undefined;
     },
 
     listResults(checkId, limit, before) {

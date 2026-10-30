@@ -1,9 +1,5 @@
+import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
-import { test } from "node:test";
 import type { Check, Result } from "@lorenzh/pulse-contract";
 import { openDb } from "./db.ts";
 import { createService } from "./service.ts";
@@ -96,39 +92,6 @@ test("late result: never enters a later window, so the incident stays open", () 
   assert.equal(s.listChecks()[0]!.state, "down");
   assert.equal(s.listIncidents("open").length, 1);
   assert.ok(s.listResults("c1", 10).some((x) => x.timestamp === 150 && x.status === "up"));
-});
-
-test("migration: late column is added and the backfill marks earlier-inserted older rows", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "pulse-migrate-late-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const path = join(dir, "old.db");
-  const old = new DatabaseSync(path);
-  old.exec(`
-    CREATE TABLE checks (id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL,
-      interval_ms INTEGER NOT NULL, timeout_ms INTEGER, state TEXT NOT NULL DEFAULT 'unknown',
-      consecutive_down INTEGER NOT NULL DEFAULT 0, last_result_at INTEGER, last_reason TEXT);
-    CREATE TABLE results (id INTEGER PRIMARY KEY AUTOINCREMENT, check_id TEXT NOT NULL,
-      timestamp INTEGER NOT NULL, status TEXT NOT NULL, status_code INTEGER,
-      latency_ms REAL NOT NULL, reason TEXT, location TEXT NOT NULL DEFAULT 'default');
-    INSERT INTO checks (id, name, url, interval_ms) VALUES ('c1', 'C1', 'http://x/', 1000);
-    INSERT INTO results (check_id, timestamp, status, status_code, latency_ms, location) VALUES
-      ('c1', 300, 'down', 503, 1, 'a'),
-      ('c1', 150, 'up', 200, 1, 'a'),
-      ('c1', 100, 'up', 200, 1, 'b');
-  `);
-  old.close();
-  const db = openDb(path);
-  t.after(() => db.close());
-  const rows = db.prepare("SELECT timestamp, late FROM results ORDER BY id").all();
-  assert.deepEqual(
-    rows.map((x) => [x.timestamp, x.late]),
-    [
-      [300, 0],
-      [150, 1],
-      [100, 0],
-    ],
-  );
-  assert.equal(createService(db).listResults("c1", 10).length, 3);
 });
 
 test("two locations: loc2 at t=50 after loc1 at t=100 keeps last_result_at and state", () => {

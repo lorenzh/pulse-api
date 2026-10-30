@@ -1,6 +1,6 @@
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
-import { test } from "node:test";
 import type { Check, MaintenanceWindow, Result } from "@lorenzh/pulse-contract";
 import { openDb } from "./db.ts";
 import { createApiServer } from "./server.ts";

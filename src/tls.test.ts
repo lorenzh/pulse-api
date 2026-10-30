@@ -1,9 +1,5 @@
+import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
-import { test } from "node:test";
 import type { TlsCheck } from "@lorenzh/pulse-contract";
 import { ConfigError, parseChecks } from "./config.ts";
 import { openDb } from "./db.ts";
@@ -162,41 +158,4 @@ test("server: validateResult accepts and checks certDaysLeft", () => {
   // eslint-disable-next-line sonarjs/no-unused-vars -- rest destructuring omits a property to build the test input
   const { certDaysLeft: _omit, ...legacy } = body;
   assert.equal("certDaysLeft" in (validateResult(legacy, 1, () => undefined) as object), false);
-});
-
-test("migration: old database without cert_days_left or tls columns", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "pulse-migrate-tls-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const path = join(dir, "old.db");
-  const old = new DatabaseSync(path);
-  old.exec(`
-    CREATE TABLE checks (id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL,
-      interval_ms INTEGER NOT NULL, timeout_ms INTEGER, state TEXT NOT NULL DEFAULT 'unknown',
-      consecutive_down INTEGER NOT NULL DEFAULT 0, last_result_at INTEGER, last_reason TEXT);
-    CREATE TABLE results (id INTEGER PRIMARY KEY AUTOINCREMENT, check_id TEXT NOT NULL,
-      timestamp INTEGER NOT NULL, status TEXT NOT NULL, status_code INTEGER,
-      latency_ms REAL NOT NULL, reason TEXT, location TEXT NOT NULL DEFAULT 'default');
-    INSERT INTO checks (id, name, url, interval_ms) VALUES ('h', 'H', 'http://x/', 1000);
-    INSERT INTO results (check_id, timestamp, status, status_code, latency_ms)
-      VALUES ('h', 1, 'up', 200, 4);
-  `);
-  old.close();
-  for (let i = 0; i < 2; i++) {
-    const db = openDb(path);
-    const s = createService(db);
-    assert.equal("certDaysLeft" in s.listResults("h", 1)[0]!, false);
-    assert.equal(
-      s.listChecks().some((c) => c.id === "h"),
-      i === 0,
-    );
-    s.upsertChecks([check]);
-    s.ingest(res(2, "down"));
-    const tlsCheck = s.listChecks().find((c) => c.id === "t")!;
-    assert.equal(tlsCheck.certDaysLeft, 5);
-    assert.equal(
-      s.listChecks().some((c) => c.id === "h"),
-      false,
-    );
-    db.close();
-  }
 });

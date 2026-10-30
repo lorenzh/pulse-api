@@ -1,5 +1,5 @@
+import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { parseConfig } from "./config.ts";
 import { parseTokens } from "./tokens.ts";
 

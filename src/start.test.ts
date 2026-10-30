@@ -1,9 +1,9 @@
+import type { Database } from "bun:sqlite";
+import { afterAll, beforeAll, test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DatabaseSync } from "node:sqlite";
-import { after, before, test } from "node:test";
 import type { ChecksResponse } from "@lorenzh/pulse-contract";
 import { type LogLevel, StartupError } from "@lorenzh/pulse-kit";
 import { openDb } from "./db.ts";
@@ -18,7 +18,7 @@ let dir: string;
 let checksFile: string;
 let tokensFile: string;
 
-before(() => {
+beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), "pulse-start-"));
   mkdirSync(dir, { recursive: true });
   checksFile = join(dir, "checks.json");
@@ -31,7 +31,7 @@ before(() => {
   );
   writeFileSync(tokensFile, JSON.stringify({ tokens: [{ location: "eu", token: TOKEN }] }));
 });
-after(() => rmSync(dir, { recursive: true, force: true }));
+afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 function deps(env: Record<string, string>, extra: Partial<StartDeps> = {}) {
   const lines: { line: string; level: LogLevel }[] = [];
@@ -112,7 +112,7 @@ test("a database that cannot be opened is a startup error", async () => {
 
 test("a port in use is a startup error and the database is closed", async () => {
   const first = await startApi(deps({}).base);
-  let db: DatabaseSync | undefined;
+  let db: Database | undefined;
   const second = deps(
     { PORT: String(first.port) },
     {
@@ -135,7 +135,7 @@ test("a port in use is a startup error and the database is closed", async () => 
 });
 
 test("healthz answers without a checks query, then 503 while shutting down; shutdown closes the db", async () => {
-  let db: DatabaseSync | undefined;
+  let db: Database | undefined;
   const { base, lines } = deps(
     {},
     {
@@ -165,7 +165,7 @@ test("healthz answers without a checks query, then 503 while shutting down; shut
 });
 
 test("healthz does not read the checks table", async () => {
-  let db: DatabaseSync | undefined;
+  let db: Database | undefined;
   const { base } = deps(
     {},
     {
@@ -178,18 +178,18 @@ test("healthz does not read the checks table", async () => {
   const api = await startApi(base);
   try {
     // Dropping the table would make any query on it fail.
-    db?.exec("ALTER TABLE checks RENAME TO checks_gone");
+    db?.run("ALTER TABLE checks RENAME TO checks_gone");
     const res = await fetch(`http://127.0.0.1:${api.port}/healthz`);
     assert.equal(res.status, 200);
   } finally {
-    db?.exec("ALTER TABLE checks_gone RENAME TO checks");
+    db?.run("ALTER TABLE checks_gone RENAME TO checks");
     await api.close();
   }
 });
 
 test("shutdown during an open connection hits the bound, warns and still closes", async () => {
   let release: () => void = () => undefined;
-  let db: DatabaseSync | undefined;
+  let db: Database | undefined;
   const { base, lines } = deps(
     {},
     {
@@ -319,7 +319,7 @@ test("heartbeat e2e: the started api goes down without a ping and a ping resolve
 
 test("shutdown during a retention run waits for the run, then closes: no write after close", async () => {
   const dbFile = join(dir, "race.db");
-  let db: DatabaseSync | undefined;
+  let db: Database | undefined;
   const timers: { fn: () => void; ms: number }[] = [];
   const gates: (() => void)[] = [];
   const { base, lines } = deps(
@@ -347,10 +347,10 @@ test("shutdown during a retention run waits for the run, then closes: no write a
   const insert = db.prepare(
     "INSERT INTO results (check_id, timestamp, status, latency_ms, location) VALUES ('c1', ?, 'up', 1, 'eu')",
   );
-  db.exec("BEGIN");
+  db.run("BEGIN");
   for (let i = 0; i < 2500; i++) insert.run(NOW - 200 * 86_400_000 + i);
   insert.run(NOW);
-  db.exec("COMMIT");
+  db.run("COMMIT");
   const retentionTimers = (): { fn: () => void; ms: number }[] => timers.filter((t) => t.ms === 10);
   const start = retentionTimers()[0];
   assert.ok(start, "the first run scheduled the second");
@@ -362,7 +362,16 @@ test("shutdown during a retention run waits for the run, then closes: no write a
   });
   for (let i = 0; i < 10 && !isClosed; i++) {
     await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(db.isOpen, !isClosed || false);
+    const isDbOpen = ((): boolean => {
+      try {
+        db.prepare("SELECT 1");
+        return true;
+      } catch {
+        // A closed bun:sqlite database throws on prepare.
+        return false;
+      }
+    })();
+    assert.equal(isDbOpen, !isClosed || false);
     gates.shift()?.();
   }
   await closing;

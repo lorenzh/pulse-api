@@ -1,5 +1,5 @@
+import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { ConfigError, parseConfig } from "./config.ts";
 
 const SECRET = "hb-secret-0123456789abcdef";
