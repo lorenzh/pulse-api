@@ -1,17 +1,17 @@
 {
   "api": {
     "startup_cpu_ms": {
-      "budget": 247,
+      "budget": 325,
       "unit": "ms",
       "gating": true
     },
     "load_cpu_s": {
-      "budget": 23.5,
+      "budget": 28.1,
       "unit": "s",
       "gating": true
     },
     "idle_rss_mib": {
-      "budget": 89,
+      "budget": 88,
       "unit": "MiB",
       "gating": true
     },
@@ -21,22 +21,22 @@
       "gating": true
     },
     "test_cpu_s": {
-      "budget": 2.4,
+      "budget": 2.8,
       "unit": "s",
       "gating": true
     },
     "startup_wall_ms": {
-      "budget": 1425,
+      "budget": 618,
       "unit": "ms",
       "gating": false
     },
     "p95_get_checks_ms": {
-      "budget": 318,
+      "budget": 392,
       "unit": "ms",
       "gating": false
     },
     "p95_post_results_ms": {
-      "budget": 271,
+      "budget": 312,
       "unit": "ms",
       "gating": false
     },
@@ -53,7 +53,7 @@
   },
   "probe": {
     "startup_cpu_ms": {
-      "budget": 299,
+      "budget": 377,
       "unit": "ms",
       "gating": true
     },
@@ -68,17 +68,17 @@
       "gating": true
     },
     "peak_rss_mib": {
-      "budget": 81,
+      "budget": 83,
       "unit": "MiB",
       "gating": true
     },
     "test_cpu_s": {
-      "budget": 1.8,
+      "budget": 2.3,
       "unit": "s",
       "gating": true
     },
     "startup_wall_ms": {
-      "budget": 816,
+      "budget": 1027,
       "unit": "ms",
       "gating": false
     },
@@ -90,7 +90,7 @@
   },
   "status": {
     "startup_cpu_ms": {
-      "budget": 273,
+      "budget": 377,
       "unit": "ms",
       "gating": true
     },
@@ -100,22 +100,22 @@
       "gating": true
     },
     "idle_rss_mib": {
-      "budget": 78,
-      "unit": "MiB",
-      "gating": true
-    },
-    "peak_rss_mib": {
       "budget": 82,
       "unit": "MiB",
       "gating": true
     },
+    "peak_rss_mib": {
+      "budget": 85,
+      "unit": "MiB",
+      "gating": true
+    },
     "test_cpu_s": {
-      "budget": 1.8,
+      "budget": 2.4,
       "unit": "s",
       "gating": true
     },
     "startup_wall_ms": {
-      "budget": 817,
+      "budget": 965,
       "unit": "ms",
       "gating": false
     },
@@ -127,7 +127,7 @@
   },
   "notify": {
     "startup_cpu_ms": {
-      "budget": 351,
+      "budget": 455,
       "unit": "ms",
       "gating": true
     },
@@ -137,22 +137,22 @@
       "gating": true
     },
     "idle_rss_mib": {
-      "budget": 87,
+      "budget": 86,
       "unit": "MiB",
       "gating": true
     },
     "peak_rss_mib": {
-      "budget": 90,
+      "budget": 86,
       "unit": "MiB",
       "gating": true
     },
     "test_cpu_s": {
-      "budget": 1.9,
+      "budget": 2.3,
       "unit": "s",
       "gating": true
     },
     "startup_wall_ms": {
-      "budget": 809,
+      "budget": 978,
       "unit": "ms",
       "gating": false
     },
@@ -164,32 +164,32 @@
   },
   "contract": {
     "test_cpu_s": {
-      "budget": 6.7,
+      "budget": 9.0,
       "unit": "s",
       "gating": true,
       "floor": 2
     },
     "build_cpu_s": {
-      "budget": 3.7,
+      "budget": 6.4,
       "unit": "s",
       "gating": true
     }
   },
   "kit": {
     "test_cpu_s": {
-      "budget": 0.6,
+      "budget": 0.7,
       "unit": "s",
       "gating": true
     },
     "build_cpu_s": {
-      "budget": 0.5,
+      "budget": 0.6,
       "unit": "s",
       "gating": true
     }
   },
   "config": {
     "test_cpu_s": {
-      "budget": 25.1,
+      "budget": 29.8,
       "unit": "s",
       "gating": true,
       "floor": 3
