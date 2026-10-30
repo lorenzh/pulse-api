@@ -161,8 +161,13 @@ export interface Service {
   getCheckLatency(id: string): CheckLatency | undefined;
   /** Ids of the active HTTP checks, for the rollup runner. */
   listLatencyCheckIds(): string[];
-  /** Store the rollup of every closed day in the window that has none. Returns the days written. */
-  fillLatencyRollups(checkId: string): number;
+  /** The closed days in the 90-day window of a check without a stored rollup, ascending. */
+  missingLatencyDays(checkId: string): number[];
+  /**
+   * Compute and store the rollup of one closed day. False when the day has a row by now or is
+   * not closed yet: nothing is computed then.
+   */
+  fillLatencyRollupDay(checkId: string, day: number): boolean;
   /** Delete rollups of days before the UTC day of `cutoff`, and of checks that no longer exist. */
   deleteExpiredLatency(cutoff: number): number;
   /** True when the database answers a trivial query. */
@@ -508,6 +513,7 @@ export function createService(
   const insertRollup = db.prepare(
     "INSERT OR IGNORE INTO latency_daily (check_id, day, p50_ms, p95_ms, count) VALUES (?, ?, ?, ?, ?)",
   );
+  const hasRollup = db.prepare("SELECT 1 FROM latency_daily WHERE check_id = ? AND day = ?");
   const deleteOldRollups = db.prepare("DELETE FROM latency_daily WHERE day < ?");
   const deleteOrphanRollups = db.prepare(
     "DELETE FROM latency_daily WHERE check_id NOT IN (SELECT id FROM checks)",
@@ -1018,10 +1024,18 @@ export function createService(
 
     listLatencyCheckIds: httpCheckIds,
 
-    fillLatencyRollups(checkId) {
+    missingLatencyDays(checkId) {
       const today = dayOf(now());
-      const before = storedRollupsOf(checkId, today).size;
-      return fillRollups(checkId, today).size - before;
+      const stored = storedRollupsOf(checkId, today);
+      return latencyWindow(today).filter((d) => d < today && !stored.has(d));
+    },
+
+    fillLatencyRollupDay(checkId, day) {
+      // A read may have stored the day meanwhile; today is still growing and never stored.
+      if (day >= dayOf(now()) || hasRollup.get(checkId, day) !== null) return false;
+      const rollup = rollupOfDay(checkId, day);
+      const inserted = insertRollup.run(checkId, day, rollup.p50Ms, rollup.p95Ms, rollup.count);
+      return Number(inserted.changes) > 0;
     },
 
     deleteExpiredLatency(cutoff) {

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { ChecksResponse } from "@lorenzh/pulse-contract";
 import { type LogLevel, StartupError } from "@lorenzh/pulse-kit";
 import { openDb } from "./db.ts";
+import { LATENCY_ROLLUP_START_DELAY_MS } from "./latency-rollup.ts";
 import { createManualIncidentStore } from "./manual-incidents.ts";
 import { type StartDeps, startApi } from "./start.ts";
 
@@ -132,6 +133,51 @@ test("a port in use is a startup error and the database is closed", async () => 
     assert.throws(() => db?.prepare("SELECT 1"));
   } finally {
     await first.close();
+  }
+});
+
+test("the latency rollup starts only after listen: none on a port in use, delayed after listening", async () => {
+  const first = await startApi(deps({}).base);
+  const env = { PULSE_CHECKS_RELOAD_INTERVAL_MS: "0" };
+  try {
+    const failedTimers: number[] = [];
+    const failed = deps(
+      { ...env, PORT: String(first.port) },
+      { setTimeout: (_fn, ms) => failedTimers.push(ms) },
+    );
+    await assert.rejects(startApi(failed.base), StartupError);
+    assert.equal(failedTimers.includes(LATENCY_ROLLUP_START_DELAY_MS), false);
+  } finally {
+    await first.close();
+  }
+
+  const timers: { fn: () => void; ms: number; linesBefore: string[] }[] = [];
+  const { base, lines } = deps(
+    { ...env, PULSE_DB: join(dir, "rollup.db") },
+    {
+      setTimeout: (fn, ms) => timers.push({ fn, ms, linesBefore: lines.map((l) => l.line) }),
+      // sleep(0) is the yield between batches; the shutdown bound never fires.
+      sleep: (ms) => (ms === 0 ? Promise.resolve() : new Promise<void>(() => undefined)),
+    },
+  );
+  const api = await startApi(base);
+  try {
+    const rollup = timers.find((t) => t.ms === LATENCY_ROLLUP_START_DELAY_MS);
+    assert.ok(rollup, "the rollup waits for the start delay");
+    assert.ok(rollup.linesBefore.some((l) => l.includes('"msg":"listening"')));
+    assert.equal(
+      lines.some((l) => l.line.includes("latency rollup")),
+      false,
+    );
+    rollup.fn();
+    for (let i = 0; i < 500 && !lines.some((l) => l.line.includes("backfill done")); i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    const text = lines.map((l) => l.line).join("\n");
+    assert.match(text, /latency rollup: backfill started \(1 checks\)/);
+    assert.match(text, /latency rollup: backfill done, stored 89 days in 0 ms/);
+  } finally {
+    await api.close();
   }
 });
 
