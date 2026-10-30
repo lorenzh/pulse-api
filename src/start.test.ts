@@ -450,7 +450,7 @@ async function readStoredManualIncident(
   env: Record<string, string>,
 ): Promise<{ list: { id: number }[]; item: number; id: number }> {
   const db = openDb(":memory:");
-  const store = createManualIncidentStore(db, { now: () => NOW, componentIds: new Set() });
+  const store = createManualIncidentStore(db, { now: () => NOW, componentIds: () => new Set() });
   const stored = store.create({ title: "t", impact: "none", componentIds: [], message: "m" });
   assert.equal(store.list("all").length, 1);
   const { base } = deps(env, { openDb: () => db });

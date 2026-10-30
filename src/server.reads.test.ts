@@ -32,7 +32,7 @@ async function start(
 ) {
   const db = openDb(":memory:");
   const service = createService(db, {
-    ...(opts.maintenance === undefined ? {} : { maintenance: opts.maintenance }),
+    ...(opts.maintenance === undefined ? {} : { maintenance: () => opts.maintenance ?? [] }),
     now: () => 1000,
   });
   service.upsertChecks([CHECK]);

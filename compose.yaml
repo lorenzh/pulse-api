@@ -14,6 +14,10 @@ services:
         target: /run/pulse/tokens.json
     volumes:
       - api-data:/data
+      # Read-only: the API reloads this file when it changes, but the admin routes cannot write it
+      # (they answer 503). To change checks through the API, mount the directory writable instead
+      # (needs PULSE_API_ADMIN_TOKENS_FILE; the directory must be writable by the container user):
+      #   - ./compose:/config
       - ./compose/checks.json:/config/checks.json:ro
     ports:
       - "127.0.0.1:${PULSE_API_PORT:-3000}:3000"

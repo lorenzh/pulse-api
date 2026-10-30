@@ -129,7 +129,7 @@ No ping arrived within `period + grace`. Run the job's `curl` by hand and look f
 
 ## A check stays `unknown`
 
-No probe has posted a result yet. Check that the probe runs, that it reaches the API, and that it logs no `401` or `403`. After you add a check, restart the API; the probe picks the check up at its next reload.
+No probe has posted a result yet. Check that the probe runs, that it reaches the API, and that it logs no `401` or `403`. After you add a check, wait for the API reload (5 s by default) or send `SIGHUP`; the probe picks the check up at its next reload.
 
 ## A location is `silent` in `GET /locations`
 

@@ -452,6 +452,15 @@ export function parseConfig(data: unknown): Config {
   return { checks, secrets, maintenance, components };
 }
 
+/** Parse the text of the checks file as JSON. The parser message can quote content, so it is left out. */
+function parseJsonText(path: string, text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    throw new ConfigError(`checks file ${path} is not valid JSON`, { cause: err });
+  }
+}
+
 function readJson(path: string): unknown {
   let text: string;
   try {
@@ -459,17 +468,11 @@ function readJson(path: string): unknown {
   } catch (err) {
     throw new ConfigError(`cannot read checks file ${path}: ${(err as Error).message}`);
   }
-  try {
-    return JSON.parse(text);
-  } catch (err) {
-    // The JSON parser message can quote file content (a header value or a body), so it is left out.
-    throw new ConfigError(`checks file ${path} is not valid JSON`, { cause: err });
-  }
+  return parseJsonText(path, text);
 }
 
-/** Run a parser on the checks file; a validation error names the file: `<path>: <message>`. */
-function parseFile<T>(path: string, parse: (data: unknown) => T): T {
-  const data = readJson(path);
+/** Run a parser on parsed data; a validation error names the file: `<path>: <message>`. */
+function parseNamed<T>(path: string, data: unknown, parse: (data: unknown) => T): T {
   try {
     return parse(data);
   } catch (err) {
@@ -480,8 +483,18 @@ function parseFile<T>(path: string, parse: (data: unknown) => T): T {
   }
 }
 
+/** Run a parser on the checks file; a validation error names the file: `<path>: <message>`. */
+function parseFile<T>(path: string, parse: (data: unknown) => T): T {
+  return parseNamed(path, readJson(path), parse);
+}
+
 export function loadConfig(path: string): Config {
   return parseFile(path, parseConfig);
+}
+
+/** Parse the text of the checks file `path` like `loadConfig`; throws ConfigError. */
+export function parseConfigText(path: string, text: string): Config {
+  return parseNamed(path, parseJsonText(path, text), parseConfig);
 }
 
 export function loadChecks(path: string): Check[] {

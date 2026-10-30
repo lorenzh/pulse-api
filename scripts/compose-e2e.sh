@@ -28,7 +28,10 @@ STABLE_WINDOW="${E2E_STABLE_WINDOW:-12}"
 POLL_INTERVAL="${E2E_POLL_INTERVAL:-2}"
 
 regular_checks=compose/checks.json
-checks_file=compose/e2e/checks.json
+e2e_checks=compose/e2e/checks.json
+# A writable copy, mounted as a directory: the admin routes rename a new file over it.
+rw_dir=compose/e2e/rw
+checks_file=${rw_dir}/checks.json
 checks_backup=""
 created_env=0
 
@@ -65,6 +68,7 @@ cleanup() {
   if ! docker compose --profile demo down -v --remove-orphans && ((code == 0)); then
     code=1
   fi
+  rm -rf "$rw_dir"
   if ((created_env == 1)); then
     rm -f .env
   fi
@@ -295,6 +299,11 @@ expected_demo_services="api demo-api demo-init demo-probe-a demo-probe-b demo-st
 [[ "$regular_demo_services" == "$expected_demo_services" ]] ||
   fail "the regular stack with the demo profile has the services: ${regular_demo_services} (expected: ${expected_demo_services})"
 echo "ok: the regular stack has exactly api, notify, probe and status, plus the seven demo services"
+# The api container runs as another user than the host: the directory must be open to it.
+mkdir -p "$rw_dir"
+chmod 777 "$rw_dir"
+cp "$e2e_checks" "$checks_file"
+chmod 666 "$checks_file"
 checks_backup=$(mktemp)
 cp "$checks_file" "$checks_backup"
 docker compose --profile demo down -v --remove-orphans
@@ -529,13 +538,56 @@ wait_for "$T_UP" "api answers after the outage" api /checks
 wait_for "$T_REPLAY" "GET /locations shows the probe location reporting" locations_report
 wait_for "$T_REPLAY" "status-page results cover the outage without a gap" outage_replayed "$outage_start" "$outage_end"
 
-step "Reload the checks"
-jq '.checks += [{id: "e2e-api", name: "E2E api", url: "http://api:3000/checks", intervalMs: 10000, timeoutMs: 2000}]' \
-  "$checks_backup" >"$checks_file"
-docker compose restart api
-wait_for "$T_UP" "api answers" api /checks
+cfg_url="http://127.0.0.1:${api_port}"
+
+cfg_etag() { # the current revision, quoted
+  curl -fsS --max-time 5 -D - -o /dev/null -H "Authorization: Bearer ${e2e_admin_token}" "${cfg_url}/admin/config" |
+    tr -d '\r' | sed -n 's/^[Ee][Tt][Aa][Gg]: //p'
+}
+
+cfg_code() { # cfg_code <method> <path> [body]: send with the current revision; print the status
+  local args=(-sS --max-time 5 -o /dev/null -w '%{http_code}' -X "$1"
+    -H "Authorization: Bearer ${e2e_admin_token}" -H "If-Match: $(cfg_etag)")
+  if [[ -n "${3:-}" ]]; then args+=(-H 'Content-Type: application/json' -d "$3"); fi
+  curl "${args[@]}" "${cfg_url}$2"
+}
+
+check_has_result() { api "/checks/$1/results?limit=1" | jq -e 'length > 0'; }
+page_has_check_name() { status_page /api/checks | grep -qF -- "$1"; }
+page_lacks_check_name() { ! page_has_check_name "$1"; }
+
+step "Checks via the admin API and hot reload"
+new_check='{"id":"e2e-api","name":"E2E api","url":"http://api:3000/checks","intervalMs":10000,"timeoutMs":2000}'
+[[ "$(cfg_code POST /admin/checks "$new_check")" == "201" ]] || fail "POST /admin/checks did not answer 201"
 wait_for "$T_RELOAD" "GET /checks lists e2e-api" has_check e2e-api
+# The probe fetches its checks every 60 s.
+wait_for $((T_RELOAD * 2)) "a probe reported e2e-api" check_has_result e2e-api
+[[ "$(cfg_code POST /admin/checks "$new_check")" == "409" ]] || fail "a repeated POST did not answer 409"
+renamed=${new_check/\"E2E api\"/\"E2E api renamed\"}
+[[ "$(cfg_code PUT /admin/checks/e2e-api "$renamed")" == "200" ]] || fail "PUT /admin/checks/e2e-api did not answer 200"
+wait_for "$T_PAGE" "the status page shows the new name" page_has_check_name "E2E api renamed"
+[[ "$(cfg_code DELETE /admin/checks/e2e-api)" == "204" ]] || fail "DELETE /admin/checks/e2e-api did not answer 204"
+wait_for "$T_PAGE" "the status page drops the check" page_lacks_check_name "E2E api renamed"
+metric_line=$(api /metrics | grep '^pulse_api_config_writes_total{kind="check",action="create",result="ok"}')
+[[ "$metric_line" == *" 1" ]] || fail "the create counter is not 1: ${metric_line}"
+echo "ok: create, replace and delete through the API reach the probe and the status page"
+
+jq '.checks += [{id: "e2e-hup", name: "E2E hup", url: "http://api:3000/checks", intervalMs: 10000, timeoutMs: 2000}]' \
+  "$checks_backup" >"${checks_file}.new"
+cat "${checks_file}.new" >"$checks_file"
+rm -f "${checks_file}.new"
+docker compose kill -s HUP api
+wait_for "$T_RELOAD" "SIGHUP applies a hand edit: GET /checks lists e2e-hup" has_check e2e-hup
 cp "$checks_backup" "$checks_file"
+wait_for "$T_RELOAD" "the polling reload drops e2e-hup" bash -c "! curl -fsS http://127.0.0.1:${api_port}/checks | jq -e '.[] | select(.id == \"e2e-hup\")'"
+
+# The regular mount is read-only: a second api on another port answers 503 to a write.
+ro_js='const r = await fetch("http://127.0.0.1:3999/admin/checks", { method: "POST", headers: { authorization: "Bearer " + process.env.E2E_TOKEN, "if-match": "\"sha256-" + "0".repeat(64) + "\"", "content-type": "application/json" }, body: "{}" }); console.log(r.status);'
+ro_status=$(docker compose exec -T -e PORT=3999 -e PULSE_DB=/tmp/ro.db -e PULSE_CHECKS_FILE=/config/checks.json \
+  -e E2E_TOKEN="$e2e_admin_token" -e RO_JS="$ro_js" api \
+  sh -c 'bun src/main.ts >/dev/null 2>&1 & pid=$!; sleep 4; bun -e "$RO_JS"; kill $pid' | tail -n 1 || true)
+[[ "$ro_status" == "503" ]] || fail "a write to the read-only mount did not answer 503 (got: ${ro_status})"
+echo "ok: the read-only mount answers 503"
 
 step "Persistence across down and up"
 docker compose down

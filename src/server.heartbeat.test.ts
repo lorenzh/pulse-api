@@ -21,10 +21,11 @@ service.upsertChecks([
 service.upsertChecks([{ id: "job", name: "Job", type: "heartbeat", period: 60000, grace: 0 }]);
 const server = createApiServer(service, {
   tokens: [{ location: "east", token: TOKEN }],
-  heartbeatSecrets: new Map([
-    ["job", SECRET],
-    ["off", "other-secret-0123456789abc"],
-  ]),
+  heartbeatSecrets: () =>
+    new Map([
+      ["job", SECRET],
+      ["off", "other-secret-0123456789abc"],
+    ]),
   metrics,
   now: () => NOW,
   logError: (m, err) => errors.push(`${m} ${String(err)}`),

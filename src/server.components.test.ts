@@ -25,7 +25,7 @@ function start(list: readonly Component[]) {
   const db = openDb(":memory:");
   const service = createService(db, {
     now: () => NOW,
-    maintenance: [{ checkId: "c", start: NOW - 1000, end: NOW + 1000, note: "n" }],
+    maintenance: () => [{ checkId: "c", start: NOW - 1000, end: NOW + 1000, note: "n" }],
   });
   service.upsertChecks(["a", "b", "c", "d"].map(check));
   const result = (checkId: string, status: "up" | "down" | "degraded", t: number) =>
@@ -42,7 +42,7 @@ function start(list: readonly Component[]) {
   result("a", "up", NOW - 10);
   result("b", "up", NOW - 60);
   for (const t of [50, 40, 30]) result("b", "down", NOW - t);
-  const server = createApiServer(service, { tokens: [], now: () => NOW, components: list });
+  const server = createApiServer(service, { tokens: [], now: () => NOW, components: () => list });
   return { server };
 }
 

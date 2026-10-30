@@ -28,13 +28,13 @@ function setup(isAdminOn: boolean) {
   const metrics = createMetrics();
   const store = createManualIncidentStore(db, {
     now: () => clock,
-    componentIds: new Set(components.map((c) => c.id)),
+    componentIds: () => new Set(components.map((c) => c.id)),
     onEvent: (e) => metrics.recordManualIncident(e),
   });
   const server = createApiServer(service, {
     tokens: [{ location: "eu", token: PROBE }],
     now: () => clock,
-    components,
+    components: () => components,
     metrics,
     manualIncidents: store,
     ...(isAdminOn ? { adminTokens: [ADMIN] } : {}),

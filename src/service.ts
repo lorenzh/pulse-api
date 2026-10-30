@@ -213,7 +213,8 @@ interface DayRow {
 }
 
 export interface ServiceOptions {
-  maintenance?: MaintenanceWindow[];
+  /** The maintenance windows, read at every use so a reload takes effect. */
+  maintenance?: () => readonly MaintenanceWindow[];
   /** Clock for displayed state and window listings; results are classified by their own timestamp. */
   now?: () => number;
   /** Receives one line per incident resolved because its check left the checks file. */
@@ -306,17 +307,27 @@ function columnsOf(c: Check): Column[] {
 export function createService(
   db: Database,
   {
-    maintenance = [],
+    maintenance = () => [],
     now = Date.now,
     log = () => undefined,
     onIncident = () => undefined,
     locationSilentMs,
   }: ServiceOptions = {},
 ): Service {
-  const windows = [...maintenance].sort(
-    // eslint-disable-next-line sonarjs/no-nested-conditional -- tie-break comparator reads clearest as one expression; refactor out of scope
-    (a, b) => a.start - b.start || (a.checkId < b.checkId ? -1 : a.checkId > b.checkId ? 1 : 0),
-  );
+  // Sorted once per configuration: a reload hands over a new array, an unchanged one is reused.
+  let sourceWindows: readonly MaintenanceWindow[] | undefined;
+  let sortedWindows: MaintenanceWindow[] = [];
+  const windows = (): MaintenanceWindow[] => {
+    const current = maintenance();
+    if (current !== sourceWindows) {
+      sourceWindows = current;
+      sortedWindows = [...current].sort(
+        // eslint-disable-next-line sonarjs/no-nested-conditional -- tie-break comparator reads clearest as one expression; refactor out of scope
+        (a, b) => a.start - b.start || (a.checkId < b.checkId ? -1 : a.checkId > b.checkId ? 1 : 0),
+      );
+    }
+    return sortedWindows;
+  };
   // Per probe location: the newest result timestamp and the api time of the last accepted result.
   // Replayed results carry old timestamps, so `lastSeenAt` decides the state. Rebuilt from the
   // stored results, so a restart does not forget a location.
@@ -365,7 +376,7 @@ export function createService(
     const hit = cache.get(key);
     const t = now();
     // A window that opens or closes changes the displayed state, so it also ends a cached answer.
-    const active = windows
+    const active = windows()
       .filter((w) => w.start <= t && t < w.end)
       .map((w) => `${w.checkId}@${w.start}`)
       .join("|");
@@ -377,7 +388,7 @@ export function createService(
     return value;
   }
   const inWindow = (checkId: string, t: number): boolean =>
-    windows.some((w) => w.checkId === checkId && w.start <= t && t < w.end);
+    windows().some((w) => w.checkId === checkId && w.start <= t && t < w.end);
   const updateLast = db.prepare(
     "UPDATE checks SET last_result_at = ?, last_reason = ? WHERE id = ?",
   );
@@ -659,7 +670,7 @@ export function createService(
           stale: result.timestamp < newest - WINDOW_INTERVALS * intervalMs,
         }),
       );
-      const active = windows.find((w) => w.checkId === c.id && w.start <= t && t < w.end);
+      const active = windows().find((w) => w.checkId === c.id && w.start <= t && t < w.end);
       if (active) {
         c.state = "maintenance";
         c.maintenance = { ...active };
@@ -820,7 +831,7 @@ export function createService(
         }[]
       ).map(({ id, state }) => ({
         id,
-        state: windows.some((w) => w.checkId === id && w.start <= t && t < w.end)
+        state: windows().some((w) => w.checkId === id && w.start <= t && t < w.end)
           ? "maintenance"
           : state,
       }));
@@ -860,7 +871,7 @@ export function createService(
 
     listMaintenance(checkId) {
       const t = now();
-      return windows
+      return windows()
         .filter((w) => w.end > t && (checkId === undefined || w.checkId === checkId))
         .map((w) => ({ ...w }));
     },

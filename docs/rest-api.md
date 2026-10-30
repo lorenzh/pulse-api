@@ -292,6 +292,27 @@ curl -sS -X DELETE "$API/manual-incidents/1" -H "Authorization: Bearer $TOKEN"
 
 `GET /components` is unchanged: it does not apply manual incidents. The status page maps an open incident's impact to the state of its components (`minor` to `degraded`, `major` and `critical` to `down`) with `incidentImpactState` of the contract.
 
+## Admin config routes
+
+Operators change checks, components and maintenance windows through the API. The checks file stays the only source of truth: a write rewrites it and the API applies it at once. The shapes are `AdminConfigResponse`, `AdminCheckInput`, `AdminCheckView`, `AdminComponent` and `AdminMaintenanceInput`/`AdminMaintenanceView` of `@lorenzh/pulse-contract`. The routes need `PULSE_API_ADMIN_TOKENS_FILE` and `Authorization: Bearer <admin token>`.
+
+| Route                                                               | Answer                                                                              |
+| ------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `GET /admin/config`                                                 | `200` `{revision, checks, components, maintenance}` without secrets, with an `ETag` |
+| `POST /admin/checks`                                                | `201`, the redacted check, a `Location` header; an existing id answers `409`        |
+| `PUT /admin/checks/:id`                                             | `200`, full replace; the body `id` must equal the path (`400`); unknown id `404`    |
+| `DELETE /admin/checks/:id`                                          | `204`; `409` naming the first component or maintenance window that uses the check   |
+| `POST /admin/components`, `PUT`/`DELETE /admin/components/:id`      | like checks; deleting a component with an unresolved manual incident answers `409`  |
+| `POST /admin/maintenance`, `PUT`/`DELETE /admin/maintenance/:index` | windows have no id: `:index` is the position in `GET /admin/config`                 |
+
+The **revision** is `sha256-<hex>` of the bytes of the file. It is sent as a quoted `ETag` and as `revision` in bodies. Every write needs `If-Match: "<revision>"`: missing gives `428`, stale gives `412`, `*` or a malformed value gives `400`. Every success carries the new `ETag`.
+
+Statuses, in the order the API decides them: `404` feature off, `401` missing or wrong token, `403` a valid probe token, `413` body over 1 MB, `400` bad JSON, bad `If-Match` or id mismatch, `428`, `503` the checks file cannot be written, `412`, `422` the body or the resulting file is invalid (the same messages as the checks file; they never quote a value), `409` id exists or still referenced, `404` unknown id or index. `405` for another method.
+
+Bodies are validated by the same parsers as the file, so unknown keys, limits and `{"env": NAME}` headers behave as in [checks.json](configuration.md#checksjson). A maintenance window may carry `start` and `end` as ISO strings or epoch milliseconds; the file keeps ISO strings. Responses never contain header values, `{"env": NAME}` references, request bodies or heartbeat secrets: a check lists its header names under `headers`, `hasBody: true` stands for a body, and a heartbeat check shows `hasSecret: true`. A heartbeat `secret` is write-only: send it on `POST` or to rotate it with `PUT`; a `PUT` without `secret` keeps the old one, and changing a check to a heartbeat check needs one.
+
+`GET /probe/checks` and the rights of probe tokens are unchanged.
+
 ## GET /healthz
 
 Liveness. Returns `200` with the body `ok` as long as the process answers. It does not access the database and also answers `200` while the API shuts down (it answered `503` then before; use `/readyz` for readiness). Any other method (also `HEAD`) gives `405` with `{"error":"method not allowed"}` and `Allow: GET`.
