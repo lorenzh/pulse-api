@@ -76,13 +76,13 @@ The status page is then on http://localhost:8090. The API port (`PULSE_API_PORT`
 
 ### Adding checks
 
-Edit `compose/checks.json` (format: [checks.json](configuration.md#checksjson)). The API reads the file once at start, so restart the API. The probe reloads its checks from the API on its own, within its reload interval:
+Edit `compose/checks.json` (format: [checks.json](configuration.md#checksjson)). The API looks at the file every 5 seconds and applies a change without a restart (see [Operation](operation.md#changing-checks)); `docker compose kill -s HUP api` applies it at once. The probe reloads its checks from the API on its own, within its reload interval:
 
 ```sh
-docker compose restart api
+docker compose kill -s HUP api   # optional: apply now instead of within 5 seconds
 ```
 
-`docker compose up -d` is not a reload step: it does not recreate the API when only the mounted file changed, and the API reads the checks only at start.
+`docker compose up -d` is not a reload step: it does not recreate the API when only the mounted file changed. The mount is read-only, so the [admin routes](rest-api.md#admin-config-routes) answer `503`; see [Operation](operation.md#changing-checks) to mount the directory writable.
 
 The compose file has one probe, so one location. A single location decides alone, so a check can open an incident with it. See [Quorum and incidents](concepts.md#quorum-and-incidents). For a second location, add a second probe service with its own `PULSE_LOCATION`, its own token and a matching entry in the tokens config.
 

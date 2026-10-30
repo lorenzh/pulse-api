@@ -28,7 +28,10 @@ const W: MaintenanceWindow = { checkId: "c1", start: 100, end: 200, note: "Upgra
 
 function setup(maintenance: MaintenanceWindow[] = [W]) {
   const clock = { t: 0 };
-  const s = createService(openDb(":memory:"), { maintenance, now: () => clock.t });
+  const s = createService(openDb(":memory:"), {
+    maintenance: () => maintenance,
+    now: () => clock.t,
+  });
   s.upsertChecks([c1, c2]);
   return { s, clock };
 }

@@ -37,14 +37,16 @@ export interface ManualIncidentStore {
   /** `body` may be undefined or an object with an optional `message`. */
   resolve(id: number, body: unknown): ManualIncident;
   remove(id: number): void;
+  /** True when an unresolved incident names the component. */
+  hasOpenIncidentFor(componentId: string): boolean;
   /** Delete incidents resolved before `cutoff` (epoch ms). Returns how many. */
   deleteResolvedBefore(cutoff: number): number;
 }
 
 export interface ManualIncidentDeps {
   now: () => number;
-  /** Ids of the configured components. */
-  componentIds: ReadonlySet<string>;
+  /** Ids of the configured components, read at every create so a reload takes effect. */
+  componentIds: () => ReadonlySet<string>;
   /** Called once per created incident and once per resolution. */
   onEvent?: (event: "created" | "resolved") => void;
 }
@@ -191,8 +193,9 @@ export function createManualIncidentStore(
       const parsed = validateManualIncidentInput(body);
       if (!parsed.ok) throw new ManualIncidentInputError(parsed.error);
       const input = parsed.value;
+      const known = componentIds();
       for (const id of input.componentIds) {
-        if (!componentIds.has(id)) {
+        if (!known.has(id)) {
           throw new ManualIncidentInputError(`componentIds: unknown component "${id}"`);
         }
       }
@@ -228,6 +231,12 @@ export function createManualIncidentStore(
     remove(id) {
       rowOf(id);
       deleteOne.run(id);
+    },
+
+    hasOpenIncidentFor(componentId) {
+      return (selectOpen.all() as unknown as IncidentRow[]).some((row) =>
+        parseIds(row.component_ids_json).includes(componentId),
+      );
     },
 
     deleteResolvedBefore(cutoff) {

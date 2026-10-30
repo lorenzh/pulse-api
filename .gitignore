@@ -8,3 +8,4 @@ admin-tokens.json
 !compose/e2e/checks.json
 .bench/
 bench-out/
+compose/e2e/rw/

@@ -151,7 +151,7 @@ test("service: degraded results open no incident", () => {
 test("service: multi-location degraded and maintenance", () => {
   const w: MaintenanceWindow = { checkId: "c1", start: 100, end: 200, note: "n" };
   const clock = { t: 150 };
-  const s = createService(openDb(":memory:"), { maintenance: [w], now: () => clock.t });
+  const s = createService(openDb(":memory:"), { maintenance: () => [w], now: () => clock.t });
   s.upsertChecks([check]);
   s.ingest(res(10, "up", "eu"));
   s.ingest(res(11, "degraded", "us"));

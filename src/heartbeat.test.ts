@@ -34,7 +34,7 @@ function setup(maintenance: { checkId: string; start: number; end: number; note:
   const db = openDb(":memory:");
   const service = createService(db, {
     now: () => t,
-    maintenance,
+    maintenance: () => maintenance,
     onIncident: (e) => events.push(e),
   });
   service.upsertChecks([hb]);

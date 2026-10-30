@@ -171,6 +171,7 @@ export function validateResult(
 const RESULTS_PATH = /^\/checks\/([^/]+)\/results$/;
 const MANUAL_PATH = /^\/manual-incidents(?:\/([^/]+)(?:\/(updates|resolve))?)?$/;
 const HEARTBEAT_PATH = /^\/heartbeat\/([^/]+)(?:\/([^/]+))?$/;
+const ADMIN_ROUTE = /^\/admin\/(config|checks|components|maintenance)(\/[^/]+)?$/;
 const ROUTES = [
   "/results",
   "/checks",
@@ -198,6 +199,9 @@ function routeOf(rawUrl: string | undefined): string {
   }
   if (RESULTS_PATH.test(path)) return "/checks/:id/results";
   if (HEARTBEAT_PATH.test(path)) return "/heartbeat/:id";
+  const admin = ADMIN_ROUTE.exec(path);
+  if (admin?.[1] !== undefined)
+    return admin[2] === undefined ? `/admin/${admin[1]}` : `/admin/${admin[1]}/:id`;
   const manual = MANUAL_PATH.exec(path);
   if (manual?.[1] !== undefined) {
     return manual[2] === undefined ? "/manual-incidents/:id" : `/manual-incidents/:id/${manual[2]}`;
@@ -209,11 +213,13 @@ type Ops = {
   service: Service;
   metrics: Metrics;
   notReadyReason: () => string | undefined;
-  heartbeatSecrets: ReadonlyMap<string, string>;
-  components: readonly Component[];
+  heartbeatSecrets: () => ReadonlyMap<string, string>;
+  components: () => readonly Component[];
   manualIncidents: ManualIncidentStore;
   /** Admin tokens; undefined when the feature is off and the write routes answer 404. */
   adminTokens: readonly string[] | undefined;
+  /** Handles `/admin/*`; undefined when the config writes are off. */
+  admin: ((req: IncomingMessage, res: ServerResponse) => Promise<boolean>) | undefined;
 };
 
 function digest(text: string): Buffer {
@@ -250,7 +256,7 @@ async function servePing(
     // A malformed escape cannot name a check: it answers like an unknown id.
     id = undefined;
   }
-  const expected = id === undefined ? undefined : ops.heartbeatSecrets.get(id);
+  const expected = id === undefined ? undefined : ops.heartbeatSecrets().get(id);
   const given = pingSecret(match[2], req.headers.authorization);
   // Digests of equal length keep the comparison constant-time; a missing side compares as empty.
   const isValid =
@@ -464,6 +470,11 @@ async function handle(
   if (serveOps(ops, req, res)) return;
   const ping = HEARTBEAT_PATH.exec(path);
   if (ping) return servePing(ops, now, req, res, ping);
+  if (path.startsWith("/admin/")) {
+    // Without admin tokens or a writer the routes do not exist.
+    if ((await ops.admin?.(req, res)) !== true) throw new HttpError(404, "not found");
+    return;
+  }
   const manual = MANUAL_PATH.exec(path);
   if (manual) return serveManualIncidents(ops, req, res, url, manual);
   const known =
@@ -545,7 +556,7 @@ async function handle(
       res,
       200,
       componentsWithState(
-        ops.components,
+        ops.components(),
         service.listCheckStates(),
         service.getUptime(),
         openIncidents,
@@ -555,7 +566,7 @@ async function handle(
   }
 
   if (path === "/components/uptime") {
-    sendJson(res, 200, componentsUptime(ops.components, service.getUptime()));
+    sendJson(res, 200, componentsUptime(ops.components(), service.getUptime()));
     return;
   }
 
@@ -615,13 +626,15 @@ export type ApiServerOptions = {
   /** Receives unexpected request failures. */
   logError?: (message: string, err: unknown) => void;
   /** Ping secret per heartbeat check id. Without it every ping is refused. */
-  heartbeatSecrets?: ReadonlyMap<string, string>;
+  heartbeatSecrets?: () => ReadonlyMap<string, string>;
   /** The configured components, served by `/components` and `/components/uptime`. */
-  components?: readonly Component[];
+  components?: () => readonly Component[];
   /** Store behind `/manual-incidents`. Without it, or without `adminTokens`, the reads are empty. */
   manualIncidents?: ManualIncidentStore;
   /** Tokens that may write manual incidents. Without them the writes answer 404 and the reads are empty. */
   adminTokens?: readonly string[];
+  /** Handler of `/admin/*` (see admin-routes.ts). Without it those paths answer 404. */
+  admin?: (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
 };
 
 function emptyManualIncidents(): ManualIncidentStore {
@@ -635,6 +648,7 @@ function emptyManualIncidents(): ManualIncidentStore {
     addUpdate: refuse,
     resolve: refuse,
     remove: refuse,
+    hasOpenIncidentFor: () => false,
     deleteResolvedBefore: () => 0,
   };
 }
@@ -645,14 +659,15 @@ export function createApiServer(service: Service, options: ApiServerOptions): Se
     service,
     metrics: options.metrics ?? createMetrics({ listStates: () => service.listCheckStates() }),
     notReadyReason: options.notReadyReason ?? (() => undefined),
-    heartbeatSecrets: options.heartbeatSecrets ?? new Map(),
-    components: options.components ?? [],
+    heartbeatSecrets: options.heartbeatSecrets ?? (() => new Map()),
+    components: options.components ?? (() => []),
     // Without admin tokens the feature is off: every read is empty, even with stored incidents.
     manualIncidents:
       options.adminTokens === undefined
         ? emptyManualIncidents()
         : (options.manualIncidents ?? emptyManualIncidents()),
     adminTokens: options.adminTokens,
+    admin: options.admin,
   };
   const logError = options.logError ?? ((_message, err) => console.error(err));
   return createServer((req, res) => {

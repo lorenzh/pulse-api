@@ -46,6 +46,8 @@ A check of type `heartbeat` is for cron jobs and workers. The job calls `POST|GE
 
 ## Manual incidents
 
+Checks, components and maintenance windows can be changed through `/admin/*` routes with an admin token (`PULSE_API_ADMIN_TOKENS_FILE`), and the API applies a changed checks file without a restart: it looks at the file every `PULSE_CHECKS_RELOAD_INTERVAL_MS` (default 5000, `0` is off) and on `SIGHUP`. See [REST API](docs/rest-api.md#admin-config-routes) and [Operation](docs/operation.md#changing-checks).
+
 Operators post incidents with timed updates through `POST /manual-incidents`, `/manual-incidents/:id/updates` and `/manual-incidents/:id/resolve`, and read them from `GET /manual-incidents`. Writes need an admin token from `PULSE_API_ADMIN_TOKENS_FILE` (copy `admin-tokens.example.json`). Without the setting the feature is off: writes answer `404` and the reads are empty. See [REST API](docs/rest-api.md#manual-incidents) for the shapes, limits and `curl` examples.
 
 ## Health and metrics

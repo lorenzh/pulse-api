@@ -2,7 +2,7 @@
 
 ## Start and restart
 
-The API reads `checks.json`, the tokens file and its environment once at start. It has no reload. Restart it after any change to these.
+The API reads `checks.json`, the tokens file and its environment at start. It reloads `checks.json` while it runs (see [Changing checks](#changing-checks)). Restart it after a change to the tokens files or the environment.
 
 After a change to the checks file, restart only the API. Probes reload their checks from the API on their own, within their reload interval (`PULSE_CHECKS_RELOAD_MS`, see the probe docs).
 
@@ -84,9 +84,35 @@ Changing a probe's location means changing both `PULSE_LOCATION` of the probe an
 
 ## Changing checks
 
-Edit `checks.json` and restart the API. The probes follow within their reload interval. The file is upserted: checks that you remove from the file stay in the database with their results, but become inactive. The API does not delete checks.
+The checks file is the only source of truth. Change it by hand or through the [admin routes](rest-api.md#admin-config-routes); the API applies the change without a restart.
 
-An inactive check is left out of `GET /checks` and `GET /uptime`, and `POST /results` for it answers `404 unknown check`. Its results and incidents stay readable. At the restart, an open incident of a removed check is resolved (`resolvedAt` is the startup time, one log line per incident) and the check state is reset, so `notify` may send a "resolved" notification. If you add the check again, it becomes active with its history.
+**Hot reload.** The API looks at the file every `PULSE_CHECKS_RELOAD_INTERVAL_MS` (default 5000; `0` turns it off). One look is one `stat`. Only when the modification time, size or inode changed does it read and hash the file; the same bytes (a `touch`) change nothing. It does not use `fs.watch`, because a rename over a bind mount loses the inode. An edit that keeps mtime, size and inode is not seen by the look: send `SIGHUP`, which always reads, hashes and applies the file.
+
+```sh
+kill -HUP "$(pidof bun)"                  # on the host
+docker compose kill -s HUP api            # with Compose
+```
+
+A valid file is applied in one step: checks are upserted, components, maintenance windows and heartbeat secrets are replaced, and the read cache is cleared. A changed check field reaches a probe at its next fetch of `GET /probe/checks`. State of an unchanged heartbeat check is kept, and a changed secret works for the next ping. Existing manual incidents that name a removed component stay readable and can be resolved; a new one for it is refused. Maintenance windows that are active at the reload end at their own times; a removed window ends at once.
+
+An invalid or unreadable file is not applied. The API keeps the running configuration and logs one `warn` line, `config reload rejected: <path>: <message>` (the message never quotes a value), and counts `pulse_api_config_reload_total{result="invalid"}`. The same bad file is not logged again at every look; fix it or send `SIGHUP` to log it again. A start with an invalid file still fails.
+
+Checks that you remove from the file stay in the database with their results, but become inactive. The API does not delete checks. An inactive check is left out of `GET /checks` and `GET /uptime`, and `POST /results` for it answers `404 unknown check`. Its results and incidents stay readable. At the reload an open incident of a removed check is resolved (`resolvedAt` is the reload time, one log line per incident) and the check state is reset, so `notify` may send a "resolved" notification. If you add the check again, it becomes active with its history.
+
+**Writing through the API.** Set `PULSE_API_ADMIN_TOKENS_FILE`. Every write needs `If-Match` with the `ETag` of the last read:
+
+```sh
+API=http://127.0.0.1:3000
+TOKEN=$(cat /path/to/admin-token)
+ETAG=$(curl -sS -D - -o /dev/null "$API/admin/config" -H "Authorization: Bearer $TOKEN" | tr -d '\r' | sed -n 's/^[Ee][Tt]ag: //p')
+curl -sS -X POST "$API/admin/checks" -H "Authorization: Bearer $TOKEN" -H "If-Match: $ETAG" \
+  -H 'Content-Type: application/json' \
+  -d '{"id":"blog","name":"Blog","url":"https://blog.example/","intervalMs":60000}'
+```
+
+A write needs a checks file that the API can replace: it writes a temp file in the same directory and renames it over the file. A read-only mount, or a single file bind-mounted into the container, answers `503` (for example `checks file is read-only (EROFS)`). In Compose, mount the directory writable (`./compose:/config` in `compose.yaml`, with a directory that the container user may write) instead of the file with `:ro`. The file keeps its mode and, when the process may set it, its owner. The write rewrites the file as JSON with two spaces: comments and layout of a hand-made file are not kept. A hand edit and a write at the same moment can still race in the last millisecond before the rename; the revision check makes this rare, not impossible. A write runs in this order: temp file, `fsync`, revision check, rename, `fsync` of the directory, then apply. When a step after the rename fails (the directory `fsync`, or applying to the database), the write answers `500` (`503` for a read-only cause), but the new file is already in place. The running configuration and the `ETag` stay at the old revision, and the next reload (a look or `SIGHUP`) applies the file. Until then a write gets `412`.
+
+Each successful write logs one `info` line `config write` with the token name, kind, action and id; a failed write logs one `warn` line with the status and kind. Metrics: `pulse_api_config_writes_total{kind,action,result}`.
 
 ## Heartbeat checks
 
@@ -107,7 +133,7 @@ Secret handling:
 - Prefer the header form. The path form puts the secret in the URL, and reverse proxies, cron mail and shell history can log a URL. Redact `/heartbeat/*/` in proxy access logs.
 - The API has no access log and never logs the path of a request. Its metrics label the route `/heartbeat/:id`.
 - Use `curl -fsS` without `-v`.
-- To rotate a secret, edit `checks.json` and restart the API. The last ping is kept in the database. The secret is not stored there.
+- To rotate a secret, edit `checks.json` (or `PUT /admin/checks/:id` with a new `secret`); the API reloads it. The last ping is kept in the database. The secret is not stored there.
 
 ## Logs
 

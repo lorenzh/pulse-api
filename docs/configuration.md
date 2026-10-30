@@ -1,19 +1,20 @@
 # Configuration
 
-The API is configured by environment variables and two JSON files. It reads all of them once at start. Restart the API to apply a change.
+The API is configured by environment variables and two JSON files. It reads them at start. The checks file is also reloaded while the API runs (see [Changing checks](operation.md#changing-checks)); a change to the environment or to the tokens files needs a restart.
 
 ## Environment variables
 
-| Variable                      | Default         | Meaning                                                                                                                                                                                   |
-| ----------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PORT`                        | `3000`          | HTTP port. An integer from 0 to 65535.                                                                                                                                                    |
-| `PULSE_DB`                    | `./pulse.db`    | Path of the SQLite file. It is created if it does not exist.                                                                                                                              |
-| `PULSE_CHECKS_FILE`           | `./checks.json` | Path of the [checks file](#checksjson).                                                                                                                                                   |
-| `PULSE_TOKENS_FILE`           | `./tokens.json` | Path of the [tokens file](#tokensjson).                                                                                                                                                   |
-| `PULSE_API_ADMIN_TOKENS_FILE` | unset           | Path of the [admin tokens file](#admin-tokensjson). Unset turns the write routes of manual incidents off.                                                                                 |
-| `PULSE_RETENTION_DAYS`        | `90`            | Days of raw results to keep. An integer of at least 90.                                                                                                                                   |
-| `PULSE_LOCATION_SILENT_MS`    | derived         | Silence after which a probe location is `silent` in `GET /locations`. An integer from 1 to 2147483647. Unset: `max(180000, 3 × the largest interval of the active non-heartbeat checks)`. |
-| `PULSE_LOG_LEVEL`             | `info`          | `debug`, `info`, `warn` or `error`. Another value stops the start.                                                                                                                        |
+| Variable                          | Default         | Meaning                                                                                                                                                                                   |
+| --------------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PORT`                            | `3000`          | HTTP port. An integer from 0 to 65535.                                                                                                                                                    |
+| `PULSE_DB`                        | `./pulse.db`    | Path of the SQLite file. It is created if it does not exist.                                                                                                                              |
+| `PULSE_CHECKS_FILE`               | `./checks.json` | Path of the [checks file](#checksjson).                                                                                                                                                   |
+| `PULSE_TOKENS_FILE`               | `./tokens.json` | Path of the [tokens file](#tokensjson).                                                                                                                                                   |
+| `PULSE_API_ADMIN_TOKENS_FILE`     | unset           | Path of the [admin tokens file](#admin-tokensjson). Unset turns the write routes of manual incidents and the [admin config routes](rest-api.md#admin-config-routes) off.                  |
+| `PULSE_CHECKS_RELOAD_INTERVAL_MS` | `5000`          | Time between two looks at the checks file for a change. `0` turns the look off; else an integer from 1000 to 3600000. See [Hot reload](operation.md#changing-checks).                     |
+| `PULSE_RETENTION_DAYS`            | `90`            | Days of raw results to keep. An integer of at least 90.                                                                                                                                   |
+| `PULSE_LOCATION_SILENT_MS`        | derived         | Silence after which a probe location is `silent` in `GET /locations`. An integer from 1 to 2147483647. Unset: `max(180000, 3 × the largest interval of the active non-heartbeat checks)`. |
+| `PULSE_LOG_LEVEL`                 | `info`          | `debug`, `info`, `warn` or `error`. Another value stops the start.                                                                                                                        |
 
 The Docker image sets `NODE_ENV=production` and `PULSE_DB=/data/pulse.db`.
 
@@ -221,7 +222,7 @@ The secret is kept in memory only. `GET /checks`, `/metrics`, incident reasons a
 | `group`       | no       | Section heading, plain text, 1 to 100 characters.                         |
 | `checkIds`    | yes      | Non-empty list of configured check ids without duplicates.                |
 
-A check may be in several components. A component id may equal a check id. An unknown key, an unknown check id or a duplicate component id stops the start, for example `components[0].checkIds[1] must reference a configured check`. Components are read at start only.
+A check may be in several components. A component id may equal a check id. An unknown key, an unknown check id or a duplicate component id stops the start, for example `components[0].checkIds[1] must reference a configured check`. A change to components applies without a restart, like the rest of the file (see [Changing checks](operation.md#changing-checks)); an invalid file is not applied and the running components stay.
 
 ## tokens.json
 

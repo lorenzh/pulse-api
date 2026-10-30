@@ -131,7 +131,7 @@ test("service: tls results work with quorum", () => {
 
 test("service: tls results work with maintenance windows", () => {
   const s = createService(openDb(":memory:"), {
-    maintenance: [{ checkId: "t", start: 0, end: 100, note: "n" }],
+    maintenance: () => [{ checkId: "t", start: 0, end: 100, note: "n" }],
     now: () => 50,
   });
   s.upsertChecks([check]);

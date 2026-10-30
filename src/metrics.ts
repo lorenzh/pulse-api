@@ -3,6 +3,22 @@ import { createRegistry, DURATION_BUCKETS_SECONDS } from "@lorenzh/pulse-kit";
 
 const CHECK_STATES: readonly CheckState[] = ["up", "degraded", "down", "unknown", "maintenance"];
 
+export const CONFIG_RELOAD_RESULTS = ["ok", "invalid"] as const;
+export const CONFIG_WRITE_KINDS = ["check", "component", "maintenance"] as const;
+export const CONFIG_WRITE_ACTIONS = ["create", "replace", "delete"] as const;
+export const CONFIG_WRITE_RESULTS = [
+  "ok",
+  "invalid",
+  "conflict",
+  "stale",
+  "readonly",
+  "error",
+] as const;
+export type ConfigReloadResult = (typeof CONFIG_RELOAD_RESULTS)[number];
+export type ConfigWriteKind = (typeof CONFIG_WRITE_KINDS)[number];
+export type ConfigWriteAction = (typeof CONFIG_WRITE_ACTIONS)[number];
+export type ConfigWriteResult = (typeof CONFIG_WRITE_RESULTS)[number];
+
 export interface Metrics {
   recordResult(checkId: string, location: string, latencyMs: number): void;
   recordIncident(event: "opened" | "resolved"): void;
@@ -13,6 +29,12 @@ export interface Metrics {
   recordHeartbeatPing(checkId: string): void;
   /** Add `count` missed periods to a check. */
   recordHeartbeatMissed(checkId: string, count: number): void;
+  recordConfigReload(result: ConfigReloadResult): void;
+  recordConfigWrite(
+    kind: ConfigWriteKind,
+    action: ConfigWriteAction,
+    result: ConfigWriteResult,
+  ): void;
   /** Prometheus text exposition. Only check ids, locations, states and route patterns appear. */
   render(): string;
 }
@@ -67,6 +89,20 @@ export function createMetrics({
     "pulse_heartbeat_missed_total",
     "Missed heartbeat periods.",
   );
+  const configReloads = registry.counter(
+    "pulse_api_config_reload_total",
+    "Reloads of the checks file, by result.",
+  );
+  const configWrites = registry.counter(
+    "pulse_api_config_writes_total",
+    "Admin writes to the checks file, by kind, action and result.",
+  );
+  for (const result of CONFIG_RELOAD_RESULTS) configReloads.inc({ result }, 0);
+  for (const kind of CONFIG_WRITE_KINDS) {
+    for (const action of CONFIG_WRITE_ACTIONS) {
+      for (const result of CONFIG_WRITE_RESULTS) configWrites.inc({ kind, action, result }, 0);
+    }
+  }
   up.set(1);
   opened.inc({}, 0);
   resolved.inc({}, 0);
@@ -107,6 +143,12 @@ export function createMetrics({
     },
     recordHeartbeatMissed(checkId, count) {
       heartbeatMissed.inc({ check: checkId }, count);
+    },
+    recordConfigReload(result) {
+      configReloads.inc({ result });
+    },
+    recordConfigWrite(kind, action, result) {
+      configWrites.inc({ kind, action, result });
     },
     render: () => registry.render(),
   };

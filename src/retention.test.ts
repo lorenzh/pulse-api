@@ -220,7 +220,7 @@ test("abort ends a run after the batch in progress", async () => {
 
 test("cleanupResults: resolved manual incidents older than the window are deleted, open ones stay", async () => {
   const { db, service } = setup();
-  const store = createManualIncidentStore(db, { now: () => NOW, componentIds: new Set() });
+  const store = createManualIncidentStore(db, { now: () => NOW, componentIds: () => new Set() });
   const body = { title: "t", impact: "none", componentIds: [], message: "m" };
   const oldOne = store.create(body);
   const recent = store.create(body);

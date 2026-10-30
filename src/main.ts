@@ -36,6 +36,12 @@ await runService({
         else process.stdout.write(`${line}\n`);
       },
       openDb: (path, log) => openDb(path, undefined, log),
+      onSignal: (signal, handler) => {
+        process.on(signal, handler);
+        return () => {
+          process.off(signal, handler);
+        };
+      },
     });
   },
   stop: async () => {
