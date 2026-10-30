@@ -1,4 +1,6 @@
 // Budgets schema, the failure rule and the summary table. Pure: no I/O.
+import { median } from "./measure.ts";
+
 export const UNITS = ["ms", "s", "MiB", "MB", "req/s"] as const;
 export type Unit = (typeof UNITS)[number];
 
@@ -79,12 +81,13 @@ export const EMITTED_METRICS: Readonly<Record<string, readonly MetricKey[]>> = {
 export const DEFAULT_THRESHOLD_PCT = 10;
 export const DEFAULT_FLOORS: Readonly<Record<string, number>> = { ms: 30, s: 0.2, MiB: 3 };
 
-export type Verdict = "ok" | "FAIL regression" | "FAIL budget" | "reported";
+export type Verdict = "ok" | "FAIL regression" | "FAIL budget" | "reported" | "not available on A";
 
 export interface Row {
   service: string;
   metric: string;
-  a: number;
+  /** Null when side A does not serve the route the metric measures. */
+  a: number | null;
   b: number;
   budget: Budget;
   verdict: Verdict;
@@ -162,6 +165,48 @@ export function judge(a: number, b: number, budget: Budget): Verdict {
   return "ok";
 }
 
+export type Samples = Record<string, Record<string, number[]>>;
+
+/**
+ * One row per emitted metric, from the per-round samples of both sides. `missingOnA` holds the
+ * `service.metric` keys whose route side A answered with 404: reported without a comparison.
+ */
+export function buildRows(
+  budgets: Budgets,
+  a: Samples,
+  b: Samples,
+  missingOnA: ReadonlySet<string> = new Set(),
+): Row[] {
+  const rows: Row[] = [];
+  for (const [service, metrics] of Object.entries(EMITTED_METRICS)) {
+    for (const metric of metrics) {
+      const budget = budgets[service]?.[metric];
+      const aValues = a[service]?.[metric];
+      const bValues = b[service]?.[metric];
+      const notOnA = missingOnA.has(`${service}.${metric}`);
+      // A missing metric fails the whole run; it is never skipped.
+      if (budget === undefined || bValues === undefined || (aValues === undefined && !notOnA)) {
+        throw new Error(`missing metric ${service}.${metric}`);
+      }
+      const bMedian = median(bValues);
+      if (notOnA || aValues === undefined) {
+        rows.push({ service, metric, a: null, b: bMedian, budget, verdict: "not available on A" });
+        continue;
+      }
+      const aMedian = median(aValues);
+      rows.push({
+        service,
+        metric,
+        a: aMedian,
+        b: bMedian,
+        budget,
+        verdict: judge(aMedian, bMedian, budget),
+      });
+    }
+  }
+  return rows;
+}
+
 export function isFailure(verdict: Verdict): boolean {
   return verdict === "FAIL regression" || verdict === "FAIL budget";
 }
@@ -170,7 +215,8 @@ function format(value: number): string {
   return value >= 100 ? value.toFixed(0) : value.toFixed(2);
 }
 
-function change(a: number, b: number): string {
+function change(a: number | null, b: number): string {
+  if (a === null) return "n/a";
   if (a === 0) return b === 0 ? "0%" : "n/a";
   const pct = ((b - a) / a) * 100;
   return `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
@@ -190,7 +236,7 @@ export function renderTable(rows: readonly Row[]): string {
     for (const row of rows.filter((r) => r.service === service)) {
       const unit = row.budget.unit;
       parts.push(
-        `| \`${row.metric}\` | ${format(row.a)} ${unit} | ${format(row.b)} ${unit} | ${change(row.a, row.b)} | ${format(row.budget.budget)} ${unit} | ${row.budget.gating ? "gating" : "reported"} | ${row.verdict} |`,
+        `| \`${row.metric}\` | ${row.a === null ? "n/a" : format(row.a) + " " + unit} | ${format(row.b)} ${unit} | ${change(row.a, row.b)} | ${format(row.budget.budget)} ${unit} | ${row.budget.gating ? "gating" : "reported"} | ${row.verdict} |`,
       );
     }
     parts.push("");

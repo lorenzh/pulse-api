@@ -37,11 +37,12 @@ export function benchTokens(): { simulated: BenchToken[]; real: BenchToken } {
   };
 }
 
+/** A GET p95 is null when side A answers its route with 404: the route is newer than A. */
 export interface LoadResult {
-  p95GetChecksMs: number;
+  p95GetChecksMs: number | null;
   p95PostResultsMs: number;
-  p95GetLatencyMs: number;
-  p95GetCheckLatencyMs: number;
+  p95GetLatencyMs: number | null;
+  p95GetCheckLatencyMs: number | null;
   /** Requests of all five streams that finished in the measured window, per second. */
   rps: number;
   /** GETs sent again after the connection closed before any response. */
@@ -57,12 +58,14 @@ export interface LoadOptions {
   apiUrl: string;
   /** Called once when warm-up ends, right before the measured window starts. */
   onWindowStart: () => Promise<void>;
+  /** Side A only: a GET route with its own metric may answer 404, which marks the metric missing. */
+  allowMissingRoutes?: boolean;
 }
 
 interface Stream {
   rate: number;
   sent: number;
-  send: (index: number) => Promise<void>;
+  send: (index: number) => Promise<unknown>;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -84,13 +87,15 @@ export interface Resets {
   droppedPosts: number;
 }
 
+/** Resolves false when `allow404` is set and the route answered 404; any other status fails. */
 export async function timed(
   url: string,
   init: RequestInit,
   expectedStatus: number,
   samples: number[] | undefined,
   resets: Resets,
-): Promise<void> {
+  allow404 = false,
+): Promise<boolean> {
   const method = init.method ?? "GET";
   const start = performance.now();
   let response: Response;
@@ -102,7 +107,7 @@ export async function timed(
     if (!isClosedBeforeResponse(err)) throw wrap(err);
     if (method !== "GET") {
       resets.droppedPosts += 1;
-      return;
+      return true;
     }
     resets.retriedGets += 1;
     response = await fetch(url, init).catch((retryErr: unknown) => {
@@ -110,10 +115,12 @@ export async function timed(
     });
   }
   await response.arrayBuffer();
+  if (allow404 && response.status === 404) return false;
   if (response.status !== expectedStatus) {
     throw new Error(`${method} ${url}: status ${response.status}`);
   }
   samples?.push(performance.now() - start);
+  return true;
 }
 
 /** Throw when the run has seen more closed-before-response connections than the cap allows. */
@@ -124,7 +131,7 @@ export function checkResets(resets: Resets): void {
 }
 
 /** Wait for the requests still open, then apply the cap: resets can arrive during the drain. */
-export async function drain(pending: Iterable<Promise<void>>, resets: Resets): Promise<void> {
+export async function drain(pending: Iterable<Promise<unknown>>, resets: Resets): Promise<void> {
   await Promise.all(pending);
   checkResets(resets);
 }
@@ -144,6 +151,20 @@ export async function runLoad(options: LoadOptions): Promise<LoadResult> {
   const fail = (err: unknown): void => {
     failure ??= err instanceof Error ? err : new Error(String(err));
   };
+  const missing = new Set<number[]>();
+  const get = (path: string, samples: number[]): Promise<void> =>
+    timed(
+      `${options.apiUrl}${path}`,
+      {},
+      200,
+      measuring ? samples : undefined,
+      resets,
+      options.allowMissingRoutes,
+    ).then((found) => {
+      if (!found) missing.add(samples);
+    });
+  const p95 = (samples: number[]): number | null =>
+    missing.has(samples) ? null : percentile(samples, 0.95);
 
   const streams: Stream[] = [
     {
@@ -178,8 +199,7 @@ export async function runLoad(options: LoadOptions): Promise<LoadResult> {
     {
       rate: GET_CHECKS_RATE,
       sent: 0,
-      send: () =>
-        timed(`${options.apiUrl}/checks`, {}, 200, measuring ? getSamples : undefined, resets),
+      send: () => get("/checks", getSamples),
     },
     {
       rate: GET_UPTIME_RATE,
@@ -190,24 +210,16 @@ export async function runLoad(options: LoadOptions): Promise<LoadResult> {
     {
       rate: GET_LATENCY_RATE,
       sent: 0,
-      send: () =>
-        timed(`${options.apiUrl}/latency`, {}, 200, measuring ? latencySamples : undefined, resets),
+      send: () => get("/latency", latencySamples),
     },
     {
       rate: GET_CHECK_LATENCY_RATE,
       sent: 0,
-      send: (i) =>
-        timed(
-          `${options.apiUrl}/checks/${ids[i % ids.length]}/latency`,
-          {},
-          200,
-          measuring ? checkLatencySamples : undefined,
-          resets,
-        ),
+      send: (i) => get(`/checks/${ids[i % ids.length]}/latency`, checkLatencySamples),
     },
   ];
 
-  const pending = new Set<Promise<void>>();
+  const pending = new Set<Promise<unknown>>();
   const start = performance.now();
   let windowStart: number | undefined;
   const total = (WARMUP_S + DURATION_S) * 1000;
@@ -240,10 +252,10 @@ export async function runLoad(options: LoadOptions): Promise<LoadResult> {
   if (windowStart === undefined) throw new Error("measured window never started");
   const seconds = (performance.now() - windowStart) / 1000;
   return {
-    p95GetChecksMs: percentile(getSamples, 0.95),
+    p95GetChecksMs: p95(getSamples),
     p95PostResultsMs: percentile(postSamples, 0.95),
-    p95GetLatencyMs: percentile(latencySamples, 0.95),
-    p95GetCheckLatencyMs: percentile(checkLatencySamples, 0.95),
+    p95GetLatencyMs: p95(latencySamples),
+    p95GetCheckLatencyMs: p95(checkLatencySamples),
     rps:
       (getSamples.length +
         postSamples.length +

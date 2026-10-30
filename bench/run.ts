@@ -4,16 +4,15 @@ import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  type Budgets,
+  buildRows,
   EMITTED_METRICS,
   isFailure,
-  judge,
   missingBudgets,
   parseBudgets,
-  type Row,
   renderTable,
+  type Samples,
 } from "./compare.ts";
-import { median, runChecked } from "./measure.ts";
+import { runChecked } from "./measure.ts";
 import { type Baseline, REPOS, type RepoName, repoUrl, resolveRefs } from "./refs.ts";
 import { buildImages, imageSizeMB, runStack, SERVICES, type SideDirs } from "./stack.ts";
 
@@ -25,7 +24,6 @@ const BUILD_REPOS: readonly RepoName[] = ["contract", "kit"];
 
 type Side = "a" | "b";
 const SIDES: readonly Side[] = ["a", "b"];
-type Samples = Record<string, Record<string, number[]>>;
 
 interface Args {
   a: string;
@@ -140,6 +138,7 @@ async function measureStack(
   dirs: SideDirs,
   samples: Samples,
   failureLogFile: string,
+  missingOnA: Set<string>,
 ): Promise<void> {
   const runDir = join(WORK_ROOT, "run", dirs.side);
   await runChecked("rm", ["-rf", runDir]);
@@ -152,37 +151,17 @@ async function measureStack(
     add(samples, service, "load_cpu_s", m.loadCpuS[service]);
     add(samples, service, "image_mb", await imageSizeMB(dirs, service));
   }
-  add(samples, "api", "p95_get_checks_ms", m.p95GetChecksMs);
   add(samples, "api", "p95_post_results_ms", m.p95PostResultsMs);
-  add(samples, "api", "p95_get_latency_ms", m.p95GetLatencyMs);
-  add(samples, "api", "p95_get_check_latency_ms", m.p95GetCheckLatencyMs);
-  add(samples, "api", "rps", m.rps);
-}
-
-function buildRows(budgets: Budgets, a: Samples, b: Samples): Row[] {
-  const rows: Row[] = [];
-  for (const [service, metrics] of Object.entries(EMITTED_METRICS)) {
-    for (const metric of metrics) {
-      const budget = budgets[service]?.[metric];
-      const aValues = a[service]?.[metric];
-      const bValues = b[service]?.[metric];
-      // A missing metric fails the whole run; it is never skipped.
-      if (budget === undefined || aValues === undefined || bValues === undefined) {
-        throw new Error(`missing metric ${service}.${metric}`);
-      }
-      const aMedian = median(aValues);
-      const bMedian = median(bValues);
-      rows.push({
-        service,
-        metric,
-        a: aMedian,
-        b: bMedian,
-        budget,
-        verdict: judge(aMedian, bMedian, budget),
-      });
-    }
+  for (const [metric, value] of [
+    ["p95_get_checks_ms", m.p95GetChecksMs],
+    ["p95_get_latency_ms", m.p95GetLatencyMs],
+    ["p95_get_check_latency_ms", m.p95GetCheckLatencyMs],
+  ] as const) {
+    // Only side A may lack a route; the load of side B fails on a 404.
+    if (value === null) missingOnA.add(`api.${metric}`);
+    else add(samples, "api", metric, value);
   }
-  return rows;
+  add(samples, "api", "rps", m.rps);
 }
 
 async function main(): Promise<number> {
@@ -210,15 +189,17 @@ async function main(): Promise<number> {
     b: await prepareSide("b", refs.b),
   };
   const samples: Record<Side, Samples> = { a: {}, b: {} };
+  const missingOnA = new Set<string>();
   for (let round = 1; round <= args.rounds; round++) {
     for (const side of SIDES) {
       log(`round ${round}/${args.rounds} side ${side}`);
       const failureLog = join(args.out, `failure-round${round}-${side}.log`);
-      await measureStack(dirs[side], samples[side], failureLog);
+      await measureStack(dirs[side], samples[side], failureLog, missingOnA);
       await measureRepoScripts(dirs[side], samples[side]);
     }
   }
-  const rows = buildRows(budgets, samples.a, samples.b);
+  const rows = buildRows(budgets, samples.a, samples.b, missingOnA);
+  for (const key of missingOnA) log(`not available on A: ${key} (A answers its route with 404)`);
   const table = renderTable(rows);
   console.log(table);
   await mkdir(args.out, { recursive: true });

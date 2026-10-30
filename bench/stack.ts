@@ -32,10 +32,10 @@ export interface StackMetrics {
   idleRssMiB: Record<ServiceName, number>;
   peakRssMiB: Record<ServiceName, number>;
   loadCpuS: Record<ServiceName, number>;
-  p95GetChecksMs: number;
+  p95GetChecksMs: number | null;
   p95PostResultsMs: number;
-  p95GetLatencyMs: number;
-  p95GetCheckLatencyMs: number;
+  p95GetLatencyMs: number | null;
+  p95GetCheckLatencyMs: number | null;
   rps: number;
 }
 
@@ -187,6 +187,7 @@ export async function runStack(
     const atWindowStart: Partial<Record<ServiceName, number>> = {};
     const load = await runLoad({
       apiUrl: `http://127.0.0.1:${info("api").port}`,
+      allowMissingRoutes: dirs.side === "a",
       onWindowStart: async () => {
         const samples = await sampleAll(project);
         for (const service of SERVICES) atWindowStart[service] = samples[service].cpuSeconds;
