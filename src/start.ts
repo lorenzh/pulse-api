@@ -74,7 +74,7 @@ async function run(deps: StartDeps, onDb: (db: DatabaseSync) => void): Promise<R
   const checksFile = readString(env, "PULSE_CHECKS_FILE") ?? "./checks.json";
   const tokensFile = readString(env, "PULSE_TOKENS_FILE") ?? "./tokens.json";
   const retentionDays = readRetentionDays(env);
-  const { checks, secrets, maintenance } = loadConfig(checksFile);
+  const { checks, secrets, maintenance, components } = loadConfig(checksFile);
   let tokens: ReturnType<typeof loadTokens>;
   try {
     tokens = loadTokens(tokensFile);
@@ -123,6 +123,7 @@ async function run(deps: StartDeps, onDb: (db: DatabaseSync) => void): Promise<R
   const server = createApiServer(service, {
     tokens,
     heartbeatSecrets: secrets,
+    components,
     now: deps.now,
     metrics,
     notReadyReason: () => (isShuttingDown ? "shutting down" : undefined),
@@ -146,6 +147,7 @@ async function run(deps: StartDeps, onDb: (db: DatabaseSync) => void): Promise<R
     port: boundPort,
     checks: checks.length,
     maintenanceWindows: maintenance.length,
+    components: components.length,
     checksFile,
     db: dbPath,
     retentionDays,

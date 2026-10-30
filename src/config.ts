@@ -1,11 +1,13 @@
 import { readFileSync } from "node:fs";
 import {
   type Check,
+  type Component,
   type HttpCheck,
   MAX_TIMER_MS,
   type MaintenanceWindow,
   type TlsCheck,
   validateCheck,
+  validateComponent,
 } from "@lorenzh/pulse-contract";
 import { z } from "zod";
 import { firstIssue, type Issue, pathName, unknownKey } from "./issue-path.ts";
@@ -244,6 +246,7 @@ const TOP_SCHEMA = z.strictObject(
     checks: z.array(z.unknown(), { error: 'config must be an object with a "checks" array' }),
     // Checked after the checks: it needs their ids.
     maintenance: z.unknown().optional(),
+    components: z.unknown().optional(),
   },
   { error: 'config must be an object with a "checks" array' },
 );
@@ -323,6 +326,8 @@ export interface Config {
   /** Ping secret per heartbeat check id. */
   secrets: Map<string, string>;
   maintenance: MaintenanceWindow[];
+  /** Customer-facing groups of checks, in configured order. Read only by the component routes. */
+  components: Component[];
 }
 
 function maintenanceSchema(ids: ReadonlySet<string>): z.ZodArray<z.ZodType<MaintenanceWindow>> {
@@ -341,19 +346,47 @@ function maintenanceSchema(ids: ReadonlySet<string>): z.ZodArray<z.ZodType<Maint
   return z.array(window);
 }
 
-/** Validate a parsed config (checks plus optional maintenance windows); throws ConfigError. */
-export function parseConfig(data: unknown): Config {
-  const { checks, secrets } = parseChecksWithSecrets(data);
-  const raw = (data as Record<string, unknown>).maintenance;
-  if (raw === undefined) return { checks, secrets, maintenance: [] };
+function parseMaintenance(raw: unknown, ids: ReadonlySet<string>): MaintenanceWindow[] {
+  if (raw === undefined) return [];
   if (!Array.isArray(raw)) throw new ConfigError('"maintenance" must be an array');
-  const parsed = maintenanceSchema(new Set(checks.map((c) => c.id))).safeParse(raw);
+  const parsed = maintenanceSchema(ids).safeParse(raw);
   if (!parsed.success) return failWith(parsed.error, ["maintenance"]);
   const maintenance = parsed.data;
   maintenance.forEach((w, i) => {
     if (w.end <= w.start) throw new ConfigError(`maintenance[${i}].end must be after start`);
   });
-  return { checks, secrets, maintenance };
+  return maintenance;
+}
+
+/** Components are validated by the contract; the check ids and the component ids need the file. */
+function parseComponents(raw: unknown, ids: ReadonlySet<string>): Component[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) throw new ConfigError('"components" must be an array');
+  const seen = new Set<string>();
+  return raw.map((item: unknown, i: number): Component => {
+    const where = `components[${i}]`;
+    const verdict = validateComponent(item, where);
+    if (!verdict.ok) throw new ConfigError(verdict.error);
+    const component = verdict.value;
+    if (seen.has(component.id)) throw new ConfigError(`duplicate component id "${component.id}"`);
+    seen.add(component.id);
+    component.checkIds.forEach((checkId, j) => {
+      if (!ids.has(checkId)) {
+        throw new ConfigError(`${where}.checkIds[${j}] must reference a configured check`);
+      }
+    });
+    return component;
+  });
+}
+
+/** Validate a parsed config (checks plus optional maintenance windows and components); throws ConfigError. */
+export function parseConfig(data: unknown): Config {
+  const { checks, secrets } = parseChecksWithSecrets(data);
+  const top = data as Record<string, unknown>;
+  const ids = new Set(checks.map((c) => c.id));
+  const maintenance = parseMaintenance(top.maintenance, ids);
+  const components = parseComponents(top.components, ids);
+  return { checks, secrets, maintenance, components };
 }
 
 function readJson(path: string): unknown {

@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import {
   type Check,
+  type Component,
   type ErrorResponse,
   type Result,
   validatePostResultRequest,
@@ -9,6 +10,7 @@ import {
   WIRE_VERSION_HEADER,
 } from "@lorenzh/pulse-contract";
 import { BodyError, handleOps, readBody, readJsonBody, sendJson } from "@lorenzh/pulse-kit";
+import { componentsUptime, componentsWithState } from "./components.ts";
 import { createMetrics, type Metrics } from "./metrics.ts";
 import {
   DEFAULT_LOCATION,
@@ -166,6 +168,8 @@ const ROUTES = [
   "/checks",
   "/probe/checks",
   "/uptime",
+  "/components",
+  "/components/uptime",
   "/incidents",
   "/maintenance",
   "/healthz",
@@ -192,6 +196,7 @@ type Ops = {
   metrics: Metrics;
   notReadyReason: () => string | undefined;
   heartbeatSecrets: ReadonlyMap<string, string>;
+  components: readonly Component[];
 };
 
 function digest(text: string): Buffer {
@@ -318,6 +323,8 @@ async function handle(
     path === "/checks" ||
     path === "/probe/checks" ||
     path === "/uptime" ||
+    path === "/components" ||
+    path === "/components/uptime" ||
     path === "/incidents" ||
     path === "/maintenance" ||
     RESULTS_PATH.test(path);
@@ -373,6 +380,26 @@ async function handle(
 
   if (path === "/uptime") {
     sendJson(res, 200, service.getUptime());
+    return;
+  }
+
+  if (path === "/components") {
+    const openIncidents = service.listIncidents("open");
+    sendJson(
+      res,
+      200,
+      componentsWithState(
+        ops.components,
+        service.listCheckStates(),
+        service.getUptime(),
+        openIncidents,
+      ),
+    );
+    return;
+  }
+
+  if (path === "/components/uptime") {
+    sendJson(res, 200, componentsUptime(ops.components, service.getUptime()));
     return;
   }
 
@@ -433,6 +460,8 @@ export type ApiServerOptions = {
   logError?: (message: string, err: unknown) => void;
   /** Ping secret per heartbeat check id. Without it every ping is refused. */
   heartbeatSecrets?: ReadonlyMap<string, string>;
+  /** The configured components, served by `/components` and `/components/uptime`. */
+  components?: readonly Component[];
 };
 
 export function createApiServer(service: Service, options: ApiServerOptions): Server {
@@ -442,6 +471,7 @@ export function createApiServer(service: Service, options: ApiServerOptions): Se
     metrics: options.metrics ?? createMetrics({ listStates: () => service.listCheckStates() }),
     notReadyReason: options.notReadyReason ?? (() => undefined),
     heartbeatSecrets: options.heartbeatSecrets ?? new Map(),
+    components: options.components ?? [],
   };
   const logError = options.logError ?? ((_message, err) => console.error(err));
   return createServer((req, res) => {

@@ -37,5 +37,20 @@
       "grace": 1000,
       "secret": "e2e-throwaway-heartbeat-secret"
     }
+  ],
+  "components": [
+    {
+      "id": "web",
+      "name": "Web",
+      "description": "The status page and the POST endpoint.",
+      "group": "Services",
+      "checkIds": ["status-page", "e2e-post"]
+    },
+    {
+      "id": "public-api",
+      "name": "Public API",
+      "group": "Services",
+      "checkIds": ["e2e-post", "heartbeat-e2e"]
+    }
   ]
 }

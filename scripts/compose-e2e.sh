@@ -303,6 +303,11 @@ wait_for "$T_FIRST_RESULT" "e2e-post is up" post_check_is up
 [[ "$(hb_status "http://127.0.0.1:${api_port}/probe/checks")" == "401" ]] ||
   fail "GET /probe/checks without a token did not answer 401"
 echo "ok: GET /probe/checks needs a token"
+api /components | jq -e '[.[].id] == ["web", "public-api"]' >/dev/null ||
+  fail "GET /components does not list web and public-api in order"
+api /components/uptime | jq -e '[.[].componentId] == ["web", "public-api"]' >/dev/null ||
+  fail "GET /components/uptime does not list web and public-api in order"
+echo "ok: GET /components and /components/uptime list both components"
 set_target_mode degraded
 wait_for "$T_INCIDENT_OPEN" "e2e-post is down for a changed JSON value" \
   post_check_reason_is 'json /status: expected "ok", got "degraded"'

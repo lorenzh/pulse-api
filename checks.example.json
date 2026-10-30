@@ -58,5 +58,20 @@
       "end": "2030-01-01T04:00:00Z",
       "note": "Planned database upgrade"
     }
+  ],
+  "components": [
+    {
+      "id": "example",
+      "name": "Example service",
+      "description": "The public endpoint and its JSON api.",
+      "group": "Services",
+      "checkIds": ["example", "example-api"]
+    },
+    {
+      "id": "backend",
+      "name": "Backend",
+      "group": "Services",
+      "checkIds": ["example-api", "example-cert", "nightly-backup"]
+    }
   ]
 }

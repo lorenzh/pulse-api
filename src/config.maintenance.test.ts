@@ -18,6 +18,7 @@ test("config: missing maintenance key means no windows", () => {
     checks: [{ ...check, retries: 0, retryDelayMs: 1000 }],
     secrets: new Map(),
     maintenance: [],
+    components: [],
   });
 });
 

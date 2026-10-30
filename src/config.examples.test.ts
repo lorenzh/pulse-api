@@ -12,6 +12,10 @@ test("checks.example.json loads through the config parser", () => {
     ["example", "example-api", "example-cert", "nightly-backup"],
   );
   assert.equal(config.maintenance.length, 1);
+  assert.deepEqual(
+    config.components.map((c) => c.id),
+    ["example", "backend"],
+  );
   assert.equal(loadChecks(CHECKS_EXAMPLE).length, 4);
 });
 
