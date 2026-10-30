@@ -41,11 +41,13 @@ bun test --test-name-pattern "<text>"
 
 `bun test` fails below 80 % line coverage. Tests sit next to the code as `src/<module>.test.ts`. Each service has a test that starts its real server on port `0` and drives it over HTTP. Write the failing test first. A change to an endpoint or a response shape gets such a test, typed by the contract.
 
-`bun src/bench-reads.ts [checks] [days]` seeds an in-memory database (default 100 checks, 90 days at a 1-minute interval) and prints the time of `GET /checks` and `GET /uptime`. It is not part of `bun test`.
+## Performance bench
+
+`bench/` measures CPU time and memory of api, probe, status and notify under a fixed load, and the test and build CPU time of all seven repositories. `bun bench/run.ts --a <ref> --b <ref>` compares two versions with 5 interleaved rounds per side. The nightly workflow `.github/workflows/bench.yml` compares the baseline against `main`. CPU time and memory gate it; latency, throughput, wall-clock startup and image size are only reported, because hosted runners are too noisy for wall-clock numbers. `bun run bench:selftest` runs the harness self-tests (also in CI). It is not part of `bun test`. See [bench/README.md](../bench/README.md) for running it, changing a budget and reading a failure.
 
 ## Lint and format
 
-Biome formats and lints (`bun run lint` to check, `bun run format` to fix). SonarJS runs through ESLint and limits cognitive complexity to 15 per function. The configuration comes from [pulse-config](https://github.com/lorenzh/pulse-config) (Biome, TypeScript, Lefthook and the ESLint setup) and brings TypeScript 6, while this repository uses TypeScript 7 (the `typescript7` dev dependency, run by `bun run typecheck`). `eslint.config.js` also ignores `.repos/`. Never weaken the shared configuration to pass a check.
+Biome formats and lints (`bun run lint` to check, `bun run format` to fix). SonarJS runs through ESLint and limits cognitive complexity to 15 per function. The configuration comes from [pulse-config](https://github.com/lorenzh/pulse-config) (Biome, TypeScript, Lefthook and the ESLint setup) and brings TypeScript 6, while this repository uses TypeScript 7 (the `typescript7` dev dependency, run by `bun run typecheck`). `eslint.config.js` also ignores `.repos/` and `.bench/`. Never weaken the shared configuration to pass a check.
 
 The Lefthook pre-commit hook (`lefthook.yml`) runs Biome and ESLint on staged files and rejects the commit on failure.
 

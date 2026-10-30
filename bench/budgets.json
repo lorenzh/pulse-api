@@ -1,0 +1,198 @@
+{
+  "api": {
+    "startup_cpu_ms": {
+      "budget": 247,
+      "unit": "ms",
+      "gating": true
+    },
+    "load_cpu_s": {
+      "budget": 23.5,
+      "unit": "s",
+      "gating": true
+    },
+    "idle_rss_mib": {
+      "budget": 89,
+      "unit": "MiB",
+      "gating": true
+    },
+    "peak_rss_mib": {
+      "budget": 115,
+      "unit": "MiB",
+      "gating": true
+    },
+    "test_cpu_s": {
+      "budget": 2.4,
+      "unit": "s",
+      "gating": true
+    },
+    "startup_wall_ms": {
+      "budget": 1425,
+      "unit": "ms",
+      "gating": false
+    },
+    "p95_get_checks_ms": {
+      "budget": 318,
+      "unit": "ms",
+      "gating": false
+    },
+    "p95_post_results_ms": {
+      "budget": 271,
+      "unit": "ms",
+      "gating": false
+    },
+    "rps": {
+      "budget": 40,
+      "unit": "req/s",
+      "gating": false
+    },
+    "image_mb": {
+      "budget": 124,
+      "unit": "MB",
+      "gating": false
+    }
+  },
+  "probe": {
+    "startup_cpu_ms": {
+      "budget": 299,
+      "unit": "ms",
+      "gating": true
+    },
+    "load_cpu_s": {
+      "budget": 0.5,
+      "unit": "s",
+      "gating": true
+    },
+    "idle_rss_mib": {
+      "budget": 79,
+      "unit": "MiB",
+      "gating": true
+    },
+    "peak_rss_mib": {
+      "budget": 81,
+      "unit": "MiB",
+      "gating": true
+    },
+    "test_cpu_s": {
+      "budget": 1.8,
+      "unit": "s",
+      "gating": true
+    },
+    "startup_wall_ms": {
+      "budget": 816,
+      "unit": "ms",
+      "gating": false
+    },
+    "image_mb": {
+      "budget": 124,
+      "unit": "MB",
+      "gating": false
+    }
+  },
+  "status": {
+    "startup_cpu_ms": {
+      "budget": 273,
+      "unit": "ms",
+      "gating": true
+    },
+    "load_cpu_s": {
+      "budget": 0.5,
+      "unit": "s",
+      "gating": true
+    },
+    "idle_rss_mib": {
+      "budget": 78,
+      "unit": "MiB",
+      "gating": true
+    },
+    "peak_rss_mib": {
+      "budget": 82,
+      "unit": "MiB",
+      "gating": true
+    },
+    "test_cpu_s": {
+      "budget": 1.8,
+      "unit": "s",
+      "gating": true
+    },
+    "startup_wall_ms": {
+      "budget": 817,
+      "unit": "ms",
+      "gating": false
+    },
+    "image_mb": {
+      "budget": 124,
+      "unit": "MB",
+      "gating": false
+    }
+  },
+  "notify": {
+    "startup_cpu_ms": {
+      "budget": 351,
+      "unit": "ms",
+      "gating": true
+    },
+    "load_cpu_s": {
+      "budget": 0.5,
+      "unit": "s",
+      "gating": true
+    },
+    "idle_rss_mib": {
+      "budget": 87,
+      "unit": "MiB",
+      "gating": true
+    },
+    "peak_rss_mib": {
+      "budget": 90,
+      "unit": "MiB",
+      "gating": true
+    },
+    "test_cpu_s": {
+      "budget": 1.9,
+      "unit": "s",
+      "gating": true
+    },
+    "startup_wall_ms": {
+      "budget": 809,
+      "unit": "ms",
+      "gating": false
+    },
+    "image_mb": {
+      "budget": 126,
+      "unit": "MB",
+      "gating": false
+    }
+  },
+  "contract": {
+    "test_cpu_s": {
+      "budget": 6.7,
+      "unit": "s",
+      "gating": true,
+      "floor": 2
+    },
+    "build_cpu_s": {
+      "budget": 3.7,
+      "unit": "s",
+      "gating": true
+    }
+  },
+  "kit": {
+    "test_cpu_s": {
+      "budget": 0.6,
+      "unit": "s",
+      "gating": true
+    },
+    "build_cpu_s": {
+      "budget": 0.5,
+      "unit": "s",
+      "gating": true
+    }
+  },
+  "config": {
+    "test_cpu_s": {
+      "budget": 25.1,
+      "unit": "s",
+      "gating": true,
+      "floor": 3
+    }
+  }
+}
