@@ -28,3 +28,13 @@ test("unknown key in a maintenance window is rejected", () => {
   });
   assert.equal(parseConfig({ checks: [http], maintenance: [w] }).maintenance.length, 1);
 });
+
+test("unknown key in a component is rejected", () => {
+  const component = { id: "c", name: "C", checkIds: ["a"] };
+  assert.throws(
+    () => parseConfig({ checks: [http], components: [{ ...component, colour: "x" }] }),
+    {
+      message: /components\[0\].*colour/,
+    },
+  );
+});

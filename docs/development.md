@@ -24,7 +24,7 @@ npm start
 | `src/service.ts`   | All SQL, row mapping to contract types, quorum evaluation.               |
 | `src/state.ts`     | Pure rules: `applyResult` and `quorumStatus`.                            |
 | `src/db.ts`        | Schema and migrations.                                                   |
-| `src/config.ts`    | Parsing of the checks file, the maintenance windows and the tokens file. |
+| `src/config.ts`    | Parsing of the checks file, the maintenance windows, the components and the tokens file. |
 | `src/tokens.ts`    | Token rules and bearer authentication.                                   |
 | `src/retention.ts` | Retention setting and the hourly cleanup.                                |
 | `src/heartbeat.ts` | The evaluator that writes `down` for heartbeat checks without a ping.    |

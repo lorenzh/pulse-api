@@ -36,7 +36,7 @@ Before this version the tokens file error exited with code 1, and other configur
 
 ## checks.json
 
-The file is `{"checks": [...], "maintenance": [...]}`. `maintenance` is optional. The checks are validated and upserted into the database at start. Existing state and results are kept. An invalid or unreadable file stops the start with one line `pulse-api: <path>: <message>` and exit code 2. A key that is not documented below is rejected, at the top level, in a check and in a `maintenance` window: `<path>: unknown key "keywrod" in checks[2]`. A `tls` check accepts only its own keys (`host`, `port`, `warnDays`, `intervalMs` and the common ones). Probes read the same checks from `GET /checks`. Values outside the documented ranges are rejected, with the cap 2147483647 (2^31-1, the largest timer delay) for `intervalMs`, `timeoutMs` and `latencyObjectiveMs`. A checks file that held out-of-range values before now fails to load.
+The file is `{"checks": [...], "maintenance": [...], "components": [...]}`. `maintenance` and `components` are optional. The checks are validated and upserted into the database at start. Existing state and results are kept. An invalid or unreadable file stops the start with one line `pulse-api: <path>: <message>` and exit code 2. A key that is not documented below is rejected, at the top level, in a check and in a `maintenance` window: `<path>: unknown key "keywrod" in checks[2]`. A `tls` check accepts only its own keys (`host`, `port`, `warnDays`, `intervalMs` and the common ones). Probes read the same checks from `GET /checks`. Values outside the documented ranges are rejected, with the cap 2147483647 (2^31-1, the largest timer delay) for `intervalMs`, `timeoutMs` and `latencyObjectiveMs`. A checks file that held out-of-range values before now fails to load.
 
 An explicit `null` is rejected for `type`, `retries`, `retryDelayMs`, the TLS `port` and `warnDays`, and the heartbeat `grace`; leave the key out to get the default. This is deliberate. The messages are, for example, `checks[0].retries must be an integer from 0 to 10`, `checks[0].port must be an integer from 1 to 65535` and `checks[0].grace must be an integer from 0 to 86400000 (milliseconds)`; a `null` type reports `checks[0].type Invalid input: expected "http"`.
 
@@ -124,6 +124,20 @@ The secret is kept in memory only. `GET /checks`, `/metrics`, incident reasons a
 | `note`    | yes      | Non-empty string shown with the maintenance state.                    |
 
 `start` and `end` must be real calendar dates (`2030-02-30` is rejected, `2028-02-29` is fine), and `end` must be after `start`. A window with a missing note and a reversed range reports the note first: `maintenance[0].note is required and must be a non-empty string`. Windows are read at start only. See [Maintenance windows](concepts.md#maintenance-windows) for the rules.
+
+### components
+
+`components` is an array of customer-facing groups of checks, served by `GET /components` and `GET /components/uptime`. A missing key means no components. They are not part of `GET /probe/checks`.
+
+| Field         | Required | Meaning                                                                   |
+| ------------- | -------- | ------------------------------------------------------------------------- |
+| `id`          | yes      | `^[a-z0-9][a-z0-9._-]*$`, at most 64 characters, unique among components. |
+| `name`        | yes      | Plain text, 1 to 100 characters.                                          |
+| `description` | no       | Plain text, at most 500 characters.                                       |
+| `group`       | no       | Section heading, plain text, 1 to 100 characters.                         |
+| `checkIds`    | yes      | Non-empty list of configured check ids without duplicates.                |
+
+A check may be in several components. A component id may equal a check id. An unknown key, an unknown check id or a duplicate component id stops the start, for example `components[0].checkIds[1] must reference a configured check`. Components are read at start only.
 
 ## tokens.json
 

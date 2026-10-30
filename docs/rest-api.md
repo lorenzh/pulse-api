@@ -11,6 +11,8 @@ The API serves JSON over HTTP. The types come from [pulse-contract](https://gith
 | `GET`         | `/checks`                  | none             | `ChecksResponse` (`CheckWithState[]`)                  |
 | `GET`         | `/checks/:id/results`      | none             | `ResultsResponse` (`Result[]`)                         |
 | `GET`         | `/uptime`                  | none             | `UptimeResponse` (`CheckUptime[]`)                     |
+| `GET`         | `/components`              | none             | `ComponentsResponse` (`ComponentWithState[]`)          |
+| `GET`         | `/components/uptime`       | none             | `ComponentsUptimeResponse` (`ComponentUptime[]`)       |
 | `GET`         | `/incidents`               | none             | `IncidentsResponse` (`Incident[]`)                     |
 | `GET`         | `/maintenance`             | none             | `MaintenanceResponse` (`MaintenanceWindow[]`)          |
 | `GET`, `POST` | `/heartbeat/:id[/:secret]` | Heartbeat secret | `204`, no body; `401` for a wrong secret or unknown id |
@@ -150,6 +152,18 @@ Returns one `CheckUptime` per active check, in the order of `GET /checks`. Each 
 ```sh
 curl http://localhost:3000/uptime
 ```
+
+## GET /components
+
+Returns one `ComponentWithState` per component of the checks file, in configured order, or `[]` without components. It carries the configured fields (`id`, `name`, `description`, `group`, `checkIds`) plus:
+
+- `state`: the combined state of the member checks, including `maintenance`. First match wins: any `down` gives `down`; any `degraded` gives `degraded`; else, after dropping `maintenance` and `unknown`, any `up` gives `up`; else any `maintenance` gives `maintenance`; else `unknown`.
+- `uptime`: the 90-day window value of `GET /components/uptime`, `null` when no member has results.
+- `incidentIds`: ids of the open incidents of the member checks, ascending.
+
+## GET /components/uptime
+
+Returns one `ComponentUptime` (`componentId`, `days`, `uptime`) per component, in configured order. `days` has 90 UTC days, oldest first. A day's uptime is result-weighted over the member checks: `sum(up + degraded) / sum(results) * 100`, `null` with `results: 0` when no member has results that day. A check in several components counts in each. `GET /uptime` is unchanged.
 
 ## Read cache
 
