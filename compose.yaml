@@ -16,8 +16,8 @@ services:
       - api-data:/data
       # The directory, not the file: a rename over a single-file bind mount (editor save, `sed -i`)
       # leaves the container with the old inode. Read-only: the API reloads checks.json when it
-      # changes, but the admin routes cannot write it (they answer 503). To change checks through
-      # the API, replace `:ro` with a writable mount (needs PULSE_API_ADMIN_TOKENS_FILE; the
+      # changes; GET /admin/config still works, but an admin write answers 503. To change checks
+      # through the API, replace `:ro` with a writable mount (needs PULSE_API_ADMIN_TOKENS_FILE; the
       # directory must be writable by the container user):
       #   - ./compose:/config
       - ./compose:/config:ro
