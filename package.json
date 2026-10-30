@@ -27,7 +27,7 @@
     "@types/bun": "1.4.0"
   },
   "dependencies": {
-    "@lorenzh/pulse-contract": "github:lorenzh/pulse-contract#6401721768c1996192c5cdadef7835d852015248",
+    "@lorenzh/pulse-contract": "github:lorenzh/pulse-contract#9fe5e8016ece235fdc11652d9be475d67df298f2",
     "@lorenzh/pulse-kit": "github:lorenzh/pulse-kit#fa79ba8cd93949fc0cf87f7b41bdaf261dbe4dc6",
     "zod": "4.6.7"
   },
