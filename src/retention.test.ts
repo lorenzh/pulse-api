@@ -5,8 +5,8 @@ import type { CheckUptime } from "@lorenzh/pulse-contract";
 import { openDb } from "./db.ts";
 import {
   cleanupResults,
-  parseRetentionDays,
   RETENTION_INTERVAL_MS,
+  readRetentionDays,
   retentionCutoff,
   startRetention,
 } from "./retention.ts";
@@ -51,12 +51,13 @@ const sleepFake =
     return Promise.resolve();
   };
 
-test("parseRetentionDays: default and invalid values", () => {
-  assert.equal(parseRetentionDays(undefined), 90);
-  assert.equal(parseRetentionDays(""), 90);
-  assert.equal(parseRetentionDays("365"), 365);
+test("readRetentionDays: default and invalid values", () => {
+  const read = (v: string | undefined): number => readRetentionDays({ PULSE_RETENTION_DAYS: v });
+  assert.equal(read(undefined), 90);
+  assert.equal(read(""), 90);
+  assert.equal(read("365"), 365);
   for (const bad of ["89", "0", "-1", "1.5", "abc"]) {
-    assert.throws(() => parseRetentionDays(bad), /PULSE_RETENTION_DAYS.*90/);
+    assert.throws(() => read(bad), /PULSE_RETENTION_DAYS.*90/);
   }
 });
 

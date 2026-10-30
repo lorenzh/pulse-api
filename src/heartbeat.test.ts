@@ -77,7 +77,7 @@ test("repeated ticks during one outage write one down result; missed periods are
   }
   assert.equal(s.service.listResults("job", 100).length, 1);
   assert.equal(s.service.listIncidents().length, 1);
-  const text = s.metrics.render([]);
+  const text = s.metrics.render();
   assert.match(text, /pulse_heartbeat_missed_total\{check="job"\} 4\n/);
   assert.match(text, /pulse_heartbeat_pings_total\{check="job"\} 0\n/);
 });

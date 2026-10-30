@@ -1,22 +1,23 @@
 import type { AddressInfo } from "node:net";
 import type { DatabaseSync } from "node:sqlite";
+import {
+  createLogger,
+  type LogLevel,
+  readLogLevel,
+  readPort,
+  readString,
+  StartupError,
+} from "@lorenzh/pulse-kit";
 import { ConfigError, loadConfig, loadTokens } from "./config.ts";
 import { createHeartbeatEvaluator, startHeartbeatEvaluator } from "./heartbeat.ts";
-import { createLogger, type LogLevel, LogLevelError, parseLogLevel } from "./log.ts";
 import { createMetrics } from "./metrics.ts";
-import { parseRetentionDays, RetentionConfigError, startRetention } from "./retention.ts";
+import { readRetentionDays, startRetention } from "./retention.ts";
 import { createApiServer } from "./server.ts";
 import { createService } from "./service.ts";
 import { TokensError } from "./tokens.ts";
 
 export const SHUTDOWN_TIMEOUT_MS = 5000;
 const DEFAULT_PORT = 3000;
-const MAX_PORT = 65535;
-
-/** A configuration or startup failure: the process prints `pulse-api: <message>` and exits with 2. */
-export class StartupError extends Error {
-  override name = "StartupError";
-}
 
 export interface StartDeps {
   env: Record<string, string | undefined>;
@@ -25,7 +26,7 @@ export interface StartDeps {
   setTimeout: (fn: () => void, ms: number) => unknown;
   clearTimeout: (handle: unknown) => void;
   /** Receives one JSON log line without the newline. */
-  write: (line: string, level: LogLevel) => void;
+  write: (level: LogLevel, line: string) => void;
   openDb: (path: string) => DatabaseSync;
   /** Bound for the shutdown; defaults to SHUTDOWN_TIMEOUT_MS. */
   shutdownTimeoutMs?: number;
@@ -39,23 +40,8 @@ export interface RunningApi {
   close(): Promise<void>;
 }
 
-export function parsePort(raw: string | undefined): number {
-  const text = raw?.trim() ?? "";
-  if (text === "") return DEFAULT_PORT;
-  const port = Number(text);
-  if (!/^\d+$/.test(text) || port > MAX_PORT) {
-    throw new StartupError(`PORT must be an integer from 0 to ${MAX_PORT}, got "${text}"`);
-  }
-  return port;
-}
-
 function isConfigFailure(err: unknown): err is Error {
-  return (
-    err instanceof ConfigError ||
-    err instanceof RetentionConfigError ||
-    err instanceof TokensError ||
-    err instanceof LogLevelError
-  );
+  return err instanceof ConfigError || err instanceof TokensError;
 }
 
 function errorText(err: unknown): string {
@@ -79,15 +65,15 @@ export async function startApi(deps: StartDeps): Promise<RunningApi> {
 async function run(deps: StartDeps, onDb: (db: DatabaseSync) => void): Promise<RunningApi> {
   const { env } = deps;
   const logger = createLogger({
-    level: parseLogLevel(env.PULSE_LOG_LEVEL),
+    level: readLogLevel(env),
     now: deps.now,
     write: deps.write,
   });
-  const port = parsePort(env.PORT);
-  const dbPath = env.PULSE_DB ?? "./pulse.db";
-  const checksFile = env.PULSE_CHECKS_FILE ?? "./checks.json";
-  const tokensFile = env.PULSE_TOKENS_FILE ?? "./tokens.json";
-  const retentionDays = parseRetentionDays(env.PULSE_RETENTION_DAYS);
+  const port = readPort(env, "PORT", { fallback: DEFAULT_PORT }) ?? DEFAULT_PORT;
+  const dbPath = readString(env, "PULSE_DB") ?? "./pulse.db";
+  const checksFile = readString(env, "PULSE_CHECKS_FILE") ?? "./checks.json";
+  const tokensFile = readString(env, "PULSE_TOKENS_FILE") ?? "./tokens.json";
+  const retentionDays = readRetentionDays(env);
   const { checks, secrets, maintenance } = loadConfig(checksFile);
   const tokens = loadTokens(tokensFile);
 
@@ -101,7 +87,7 @@ async function run(deps: StartDeps, onDb: (db: DatabaseSync) => void): Promise<R
   }
   onDb(db);
 
-  const metrics = createMetrics();
+  const metrics = createMetrics({ listStates: () => service.listCheckStates() });
   const service = createService(db, {
     maintenance,
     log: (line) => logger.info(line),

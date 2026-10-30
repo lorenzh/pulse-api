@@ -15,7 +15,7 @@ The API is configured by environment variables and two JSON files. It reads all 
 
 The Docker image sets `NODE_ENV=production` and `PULSE_DB=/data/pulse.db`.
 
-`PULSE_RETENTION_DAYS` that is not an integer of at least 90 stops the start with `PULSE_RETENTION_DAYS must be an integer >= 90, got "<value>"`. An unset or empty value means 90. See [Retention](concepts.md#retention).
+`PULSE_RETENTION_DAYS` that is not an integer of at least 90 stops the start with `PULSE_RETENTION_DAYS: must be an integer >= 90`. An unset or empty value means 90. See [Retention](concepts.md#retention).
 
 Example:
 

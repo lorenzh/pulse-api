@@ -55,7 +55,7 @@ The checks file is invalid. The API prints one line `pulse-api: <path>: <message
 
 See [checks.json](configuration.md#checksjson).
 
-### `pulse-api: PULSE_RETENTION_DAYS must be an integer >= 90, got "<value>"`
+### `pulse-api: PULSE_RETENTION_DAYS: must be an integer >= 90`
 
 The API exits with code 2. Set `PULSE_RETENTION_DAYS` to an integer of at least 90, or unset it.
 
