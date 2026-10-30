@@ -36,6 +36,27 @@ test("config: rejects invalid input", () => {
   for (const b of bad) assert.throws(() => parseChecks(b), ConfigError, JSON.stringify(b));
 });
 
+test("config: a url that is not http or https reports the contract message", () => {
+  // eslint-disable-next-line sonarjs/no-clear-text-protocols -- ftp literal is a local test fixture, never requested over a network
+  for (const url of ["nope", "ftp://x/", "file:///x"]) {
+    assert.throws(
+      () => parseChecks({ checks: [ok, { ...ok, id: "b", url }] }),
+      (err: Error) =>
+        err instanceof ConfigError &&
+        err.message === "checks[1].url: must be an http: or https: URL",
+      url,
+    );
+  }
+});
+
+test("config: http and https urls load", () => {
+  const checks = parseChecks({ checks: [ok, { ...ok, id: "b", url: "https://h:8443/x?y" }] });
+  assert.deepEqual(
+    checks.map((c) => ("url" in c ? c.url : undefined)),
+    ["http://localhost:1/", "https://h:8443/x?y"],
+  );
+});
+
 test("config: duplicate id message", () => {
   assert.throws(() => parseChecks({ checks: [ok, ok] }), /duplicate check id "a"/);
 });

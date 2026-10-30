@@ -64,7 +64,7 @@ An HTTP check has `type` absent or `"http"` and these fields besides the common 
 
 | Field                | Required | Meaning                                                                                                                                                                 |
 | -------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `url`                | yes      | `http` or `https` URL to probe.                                                                                                                                         |
+| `url`                | yes      | `http` or `https` URL to probe. Any other URL is rejected with `checks[<i>].url: must be an http: or https: URL`.                                                       |
 | `retries`            | no       | Integer 0 to 10, default 0. Extra attempts the probe makes after a failed one before it reports `down`.                                                                 |
 | `retryDelayMs`       | no       | Integer 0 to 60000, default 1000. Wait between attempts.                                                                                                                |
 | `latencyObjectiveMs` | no       | Integer 1 to 2147483647, milliseconds. A successful (2xx) result slower than this is `degraded`. Absent means no objective.                                             |

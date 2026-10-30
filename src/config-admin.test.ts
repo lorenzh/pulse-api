@@ -14,6 +14,7 @@ import { join } from "node:path";
 import {
   type AdminConfigResponse,
   type CheckWithState,
+  type ErrorResponse,
   validateAdminCheckView,
   validateAdminComponent,
   validateAdminConfigResponse,
@@ -339,6 +340,20 @@ test("admin: the status order of the spec", async () => {
   assert.equal((await b.call("DELETE", "/admin/checks/ghost", { ifMatch: rev })).status, 404);
   assert.equal((await b.call("DELETE", "/admin/maintenance/9", { ifMatch: rev })).status, 404);
   assert.equal((await b.call("PATCH", "/admin/checks/web", { ifMatch: rev })).status, 405);
+});
+
+test("admin: an http check with a file: url is rejected with 422 and the contract message", async () => {
+  const b = await boot();
+  const rev = await b.revision();
+  const r = await b.call("POST", "/admin/checks", {
+    body: { ...NEW_CHECK, url: "file:///x" },
+    ifMatch: rev,
+  });
+  assert.equal(r.status, 422);
+  const body = (await r.json()) as ErrorResponse;
+  assert.match(body.error, /url: must be an http: or https: URL$/);
+  assert.equal(await b.revision(), rev);
+  assert.ok(!(await checkIds(b)).includes("new"));
 });
 
 test("admin: a read-only directory answers 503 before the revision is compared", async () => {
