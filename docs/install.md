@@ -82,7 +82,7 @@ Edit `compose/checks.json` (format: [checks.json](configuration.md#checksjson)).
 docker compose kill -s HUP api   # optional: apply now instead of within 5 seconds
 ```
 
-`docker compose up -d` is not a reload step: it does not recreate the API when only the mounted file changed. The mount is read-only, so the [admin routes](rest-api.md#admin-config-routes) answer `503`; see [Operation](operation.md#changing-checks) to mount the directory writable.
+`docker compose up -d` is not a reload step: it does not recreate the API when only the mounted file changed. The stack mounts the directory `compose/` read-only (`./compose:/config:ro`), not the file: a single-file bind mount does not see an editor save by rename or `sed -i`. The directory holds only `checks.json`, `notify.json` and the `demo/` and `e2e/` fixtures, no secrets. The mount is read-only, so the [admin routes](rest-api.md#admin-config-routes) answer `503`; see [Operation](operation.md#changing-checks) to mount the directory writable.
 
 The compose file has one probe, so one location. A single location decides alone, so a check can open an incident with it. See [Quorum and incidents](concepts.md#quorum-and-incidents). For a second location, add a second probe service with its own `PULSE_LOCATION`, its own token and a matching entry in the tokens config.
 
@@ -97,15 +97,14 @@ The notify config is `compose/notify.json`: one `file` channel that writes `/dat
 ```sh
 docker build --tag pulse-api:local .
 docker run --rm -p 3000:3000 \
-  -v "$PWD/checks.json:/config/checks.json:ro" \
-  -v "$PWD/tokens.json:/config/tokens.json:ro" \
+  -v "$PWD/config:/config:ro" \
   -v pulse-api-data:/data \
   -e PULSE_CHECKS_FILE=/config/checks.json \
   -e PULSE_TOKENS_FILE=/config/tokens.json \
   pulse-api:local
 ```
 
-The image runs as the non-root `bun` user with `bun src/main.ts`. It owns `/data` (database at `PULSE_DB=/data/pulse.db`), exposes port 3000 and has a healthcheck on `GET /readyz`. It contains no checks or tokens file: mount them.
+The image runs as the non-root `bun` user with `bun src/main.ts`. It owns `/data` (database at `PULSE_DB=/data/pulse.db`), exposes port 3000 and has a healthcheck on `GET /readyz`. It contains no checks or tokens file: mount a directory with `checks.json` and `tokens.json` inside. Do not mount the two files singly: a single-file bind mount keeps the old inode and does not see an atomic replace (editor save, `sed -i`), so hot reload misses the change.
 
 ## Demo profile
 

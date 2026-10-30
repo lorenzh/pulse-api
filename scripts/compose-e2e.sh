@@ -28,11 +28,12 @@ STABLE_WINDOW="${E2E_STABLE_WINDOW:-12}"
 POLL_INTERVAL="${E2E_POLL_INTERVAL:-2}"
 
 regular_checks=compose/checks.json
-e2e_checks=compose/e2e/checks.json
+e2e_checks=compose/e2e/ro/checks.json
 # A writable copy, mounted as a directory: the admin routes rename a new file over it.
 rw_dir=compose/e2e/rw
 checks_file=${rw_dir}/checks.json
 checks_backup=""
+ro_backup=""
 created_env=0
 
 step() { printf '\n==> %s\n' "$*"; }
@@ -64,6 +65,12 @@ cleanup() {
     cp "$checks_backup" "$checks_file"
     rm -f "$checks_backup"
   fi
+  if [[ -n "$ro_backup" && -f "$ro_backup" ]]; then
+    cp "$ro_backup" "$e2e_checks"
+    rm -f "$ro_backup"
+  fi
+  # A temp file of atomic_replace that a failed step left behind.
+  rm -f "$(dirname "$e2e_checks")"/.checks.?????? "$rw_dir"/.checks.??????
   printf '\n==> Teardown\n'
   if ! docker compose --profile demo down -v --remove-orphans && ((code == 0)); then
     code=1
@@ -588,6 +595,45 @@ docker compose kill -s HUP api
 wait_for "$T_RELOAD" "SIGHUP applies a hand edit: GET /checks lists e2e-hup" has_check e2e-hup
 cp "$checks_backup" "$checks_file"
 wait_for "$T_RELOAD" "the polling reload drops e2e-hup" bash -c "! curl -fsS http://127.0.0.1:${api_port}/checks | jq -e '.[] | select(.id == \"e2e-hup\")'"
+
+# atomic_replace <file> <jq filter>: apply the filter to the file and rename the result over it,
+# like an editor save or `sed -i`. A single-file bind mount keeps the old inode and misses this.
+# mktemp makes mode 600, which the container user could not read.
+atomic_replace() {
+  local file=$1 filter=$2 tmp
+  tmp=$(mktemp "$(dirname "$file")/.checks.XXXXXX")
+  jq "$filter" "$file" >"$tmp"
+  chmod 644 "$tmp"
+  mv "$tmp" "$file"
+}
+
+atomic_filter='.checks += [{id: "e2e-atomic", name: "E2E atomic", url: "http://api:3000/checks", intervalMs: 10000, timeoutMs: 2000}]'
+
+# Writable directory mount (/config-rw), the api of the stack.
+atomic_replace "$checks_file" "$atomic_filter"
+docker compose kill -s HUP api
+wait_for "$T_RELOAD" "SIGHUP after an atomic replace (writable mount): GET /checks lists e2e-atomic" has_check e2e-atomic
+cp "$checks_backup" "$checks_file"
+wait_for "$T_RELOAD" "the polling reload drops e2e-atomic" bash -c "! curl -fsS http://127.0.0.1:${api_port}/checks | jq -e '.[] | select(.id == \"e2e-atomic\")'"
+
+# Read-only directory mount (/config, the default users run): a second api on another port reads it.
+ro_env=(-e PORT=3999 -e PULSE_DB=/tmp/ro.db -e PULSE_CHECKS_FILE=/config/checks.json)
+ro_has_atomic_js='const r = await fetch("http://127.0.0.1:3999/checks"); const l = await r.json(); process.exit(l.some((c) => c.id === "e2e-atomic") ? 0 : 1);'
+ro_api_up_js='const r = await fetch("http://127.0.0.1:3999/healthz"); process.exit(r.ok ? 0 : 1);'
+ro_exec() { docker compose exec -T "${ro_env[@]}" -e RO_JS="$1" api sh -c 'bun -e "$RO_JS"'; }
+ro_api_up() { ro_exec "$ro_api_up_js"; }
+ro_has_atomic() { ro_exec "$ro_has_atomic_js"; }
+ro_backup=$(mktemp)
+cp "$e2e_checks" "$ro_backup"
+docker compose exec -d "${ro_env[@]}" api sh -c 'echo $$ >/tmp/ro.pid; exec bun src/main.ts'
+wait_for "$T_RELOAD" "the second api on the read-only mount answers" ro_api_up
+atomic_replace "$e2e_checks" "$atomic_filter"
+docker compose exec -T api sh -c 'kill -HUP "$(cat /tmp/ro.pid)"'
+wait_for "$T_RELOAD" "SIGHUP after an atomic replace (read-only mount): GET /checks lists e2e-atomic" ro_has_atomic
+docker compose exec -T api sh -c 'kill "$(cat /tmp/ro.pid)"; rm -f /tmp/ro.pid'
+cp "$ro_backup" "$e2e_checks"
+rm -f "$ro_backup"
+ro_backup=""
 
 # The regular mount is read-only: a second api on another port answers 503 to a write.
 ro_js='const r = await fetch("http://127.0.0.1:3999/admin/checks", { method: "POST", headers: { authorization: "Bearer " + process.env.E2E_TOKEN, "if-match": "\"sha256-" + "0".repeat(64) + "\"", "content-type": "application/json" }, body: "{}" }); console.log(r.status);'
