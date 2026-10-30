@@ -163,7 +163,7 @@ Optional. Set `PULSE_API_ADMIN_TOKENS_FILE` to enable `POST`, `DELETE` on `/manu
 | `name`   | Non-empty string; only for your own bookkeeping.                                                            |
 | `token`  | The same rules as a probe token: 16 or more characters, no whitespace, not a placeholder or public example. |
 
-An admin token must differ from every probe token, and tokens must not repeat. Either error stops the start with `pulse-api: <message> (PULSE_API_ADMIN_TOKENS_FILE=<path>)` and exit code 2. Messages never print token values and the start log only counts tokens. Without the setting the write routes answer `404`, while `GET /manual-incidents` and `GET /manual-incidents/<id>` still serve what the database holds (`200`, an empty list when it holds none). The tokens are compared in constant time.
+An admin token must differ from every probe token, and tokens must not repeat. Either error stops the start with `pulse-api: <message> (PULSE_API_ADMIN_TOKENS_FILE=<path>)` and exit code 2. Messages never print token values and the start log only counts tokens. Without the setting the manual incidents feature is off: the write routes answer `404`, `GET /manual-incidents` answers `200` with an empty list and `GET /manual-incidents/<id>` answers `404`, even when the database holds incidents. The stored incidents come back when the setting is set again. The tokens are compared in constant time.
 
 ## Compose variables
 

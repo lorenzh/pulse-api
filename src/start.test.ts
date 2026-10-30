@@ -445,22 +445,39 @@ test("admin token startup errors name the setting and never print a token", asyn
   assert.match(await startupMessage({ PULSE_API_ADMIN_TOKENS_FILE: example }), /placeholder/);
 });
 
-test("without the admin tokens setting the reads still list the stored incidents", async () => {
+/** Start the API on a database that holds one manual incident; read the list and the item. */
+async function readStoredManualIncident(
+  env: Record<string, string>,
+): Promise<{ list: { id: number }[]; item: number; id: number }> {
   const db = openDb(":memory:");
   const store = createManualIncidentStore(db, { now: () => NOW, componentIds: new Set() });
   const stored = store.create({ title: "t", impact: "none", componentIds: [], message: "m" });
-  const { base } = deps({}, { openDb: () => db });
+  assert.equal(store.list("all").length, 1);
+  const { base } = deps(env, { openDb: () => db });
   const api = await startApi(base);
   try {
     const r = await fetch(`http://127.0.0.1:${api.port}/manual-incidents`);
     assert.equal(r.status, 200);
-    const body: unknown = await r.json();
-    assert.ok(Array.isArray(body));
-    assert.deepEqual(
-      body.map((i: { id: number }) => i.id),
-      [stored.id],
-    );
+    const item = await fetch(`http://127.0.0.1:${api.port}/manual-incidents/${stored.id}`);
+    return { list: (await r.json()) as { id: number }[], item: item.status, id: stored.id };
   } finally {
     await api.close();
   }
+}
+
+test("without the admin tokens setting the reads are empty although the database holds incidents", async () => {
+  const result = await readStoredManualIncident({});
+  assert.deepEqual(result.list, []);
+  assert.equal(result.item, 404);
+});
+
+test("with the admin tokens setting the reads list the stored incidents", async () => {
+  const adminFile = join(dir, "admin-read.json");
+  writeFileSync(adminFile, JSON.stringify({ tokens: [{ name: "ops", token: ADMIN_TOKEN }] }));
+  const result = await readStoredManualIncident({ PULSE_API_ADMIN_TOKENS_FILE: adminFile });
+  assert.deepEqual(
+    result.list.map((i) => i.id),
+    [result.id],
+  );
+  assert.equal(result.item, 200);
 });

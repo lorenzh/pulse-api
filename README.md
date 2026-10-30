@@ -46,7 +46,7 @@ A check of type `heartbeat` is for cron jobs and workers. The job calls `POST|GE
 
 ## Manual incidents
 
-Operators post incidents with timed updates through `POST /manual-incidents`, `/manual-incidents/:id/updates` and `/manual-incidents/:id/resolve`, and read them from `GET /manual-incidents`. Writes need an admin token from `PULSE_API_ADMIN_TOKENS_FILE` (copy `admin-tokens.example.json`); without it they answer `404`. See [REST API](docs/rest-api.md#manual-incidents) for the shapes, limits and `curl` examples.
+Operators post incidents with timed updates through `POST /manual-incidents`, `/manual-incidents/:id/updates` and `/manual-incidents/:id/resolve`, and read them from `GET /manual-incidents`. Writes need an admin token from `PULSE_API_ADMIN_TOKENS_FILE` (copy `admin-tokens.example.json`). Without the setting the feature is off: writes answer `404` and the reads are empty. See [REST API](docs/rest-api.md#manual-incidents) for the shapes, limits and `curl` examples.
 
 ## Health and metrics
 
