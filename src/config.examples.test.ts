@@ -9,10 +9,10 @@ test("checks.example.json loads through the config parser", () => {
   const config = loadConfig(CHECKS_EXAMPLE);
   assert.deepEqual(
     config.checks.map((c) => c.id),
-    ["example", "example-cert", "nightly-backup"],
+    ["example", "example-api", "example-cert", "nightly-backup"],
   );
   assert.equal(config.maintenance.length, 1);
-  assert.equal(loadChecks(CHECKS_EXAMPLE).length, 3);
+  assert.equal(loadChecks(CHECKS_EXAMPLE).length, 4);
 });
 
 test("tokens.example.json is well formed and its placeholder token is rejected", () => {

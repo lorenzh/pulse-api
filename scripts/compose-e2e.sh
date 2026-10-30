@@ -260,6 +260,50 @@ wait_for "$T_FIRST_RESULT" "status-page has a state other than unknown" check_st
 step "Status page"
 wait_for "$T_PAGE" "GET / on port ${status_port} returns the page and /api/checks lists 'Status page'" page_has_title
 
+e2e_token="${E2E_SVC_TOKEN:-e2e-svc-token-sentinel}"
+e2e_body_sentinel="e2e-body-sentinel"
+
+post_check_reason_is() { # post_check_reason_is <text>: the lastReason of the e2e-post check
+  [[ "$(api /checks | jq -r '.[] | select(.id == "e2e-post") | .lastReason // ""')" == "$1" ]]
+}
+
+post_check_is() { # post_check_is <state>
+  [[ "$(api /checks | jq -r '.[] | select(.id == "e2e-post") | .state')" == "$1" ]]
+}
+
+set_target_mode() { # set_target_mode <mode>
+  docker compose exec -T e2e-target node -e \
+    "fetch('http://127.0.0.1:8000/mode/$1', { method: 'POST' }).then((r) => process.exit(r.status === 204 ? 0 : 1))"
+}
+
+# None of the strings may appear in the text of a response or a log.
+assert_absent() { # assert_absent <description> <text>
+  local needle
+  for needle in "$e2e_token" "$e2e_body_sentinel" SVC_TOKEN; do
+    if grep -qF -- "$needle" <<<"$2"; then fail "$1 shows ${needle}"; fi
+  done
+  echo "ok: $1 shows no secret"
+}
+
+step "HTTP check with method, headers, body and JSON assertions"
+wait_for "$T_FIRST_RESULT" "e2e-post is up" post_check_is up
+[[ "$(hb_status "http://127.0.0.1:${api_port}/probe/checks")" == "401" ]] ||
+  fail "GET /probe/checks without a token did not answer 401"
+echo "ok: GET /probe/checks needs a token"
+set_target_mode degraded
+wait_for "$T_INCIDENT_OPEN" "e2e-post is down for a changed JSON value" \
+  post_check_reason_is 'json /status: expected "ok", got "degraded"'
+set_target_mode 503
+wait_for "$T_INCIDENT_OPEN" "e2e-post is down for status 503" post_check_reason_is "HTTP 503 not in 200"
+set_target_mode text
+wait_for "$T_INCIDENT_OPEN" "e2e-post is down for a body that is not JSON" post_check_reason_is "json: invalid body"
+set_target_mode ok
+wait_for "$T_INCIDENT_RESOLVE" "e2e-post is up again" post_check_is up
+assert_absent "GET /checks" "$(api /checks)"
+assert_absent "GET /metrics" "$(api /metrics)"
+assert_absent "the status page proxy" "$(curl -fsS --max-time 5 "http://127.0.0.1:${status_port}/api/checks")"
+assert_absent "the container logs" "$(docker compose logs --no-color)"
+
 step "Heartbeat check"
 wait_for "$T_INCIDENT_OPEN" "heartbeat-e2e is down without a ping" hb_state_is down
 wait_for "$T_INCIDENT_OPEN" "heartbeat-e2e has one open incident" hb_has_open_incident

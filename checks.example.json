@@ -12,6 +12,28 @@
       "retryDelayMs": 500
     },
     {
+      "id": "example-api",
+      "name": "Example JSON api",
+      "url": "https://api.example.com/health",
+      "intervalMs": 30000,
+      "timeoutMs": 2000,
+      "method": "POST",
+      "headers": {
+        "Authorization": {
+          "env": "EXAMPLE_API_TOKEN"
+        },
+        "Content-Type": "application/json"
+      },
+      "body": "{\"ping\":true}",
+      "expectedStatus": [200, "300-399"],
+      "jsonAssert": [
+        {
+          "pointer": "/status",
+          "equals": "ok"
+        }
+      ]
+    },
+    {
       "id": "example-cert",
       "name": "Example certificate",
       "type": "tls",

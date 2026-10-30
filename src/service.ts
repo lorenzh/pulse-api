@@ -5,18 +5,77 @@ import type {
   CheckStatus,
   CheckUptime,
   CheckWithState,
+  HttpCheck,
   Incident,
   LocationResult,
   MaintenanceWindow,
   Result,
   UptimeDay,
 } from "@lorenzh/pulse-contract";
+import {
+  expectedStatusSchema,
+  headerValueSchema,
+  httpMethodSchema,
+  jsonAssertSchema,
+} from "@lorenzh/pulse-contract";
+import { z } from "zod";
 import { applyResult, DOWNS_TO_OPEN, quorumStatus } from "./state.ts";
 
 export const DEFAULT_LOCATION = "default";
 export const MAX_LOCATION_LENGTH = 64;
 /** The quorum window spans this many check intervals before a result. */
 const WINDOW_INTERVALS = 2;
+
+const HEADERS_COLUMN = z.record(z.string(), headerValueSchema);
+const JSON_ASSERT_COLUMN = z.array(jsonAssertSchema);
+const STATE_KEYS = [
+  "state",
+  "consecutiveDown",
+  "lastResultAt",
+  "lastReason",
+  "locations",
+  "maintenance",
+  "certDaysLeft",
+] as const;
+/** The status list that means "any 2xx": the public list leaves it out. */
+const DEFAULT_EXPECTED_STATUS = '["200-299"]';
+
+/** JSON text for a column, or null when the option is not set. */
+function jsonOrNull(value: unknown): string | null {
+  return value === undefined ? null : JSON.stringify(value);
+}
+
+/** A JSON column that the api wrote itself; undefined when it is empty or no longer valid. */
+function readColumn<T>(schema: z.ZodType<T>, text: string | null): T | undefined {
+  if (text === null) return undefined;
+  try {
+    const parsed = schema.safeParse(JSON.parse(text));
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    // Unreadable text is treated as not set.
+    return undefined;
+  }
+}
+
+/**
+ * Add the request options of a row. The public listing carries a non-default `method` and
+ * `expectedStatus` only; the probe listing (`isFull`) carries everything as written.
+ */
+function addRequestOptions(c: HttpCheck, r: CheckRow, isFull: boolean): void {
+  const method = httpMethodSchema.safeParse(r.method);
+  if (method.success && (isFull || method.data !== "GET")) c.method = method.data;
+  const isDefaultStatus = r.expected_status_json === DEFAULT_EXPECTED_STATUS;
+  const expectedStatus = readColumn(expectedStatusSchema, r.expected_status_json);
+  if (expectedStatus !== undefined && (isFull || !isDefaultStatus)) {
+    c.expectedStatus = expectedStatus;
+  }
+  if (!isFull) return;
+  const headers = readColumn(HEADERS_COLUMN, r.headers_json);
+  if (headers !== undefined) c.headers = headers;
+  if (r.body !== null) c.body = r.body;
+  const jsonAssert = readColumn(JSON_ASSERT_COLUMN, r.json_assert_json);
+  if (jsonAssert !== undefined) c.jsonAssert = jsonAssert;
+}
 
 export const DAY_MS = 86_400_000;
 export const UPTIME_DAYS = 90;
@@ -44,6 +103,8 @@ export interface Service {
   upsertChecks(checks: Check[]): void;
   ingest(result: Result): void;
   listChecks(): CheckWithState[];
+  /** Every active check as written in the checks file, for an authenticated probe. No state. */
+  listProbeChecks(): Check[];
   /** The id and displayed state of every active check, without results. */
   listCheckStates(): { id: string; state: CheckState }[];
   /** Every active heartbeat check, for the evaluator. */
@@ -84,6 +145,11 @@ interface CheckRow {
   retries: number | null;
   retry_delay_ms: number | null;
   keyword: string | null;
+  method: string | null;
+  headers_json: string | null;
+  body: string | null;
+  expected_status_json: string | null;
+  json_assert_json: string | null;
   period_ms: number | null;
   grace_ms: number | null;
   state: CheckState;
@@ -171,16 +237,23 @@ export function createService(
     "UPDATE checks SET last_result_at = ?, last_reason = ? WHERE id = ?",
   );
   const upsert = db.prepare(`
-    INSERT INTO checks (id, name, url, type, host, port, warn_days, interval_ms, timeout_ms, latency_objective_ms, retries, retry_delay_ms, keyword, period_ms, grace_ms)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO checks (id, name, url, type, host, port, warn_days, interval_ms, timeout_ms, latency_objective_ms, retries, retry_delay_ms, keyword, period_ms, grace_ms, method, headers_json, body, expected_status_json, json_assert_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET name = excluded.name, url = excluded.url, type = excluded.type,
       host = excluded.host, port = excluded.port, warn_days = excluded.warn_days,
       interval_ms = excluded.interval_ms, timeout_ms = excluded.timeout_ms,
       latency_objective_ms = excluded.latency_objective_ms,
       retries = excluded.retries, retry_delay_ms = excluded.retry_delay_ms,
       keyword = excluded.keyword, period_ms = excluded.period_ms, grace_ms = excluded.grace_ms,
+      method = excluded.method, headers_json = excluded.headers_json, body = excluded.body,
+      expected_status_json = excluded.expected_status_json, json_assert_json = excluded.json_assert_json,
       active = 1`);
-  const clearKeywords = db.prepare("UPDATE checks SET keyword = NULL WHERE keyword IS NOT NULL");
+  const clearOptions = db.prepare(
+    `UPDATE checks SET keyword = NULL, method = NULL, headers_json = NULL, body = NULL,
+       expected_status_json = NULL, json_assert_json = NULL
+     WHERE keyword IS NOT NULL OR method IS NOT NULL OR headers_json IS NOT NULL OR body IS NOT NULL
+       OR expected_status_json IS NOT NULL OR json_assert_json IS NOT NULL`,
+  );
   const getCheck = db.prepare("SELECT * FROM checks WHERE id = ?");
   const getActiveCheck = db.prepare("SELECT * FROM checks WHERE id = ? AND active = 1");
   const deactivateAll = db.prepare("UPDATE checks SET active = 0");
@@ -279,7 +352,7 @@ export function createService(
     return result;
   }
 
-  function toCheck(r: CheckRow): CheckWithState {
+  function toCheck(r: CheckRow, isFull = false): CheckWithState {
     const state = {
       state: r.state as CheckState,
       consecutiveDown: r.consecutive_down,
@@ -323,6 +396,7 @@ export function createService(
       c.latencyObjectiveMs = r.latency_objective_ms;
     }
     if (r.keyword !== null && c.type !== "tls") c.keyword = r.keyword;
+    if (c.type !== "tls") addRequestOptions(c, r, isFull);
     return c;
   }
 
@@ -424,8 +498,8 @@ export function createService(
       let resolved = 0;
       invalidate();
       transaction(() => {
-        // Clear first, then upsert: checks removed from the file lose their keyword without a long NOT IN list.
-        clearKeywords.run();
+        // Clear first, then upsert: checks removed from the file lose their keyword and request options without a long NOT IN list.
+        clearOptions.run();
         deactivateAll.run();
         for (const c of checks) {
           if (c.type === "heartbeat") {
@@ -446,6 +520,11 @@ export function createService(
               null,
               c.period,
               c.grace,
+              null,
+              null,
+              null,
+              null,
+              null,
             );
             continue;
           }
@@ -461,6 +540,11 @@ export function createService(
               c.warnDays,
               c.intervalMs,
               timeout,
+              null,
+              null,
+              null,
+              null,
+              null,
               null,
               null,
               null,
@@ -485,6 +569,11 @@ export function createService(
               c.keyword ?? null,
               null,
               null,
+              c.method ?? null,
+              jsonOrNull(c.headers),
+              c.body ?? null,
+              jsonOrNull(c.expectedStatus),
+              jsonOrNull(c.jsonAssert),
             );
           }
         }
@@ -601,6 +690,18 @@ export function createService(
 
     listChecks() {
       return cached("checks", () => computeChecks());
+    },
+
+    listProbeChecks() {
+      return (
+        db
+          .prepare("SELECT * FROM checks WHERE active = 1 ORDER BY rowid")
+          .all() as unknown as CheckRow[]
+      ).map((r) => {
+        const check: Check = toCheck(r, true);
+        for (const key of STATE_KEYS) Reflect.deleteProperty(check, key);
+        return check;
+      });
     },
 
     listHeartbeats() {
