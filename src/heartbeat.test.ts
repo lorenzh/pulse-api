@@ -192,3 +192,10 @@ test("timer: ticks every second, logs a failing tick, stops", () => {
   pending.shift()?.();
   assert.equal(pending.length, 0);
 });
+
+test("the deadline starts when the evaluator starts, not at its first tick", () => {
+  const s = setup();
+  s.advance(PERIOD + GRACE + 1);
+  s.evaluator.tick();
+  assert.equal(state(s)?.state, "down");
+});

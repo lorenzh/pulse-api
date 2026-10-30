@@ -125,7 +125,7 @@ Returns the results of one check, newest first (`Result[]`).
 | `limit`  | Positive integer. Default 100, capped at 1000.  |
 | `before` | Epoch ms, exclusive cursor: only older results. |
 
-To page, request the next page with `before` set to the `timestamp` of the last item. A page that ends inside a group of results with the same timestamp (one per location) returns the whole group, so it can exceed `limit` by at most the number of locations; nothing is skipped or repeated.
+To page, request the next page with `before` set to the `timestamp` of the last item. A page that ends inside a group of results with the same timestamp (one per location) returns the whole group, so it can exceed `limit`. A retried submission can store several rows for one location and timestamp, so a page can hold more rows than the number of locations (5 rows for `limit=1`). Nothing is skipped or repeated.
 
 Errors: `400` `limit must be a positive integer`, `400` `before must be a non-negative integer`, `400` `bad check id` (malformed percent escape), `404` `unknown check "<id>"`.
 

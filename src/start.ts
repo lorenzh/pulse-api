@@ -75,7 +75,13 @@ async function run(deps: StartDeps, onDb: (db: DatabaseSync) => void): Promise<R
   const tokensFile = readString(env, "PULSE_TOKENS_FILE") ?? "./tokens.json";
   const retentionDays = readRetentionDays(env);
   const { checks, secrets, maintenance } = loadConfig(checksFile);
-  const tokens = loadTokens(tokensFile);
+  let tokens: ReturnType<typeof loadTokens>;
+  try {
+    tokens = loadTokens(tokensFile);
+  } catch (err) {
+    if (!(err instanceof TokensError)) throw err;
+    throw new TokensError(`${err.message} (PULSE_TOKENS_FILE=${tokensFile})`, { cause: err });
+  }
 
   let db: DatabaseSync;
   try {

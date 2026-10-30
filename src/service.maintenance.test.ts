@@ -153,8 +153,8 @@ test("maintenance quorum: a late-arriving down inside a past window stays exclud
   const { s, clock } = setup();
   clock.t = 500; // the window is over when the results arrive
   s.ingest(at(150, "a", "up"));
-  s.ingest(at(190, "a", "down"));
-  s.ingest(at(195, "b", "down"));
+  s.ingest(at(199, "a", "down")); // inside the window, so it never counts
+  for (const t of [200, 201, 202]) s.ingest(at(t, "b", "down")); // a is still up for the quorum
   assert.equal(s.listChecks()[0]!.state, "up");
   assert.deepEqual(s.listIncidents(), []);
 });
