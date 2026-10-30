@@ -1,0 +1,85 @@
+# Bench stack: one run is one project of this file. The harness sets the BENCH_* variables
+# (see bench/run.ts); the defaults only let `docker compose config --quiet` pass in CI.
+# Keep the environment names in step with compose.yaml. Healthchecks are disabled so they
+# cannot add CPU; the harness polls /readyz itself.
+name: ${BENCH_PROJECT:-pulse-bench}
+
+x-bun-image: &bun-image oven/bun:1.4.0-alpine@sha256:07235578f79ef8c6f97d94aee7938e76f5cdba5f21ae5dbfdd3d3d38058437eb
+
+services:
+  api:
+    build:
+      context: ${BENCH_API_DIR:-..}
+    image: pulse-bench-${BENCH_SIDE:-a}-api
+    container_name: ${BENCH_PROJECT:-pulse-bench}-api
+    healthcheck:
+      disable: true
+    environment:
+      PULSE_CHECKS_FILE: /config/checks.json
+      PULSE_TOKENS_FILE: /config/tokens.json
+    volumes:
+      - ${BENCH_RUN_DIR:-.}/config/checks.json:/config/checks.json:ro
+      - ${BENCH_RUN_DIR:-.}/config/tokens.json:/config/tokens.json:ro
+      - ${BENCH_RUN_DIR:-.}/api-data:/data
+    ports:
+      - "127.0.0.1::3000"
+
+  probe:
+    build:
+      context: ${BENCH_PROBE_DIR:-../../pulse-probe}
+    image: pulse-bench-${BENCH_SIDE:-a}-probe
+    container_name: ${BENCH_PROJECT:-pulse-bench}-probe
+    healthcheck:
+      disable: true
+    environment:
+      PULSE_API_URL: http://api:3000
+      PULSE_LOCATION: real
+      PULSE_PROBE_TOKEN: bench-token-real-0123456789abcdef0123456789abcdef
+      PULSE_HEALTH_HOST: 0.0.0.0
+      PULSE_HEALTH_PORT: "9100"
+    ports:
+      - "127.0.0.1::9100"
+    depends_on:
+      - api
+      - bench-target
+
+  status:
+    build:
+      context: ${BENCH_STATUS_DIR:-../../pulse-status}
+    image: pulse-bench-${BENCH_SIDE:-a}-status
+    container_name: ${BENCH_PROJECT:-pulse-bench}-status
+    healthcheck:
+      disable: true
+    environment:
+      PULSE_API_URL: http://api:3000
+    ports:
+      - "127.0.0.1::8080"
+    depends_on:
+      - api
+
+  notify:
+    build:
+      context: ${BENCH_NOTIFY_DIR:-../../pulse-notify}
+    image: pulse-bench-${BENCH_SIDE:-a}-notify
+    container_name: ${BENCH_PROJECT:-pulse-bench}-notify
+    healthcheck:
+      disable: true
+    environment:
+      PULSE_API_URL: http://api:3000
+      PULSE_NOTIFY_CONFIG: /config/notify.json
+      PULSE_HEALTH_HOST: 0.0.0.0
+      PULSE_HEALTH_PORT: "9100"
+    volumes:
+      - ./fixtures/notify.json:/config/notify.json:ro
+      - ${BENCH_RUN_DIR:-.}/notify-data:/data
+    ports:
+      - "127.0.0.1::9100"
+    depends_on:
+      - api
+
+  bench-target:
+    image: *bun-image
+    container_name: ${BENCH_PROJECT:-pulse-bench}-target
+    command: ["bun", "/bench/target.mjs"]
+    volumes:
+      - ./fixtures/target.mjs:/bench/target.mjs:ro
