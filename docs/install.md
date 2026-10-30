@@ -128,12 +128,14 @@ Open http://localhost:8081. The `demo-` services have their own volumes and port
 
 | Check             | Target          | Expected state                                    | Appears                                                               |
 | ----------------- | --------------- | ------------------------------------------------- | --------------------------------------------------------------------- |
-| Always healthy    | `/up`           | up                                                | within 10 s                                                           |
+| Always healthy    | `/up`           | up, objective 200 ms                              | within 10 s                                                           |
 | Slow endpoint     | `/slow`         | degraded (answers in 1.5 s, objective 500 ms)     | within 10 s                                                           |
 | Flaky service     | `/flaky`        | down with an open incident, then up and resolved  | down from about 30 s, incident about 15 s later, resolved after 150 s |
 | Database upgrade  | `/maintenance`  | maintenance (current window, target always fails) | within 10 s                                                           |
 | Scheduled upgrade | `/up`           | up, upcoming maintenance window in 30 to 90 min   | within 10 s                                                           |
 | TLS certificate   | `demo-tls:8443` | up, certificate valid for 5 days, `warnDays` 3    | within 10 s                                                           |
+
+`demo-status` sets `PULSE_STATUS_SHOW_CHECKS` to `true`, so the checks list shows the latency chart (p50, p95 and the dotted objective line) for the two HTTP checks with an objective. The API computes the current day from the results at each read, so the chart has data after the first results. On a fresh demo it shows a single day. Earlier days are filled by the hourly rollup once a day has closed.
 
 Times count from the start of `demo-targets`. `demo-init` computes the maintenance windows when it runs, and the API reads them at start only. The windows go stale after 15 minutes. To refresh them, remove the demo containers and volumes as described under cleanup below and start again.
 

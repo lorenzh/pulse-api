@@ -18,7 +18,7 @@ const http = (id, name, path, extra = {}) => ({
 
 const config = {
   checks: [
-    http("always-healthy", "Always healthy", "/up"),
+    http("always-healthy", "Always healthy", "/up", { latencyObjectiveMs: 200 }),
     http("slow-endpoint", "Slow endpoint", "/slow", { latencyObjectiveMs: 500 }),
     http("flaky-service", "Flaky service", "/flaky"),
     http("database-upgrade", "Database upgrade", "/maintenance"),

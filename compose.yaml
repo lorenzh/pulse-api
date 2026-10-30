@@ -146,6 +146,8 @@ services:
     image: pulse-status:local
     environment:
       PULSE_API_URL: http://demo-api:3000
+      # Shows the checks list, which carries the latency chart (status reads /latency only then).
+      PULSE_STATUS_SHOW_CHECKS: "true"
     ports:
       - "${PULSE_DEMO_STATUS_PORT:-8081}:8080"
     healthcheck:
