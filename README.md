@@ -25,7 +25,7 @@ cp tokens.example.json tokens.json   # replace the placeholder tokens
 bun start
 ```
 
-The database is created with the current schema. There is no upgrade path from database files of older versions: delete the old file and start again.
+The database is created with the current schema. A file from an older version is upgraded in place at start; see [Operation](docs/operation.md#schema). A file from a newer version is refused.
 
 ### Docker Compose
 

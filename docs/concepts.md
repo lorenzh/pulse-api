@@ -4,15 +4,17 @@
 
 A check is in one state. The state comes from the results that probes send.
 
-| State         | Meaning                                                                                                  |
-| ------------- | -------------------------------------------------------------------------------------------------------- |
-| `unknown`     | The check has no results yet (a heartbeat check: no ping yet and `period + grace` has not passed).       |
-| `up`          | The check answers and is fast enough.                                                                    |
-| `degraded`    | The check answers (2xx), but slower than its `latencyObjectiveMs`.                                       |
-| `down`        | The check fails, a 2xx body lacks the `keyword`, or a TLS certificate has `warnDays` days or fewer left. |
-| `maintenance` | `now` is inside a [maintenance window](#maintenance-windows). Never stored.                              |
+| State         | Meaning                                                                                                                                                                                           |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `unknown`     | The check has no results yet (a heartbeat check: no ping yet and `period + grace` has not passed).                                                                                                |
+| `up`          | The check answers and is fast enough.                                                                                                                                                             |
+| `degraded`    | The check answers (2xx), but slower than its `latencyObjectiveMs`, or a domain registration has `warnDays` days or fewer left.                                                                    |
+| `down`        | The check fails, a 2xx body lacks the `keyword`, a TLS certificate has `warnDays` days or fewer left, a TCP port refuses, a DNS answer is missing or wrong, or a domain registration has expired. |
+| `maintenance` | `now` is inside a [maintenance window](#maintenance-windows). Never stored.                                                                                                                       |
 
 A probe reports each result as `up`, `degraded` or `down`. The API computes the other states.
+
+The `tcp` check is up when a connection opens (nothing is sent). The `dns` check is up when the record resolves to the expected values. The `domain` check reads the registration expiry (RDAP): `up` above `warnDays` days left, `degraded` from `warnDays` days down to 0, `down` when expired or when no expiry date can be read. This differs from a TLS check, which is `down` within `warnDays`. The API never judges expiry itself; the probe sets the status. TLS and domain results carry `certDaysLeft`.
 
 ## Heartbeat checks
 

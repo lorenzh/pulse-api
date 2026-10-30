@@ -1,5 +1,7 @@
 import { Database } from "bun:sqlite";
+import { MIGRATIONS } from "./migrations.ts";
 
+/** The schema at `user_version` 0, as the first release created it. Later changes are migrations. */
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS checks (
   id TEXT PRIMARY KEY,
@@ -71,13 +73,57 @@ CREATE TABLE IF NOT EXISTS manual_incident_updates (
 );
 `;
 
+export class SchemaVersionError extends Error {
+  override name = "SchemaVersionError";
+}
+
+function readVersion(db: Database): number {
+  const row = db.query("PRAGMA user_version").get() as { user_version: number } | null;
+  return row?.user_version ?? 0;
+}
+
+function migrate(db: Database, steps: readonly string[]): void {
+  const current = readVersion(db);
+  if (current > steps.length) {
+    throw new SchemaVersionError(
+      `database schema version ${current} is newer than this program supports (${steps.length}); downgrades are not supported`,
+    );
+  }
+  // PRAGMA foreign_keys is a no-op inside a transaction, so it is switched around it.
+  db.run("PRAGMA foreign_keys = OFF");
+  try {
+    db.run("BEGIN IMMEDIATE");
+    try {
+      db.run(SCHEMA);
+      for (let n = current + 1; n <= steps.length; n++) {
+        db.run(steps[n - 1] ?? "");
+        db.run(`PRAGMA user_version = ${n}`);
+      }
+      const broken = db.query("PRAGMA foreign_key_check").all();
+      if (broken.length > 0) {
+        throw new SchemaVersionError("schema migration left rows that break a foreign key");
+      }
+      db.run("COMMIT");
+    } catch (err) {
+      db.run("ROLLBACK");
+      throw err;
+    }
+  } finally {
+    db.run("PRAGMA foreign_keys = ON");
+  }
+}
+
 /**
- * Open (or create) the database at `path` (":memory:" in tests) and create the current schema.
- * There is no upgrade path: a database file from an older version is not migrated.
+ * Open (or create) the database at `path` (":memory:" in tests) and bring it to the current
+ * schema in one transaction. A file from a newer program is refused with a SchemaVersionError.
  */
-export function openDb(path: string): Database {
+export function openDb(path: string, steps: readonly string[] = MIGRATIONS): Database {
   const db = new Database(path);
-  db.run("PRAGMA foreign_keys = ON");
-  db.run(SCHEMA);
+  try {
+    migrate(db, steps);
+  } catch (err) {
+    db.close();
+    throw err;
+  }
   return db;
 }

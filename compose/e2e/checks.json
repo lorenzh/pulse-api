@@ -36,6 +36,33 @@
       "period": 2000,
       "grace": 1000,
       "secret": "e2e-throwaway-heartbeat-secret"
+    },
+    {
+      "id": "e2e-tcp",
+      "name": "E2E TCP",
+      "type": "tcp",
+      "host": "status",
+      "port": 8080,
+      "intervalMs": 10000,
+      "timeoutMs": 2000
+    },
+    {
+      "id": "e2e-dns",
+      "name": "E2E DNS",
+      "type": "dns",
+      "dnsName": "api",
+      "recordType": "A",
+      "intervalMs": 10000,
+      "timeoutMs": 2000
+    },
+    {
+      "id": "e2e-tcp-closed",
+      "name": "E2E TCP closed port",
+      "type": "tcp",
+      "host": "e2e-target",
+      "port": 1,
+      "intervalMs": 4000,
+      "timeoutMs": 2000
     }
   ],
   "components": [

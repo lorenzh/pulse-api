@@ -348,6 +348,19 @@ assert_absent() { # assert_absent <description> <text>
   echo "ok: $1 shows no secret"
 }
 
+check_state_is() { # check_state_is <id> <state>
+  [[ "$(api /checks | jq -r --arg id "$1" '.[] | select(.id == $id) | .state')" == "$2" ]]
+}
+
+closed_port_reason_names_refusal() {
+  api /checks | jq -e '.[] | select(.id == "e2e-tcp-closed" and .state == "down" and ((.lastReason // "") | test("refused|ECONNREFUSED")))' >/dev/null
+}
+
+step "TCP and DNS checks"
+wait_for "$T_FIRST_RESULT" "e2e-tcp is up" check_state_is e2e-tcp up
+wait_for "$T_FIRST_RESULT" "e2e-dns is up" check_state_is e2e-dns up
+wait_for "$T_FIRST_RESULT" "e2e-tcp-closed is down and the reason names the refusal" closed_port_reason_names_refusal
+
 step "HTTP check with method, headers, body and JSON assertions"
 wait_for "$T_FIRST_RESULT" "e2e-post is up" post_check_is up
 [[ "$(hb_status "http://127.0.0.1:${api_port}/probe/checks")" == "401" ]] ||

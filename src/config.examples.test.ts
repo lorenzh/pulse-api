@@ -9,14 +9,22 @@ test("checks.example.json loads through the config parser", () => {
   const config = loadConfig(CHECKS_EXAMPLE);
   assert.deepEqual(
     config.checks.map((c) => c.id),
-    ["example", "example-api", "example-cert", "nightly-backup"],
+    [
+      "example",
+      "example-api",
+      "example-cert",
+      "example-tcp",
+      "example-dns",
+      "example-domain",
+      "nightly-backup",
+    ],
   );
   assert.equal(config.maintenance.length, 1);
   assert.deepEqual(
     config.components.map((c) => c.id),
     ["example", "backend"],
   );
-  assert.equal(loadChecks(CHECKS_EXAMPLE).length, 4);
+  assert.equal(loadChecks(CHECKS_EXAMPLE).length, 7);
 });
 
 test("tokens.example.json is well formed and its placeholder token is rejected", () => {
