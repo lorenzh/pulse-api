@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { MIGRATIONS } from "./migrations.ts";
+import { DEDUPLICATE_STEP, MIGRATIONS } from "./migrations.ts";
 
 /** The schema at `user_version` 0, as the first release created it. Later changes are migrations. */
 const SCHEMA = `
@@ -82,7 +82,18 @@ function readVersion(db: Database): number {
   return row?.user_version ?? 0;
 }
 
-function migrate(db: Database, steps: readonly string[]): void {
+/** Rows the deduplicating step will delete: all rows minus one per (check, location, timestamp). */
+function countDuplicates(db: Database): number {
+  const row = db
+    .query(
+      `SELECT (SELECT COUNT(*) FROM results)
+            - (SELECT COUNT(*) FROM (SELECT 1 FROM results GROUP BY check_id, location, timestamp)) AS n`,
+    )
+    .get() as { n: number } | null;
+  return row?.n ?? 0;
+}
+
+function migrate(db: Database, steps: readonly string[], log: (line: string) => void): void {
   const current = readVersion(db);
   if (current > steps.length) {
     throw new SchemaVersionError(
@@ -94,10 +105,15 @@ function migrate(db: Database, steps: readonly string[]): void {
   const checkForeignKeys = !fresh && current < steps.length;
   // PRAGMA foreign_keys is a no-op inside a transaction, so it is switched around it.
   db.run("PRAGMA foreign_keys = OFF");
+  let removed = 0;
   try {
     db.run("BEGIN IMMEDIATE");
     try {
       db.run(SCHEMA);
+      removed =
+        !fresh && current < DEDUPLICATE_STEP && steps.length >= DEDUPLICATE_STEP
+          ? countDuplicates(db)
+          : 0;
       for (let n = current + 1; n <= steps.length; n++) {
         db.run(steps[n - 1] ?? "");
         db.run(`PRAGMA user_version = ${n}`);
@@ -107,6 +123,11 @@ function migrate(db: Database, steps: readonly string[]): void {
         throw new SchemaVersionError("schema migration left rows that break a foreign key");
       }
       db.run("COMMIT");
+      if (removed > 0) {
+        log(
+          `migration ${DEDUPLICATE_STEP}: removed ${removed} duplicate results, kept the first of each`,
+        );
+      }
     } catch (err) {
       db.run("ROLLBACK");
       throw err;
@@ -119,11 +140,16 @@ function migrate(db: Database, steps: readonly string[]): void {
 /**
  * Open (or create) the database at `path` (":memory:" in tests) and bring it to the current
  * schema in one transaction. A file from a newer program is refused with a SchemaVersionError.
+ * `log` receives one line when a migration deleted duplicate rows.
  */
-export function openDb(path: string, steps: readonly string[] = MIGRATIONS): Database {
+export function openDb(
+  path: string,
+  steps: readonly string[] = MIGRATIONS,
+  log: (line: string) => void = () => undefined,
+): Database {
   const db = new Database(path);
   try {
-    migrate(db, steps);
+    migrate(db, steps, log);
   } catch (err) {
     db.close();
     throw err;

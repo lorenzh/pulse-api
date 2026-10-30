@@ -21,6 +21,9 @@ T_INCIDENT_RESOLVE="${E2E_TIMEOUT_INCIDENT_RESOLVE:-120}"
 T_NOTIFY="${E2E_TIMEOUT_NOTIFY:-60}"
 T_RELOAD="${E2E_TIMEOUT_RELOAD:-60}"
 T_DEMO="${E2E_TIMEOUT_DEMO:-300}"
+T_REPLAY="${E2E_TIMEOUT_REPLAY:-120}"
+# The api stays stopped longer than two intervals of the 10 s check (status-page).
+OUTAGE_SECONDS="${E2E_OUTAGE_SECONDS:-35}"
 STABLE_WINDOW="${E2E_STABLE_WINDOW:-12}"
 POLL_INTERVAL="${E2E_POLL_INTERVAL:-2}"
 
@@ -503,6 +506,28 @@ echo "ok: delete removes the incident from reads"
 assert_absent "GET /metrics" "$(api /metrics)"
 if grep -qF -- "$e2e_admin_token" <<<"$(docker compose logs --no-color)"; then fail "the logs show the admin token"; fi
 echo "ok: the container logs show no admin token"
+
+# results_have_no_gap <since-ms> <interval-ms>: the results of status-page from <since-ms> on are
+# ascending, no further apart than 1.5 x the interval, and one is newer than the outage.
+results_have_no_gap() {
+  api "/checks/status-page/results?limit=200" | jq -e --argjson since "$1" --argjson interval "$2" '
+    [.[].timestamp | select(. >= $since)] | sort as $t
+    | ($t | length) > 2
+    and ([range(1; $t | length) | $t[.] - $t[. - 1]] | all(. <= $interval * 1.5))' >/dev/null
+}
+
+locations_report() {
+  api /locations | jq -e 'length > 0 and all(.[]; .state == "reporting")'
+}
+
+step "Probe outage: buffered results are replayed"
+outage_since=$(($(date +%s) * 1000))
+docker compose stop api
+sleep "$OUTAGE_SECONDS"
+docker compose start api
+wait_for "$T_UP" "api answers after the outage" api /checks
+wait_for "$T_REPLAY" "GET /locations shows the probe location reporting" locations_report
+wait_for "$T_REPLAY" "status-page results cover the outage without a gap" results_have_no_gap "$outage_since" 10000
 
 step "Reload the checks"
 jq '.checks += [{id: "e2e-api", name: "E2E api", url: "http://api:3000/checks", intervalMs: 10000, timeoutMs: 2000}]' \

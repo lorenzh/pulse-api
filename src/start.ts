@@ -11,6 +11,7 @@ import {
 import { assertDistinctFromProbeTokens } from "./admin-tokens.ts";
 import { ConfigError, loadAdminTokens, loadConfig, loadTokens } from "./config.ts";
 import { createHeartbeatEvaluator, startHeartbeatEvaluator } from "./heartbeat.ts";
+import { readLocationSilentMs } from "./location-silence.ts";
 import { createManualIncidentStore } from "./manual-incidents.ts";
 import { createMetrics } from "./metrics.ts";
 import { readRetentionDays, startRetention } from "./retention.ts";
@@ -29,7 +30,8 @@ export interface StartDeps {
   clearTimeout: (handle: unknown) => void;
   /** Receives one JSON log line without the newline. */
   write: (level: LogLevel, line: string) => void;
-  openDb: (path: string) => Database;
+  /** Opens the database; `log` receives migration notes. */
+  openDb: (path: string, log: (line: string) => void) => Database;
   /** Bound for the shutdown; defaults to SHUTDOWN_TIMEOUT_MS. */
   shutdownTimeoutMs?: number;
   /** Time between retention runs; a test hook, the production interval is fixed at one hour. */
@@ -77,6 +79,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
   const tokensFile = readString(env, "PULSE_TOKENS_FILE") ?? "./tokens.json";
   const adminTokensFile = readString(env, "PULSE_API_ADMIN_TOKENS_FILE");
   const retentionDays = readRetentionDays(env);
+  const locationSilentMs = readLocationSilentMs(env);
   const { checks, secrets, maintenance, components } = loadConfig(checksFile);
   let tokens: ReturnType<typeof loadTokens>;
   try {
@@ -100,7 +103,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
 
   let db: Database;
   try {
-    db = deps.openDb(dbPath);
+    db = deps.openDb(dbPath, (line) => logger.info(line));
   } catch (err) {
     throw new StartupError(`cannot open database ${dbPath} (PULSE_DB): ${errorText(err)}`, {
       cause: err,
@@ -108,9 +111,13 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
   }
   onDb(db);
 
-  const metrics = createMetrics({ listStates: () => service.listCheckStates() });
+  const metrics = createMetrics({
+    listStates: () => service.listCheckStates(),
+    listLocations: () => service.listLocations(),
+  });
   const service = createService(db, {
     maintenance,
+    ...(locationSilentMs === undefined ? {} : { locationSilentMs }),
     log: (line) => logger.info(line),
     onIncident: (event) => metrics.recordIncident(event),
   });
@@ -179,6 +186,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     tokensFile,
     manualIncidents: adminTokens === undefined ? "off" : "writable",
     adminTokens: adminTokens?.length ?? 0,
+    locationSilentMs: locationSilentMs ?? "auto",
   });
 
   const timeoutMs = deps.shutdownTimeoutMs ?? SHUTDOWN_TIMEOUT_MS;

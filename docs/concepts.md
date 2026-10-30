@@ -47,10 +47,14 @@ Whether a `down` result lies in a maintenance window is decided by its own times
 
 ### Late results
 
-A result is late when its timestamp is strictly older than the newest stored result of the same check and the same location. A result that is older than the newest result of the same check in any other location is not marked late and still takes part in later quorum windows at its own timestamp, but it never changes the state, `consecutiveDown`, incidents, `lastResultAt` or `lastReason` either. Equal timestamps are not older. A late result is stored (marked `late` in the `results` table, not in the JSON) and appears in the results history. It is excluded from every later window, so it never takes part in the quorum. It does not change the state, `consecutiveDown`, incidents, `lastResultAt` or `lastReason`. Results of other locations keep their role in the quorum. A result with a timestamp equal to the newest one is not late; the higher row id wins the tie. `GET /uptime` is a history statistic and still counts late results.
+A result is late when its timestamp is strictly older than the newest stored result of the same check and the same location. A result that is older than the newest result of the same check in any other location is not marked late and still takes part in later quorum windows at its own timestamp, but it never changes the state, `consecutiveDown`, incidents, `lastResultAt` or `lastReason` either. Equal timestamps are not older. A late result is stored (marked `late` in the `results` table, not in the JSON) and appears in the results history. It is excluded from every later window, so it never takes part in the quorum. It does not change the state, `consecutiveDown`, incidents, `lastResultAt` or `lastReason`. Results of other locations keep their role in the quorum. A second result with the same timestamp in the same location is a repeat and is ignored (see [POST /results](rest-api.md#post-results)). `GET /uptime` is a history statistic and still counts late results.
 - The counter is `consecutiveDown` in `GET /checks`.
 
 Example: a check has `intervalMs` 10000 and one probe. Three `down` results in a row open an incident. The next `up` result resolves it.
+
+## Probe locations
+
+The API remembers, per location, the newest result timestamp (`lastResultAt`) and when it last received an accepted result. `GET /locations` shows `silent` when nothing was received for longer than `PULSE_LOCATION_SILENT_MS` (default `max(180000, 3 × the largest interval of the active non-heartbeat checks)`), else `reporting`. Receive time is used because a probe replays buffered results with old timestamps after an outage. See [GET /locations](rest-api.md#get-locations).
 
 ## Locations and tokens
 

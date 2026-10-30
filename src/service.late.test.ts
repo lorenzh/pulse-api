@@ -55,9 +55,9 @@ test("late result: stored in history, live state and incident unchanged", () => 
 
 test("late result: an equal timestamp is not late", () => {
   const s = downWithIncident();
-  s.ingest(r(400, "b", "up"));
-  assert.equal(s.listChecks()[0]!.locations.find((l) => l.location === "b")?.result.status, "up");
-  assert.notEqual(s.listChecks()[0]!.lastReason, "b@400");
+  s.ingest(r(400, "c", "up"));
+  assert.equal(s.listChecks()[0]!.locations.find((l) => l.location === "c")?.result.status, "up");
+  assert.notEqual(s.listChecks()[0]!.lastReason, "c@400");
 });
 
 test("late result: another location still takes part in quorum", () => {

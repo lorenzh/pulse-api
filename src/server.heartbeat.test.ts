@@ -52,7 +52,12 @@ test("header form: POST and GET answer 204 and record an up result", async () =>
   }
   const results = service.listResults("job", 10);
   assert.equal(results.length, 2);
-  assert.deepEqual(results[0], {
+  // Two pings in the same millisecond: the second is stored one millisecond later.
+  assert.deepEqual(
+    results.map((x) => x.timestamp),
+    [NOW + 1, NOW],
+  );
+  assert.deepEqual(results[1], {
     checkId: "job",
     timestamp: NOW,
     status: "up",

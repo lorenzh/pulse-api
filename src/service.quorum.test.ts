@@ -131,10 +131,10 @@ test("quorum: a late result of a location is history only and the state stays do
   assert.equal(s.listResults("c1", 10).length, 4);
 });
 
-test("quorum: per-location latest uses the highest timestamp, ties by id", () => {
+test("quorum: per-location latest uses the highest timestamp", () => {
   const s = setup();
   s.ingest(r(10, "a", "down"));
-  s.ingest(r(10, "a", "up")); // same timestamp, higher id: a is up
+  s.ingest(r(12, "a", "up")); // a is up at its highest timestamp
   s.ingest(r(11, "b", "down"));
   assert.equal(s.listChecks()[0]!.state, "up");
   assert.equal(s.listChecks()[0]!.locations[0]!.result.status, "up");
