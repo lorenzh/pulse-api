@@ -48,7 +48,7 @@ One table per service, columns Metric, A, B, Change, Budget, Gating/Reported, Ve
 
 Look at `samples.json` in the uploaded artifact for the raw values of every round. When a stack run fails, `failure-round<n>-<side>.log` in the artifact holds `docker compose ps -a` and the logs of every container of that stack.
 
-The load generator keeps pooled keep-alive connections. The api closes an idle one after 5 s (Node's `keepAliveTimeout`); a request sent on it at that moment fails with `ECONNRESET` before any response. A GET is then sent once more; a POST is not, because the api stores a repeated result twice (results have no unique key). Both are counted in the log line `connections closed before a response`. More than 5 in one run fail it. If A and B of the same SHA differ, the metric is noisy: widen its floor.
+The load generator keeps pooled keep-alive connections. The api closes an idle one after 5 s (Node's `keepAliveTimeout`); a request sent on it at that moment fails with `ECONNRESET` before any response. A GET is then sent once more; a POST is not, because the api stores a repeated result twice (results have no unique key). Both are counted in the log line `connections closed before a response`. More than 5 in one run fail it, also when they arrive while the last requests drain. If A and B of the same SHA differ, the metric is noisy: widen its floor.
 
 ## Changing a budget
 

@@ -109,6 +109,19 @@ export async function timed(
   samples?.push(performance.now() - start);
 }
 
+/** Throw when the run has seen more closed-before-response connections than the cap allows. */
+export function checkResets(resets: Resets): void {
+  if (resets.retriedGets + resets.droppedPosts > MAX_CONNECTION_RESETS) {
+    throw new Error(`more than ${MAX_CONNECTION_RESETS} connections closed before a response`);
+  }
+}
+
+/** Wait for the requests still open, then apply the cap: resets can arrive during the drain. */
+export async function drain(pending: Iterable<Promise<void>>, resets: Resets): Promise<void> {
+  await Promise.all(pending);
+  checkResets(resets);
+}
+
 /** Run warm-up and the measured window. Open loop: requests start on a fixed schedule. */
 export async function runLoad(options: LoadOptions): Promise<LoadResult> {
   const { simulated } = benchTokens();
@@ -171,8 +184,10 @@ export async function runLoad(options: LoadOptions): Promise<LoadResult> {
   const total = (WARMUP_S + DURATION_S) * 1000;
   for (;;) {
     const elapsed = performance.now() - start;
-    if (resets.retriedGets + resets.droppedPosts > MAX_CONNECTION_RESETS) {
-      fail(new Error(`more than ${MAX_CONNECTION_RESETS} connections closed before a response`));
+    try {
+      checkResets(resets);
+    } catch (err) {
+      fail(err);
     }
     if (elapsed >= total || failure !== undefined) break;
     if (windowStart === undefined && elapsed >= WARMUP_S * 1000) {
@@ -191,7 +206,7 @@ export async function runLoad(options: LoadOptions): Promise<LoadResult> {
     }
     await sleep(5);
   }
-  await Promise.all(pending);
+  await drain(pending, resets).catch(fail);
   if (failure !== undefined) throw new Error("load failed", { cause: failure });
   if (windowStart === undefined) throw new Error("measured window never started");
   const seconds = (performance.now() - windowStart) / 1000;

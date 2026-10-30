@@ -1,7 +1,13 @@
 // Self-test of the load generator's handling of a connection closed before any response.
 import assert from "node:assert/strict";
 import { createServer, type Socket } from "node:net";
-import { isClosedBeforeResponse, type Resets, timed } from "../load.ts";
+import {
+  drain,
+  isClosedBeforeResponse,
+  MAX_CONNECTION_RESETS,
+  type Resets,
+  timed,
+} from "../load.ts";
 
 /** A server that closes its first connection without a response and answers 200 on later ones. */
 async function closeFirstServer(): Promise<{
@@ -56,4 +62,24 @@ await assert.rejects(
 );
 assert.deepEqual(refused, { retriedGets: 0, droppedPosts: 0 });
 assert.equal(isClosedBeforeResponse(new Error("other")), false);
+// Resets that arrive while the last requests drain count against the cap too.
+const slow = createServer((socket: Socket) => {
+  socket.once("data", () => setTimeout(() => socket.destroy(), 100));
+});
+await new Promise<void>((resolve) => slow.listen(0, "127.0.0.1", resolve));
+const slowUrl = `http://127.0.0.1:${(slow.address() as { port: number }).port}/`;
+const slowPost = (resets: Resets): Promise<void> =>
+  timed(slowUrl, { method: "POST", body: "{}" }, 204, undefined, resets);
+const tooMany: Resets = { retriedGets: 0, droppedPosts: 0 };
+const late = Array.from({ length: MAX_CONNECTION_RESETS * 2 }, () => slowPost(tooMany));
+assert.equal(tooMany.droppedPosts, 0);
+await assert.rejects(drain(late, tooMany), /more than 5 connections closed before a response/);
+assert.equal(tooMany.droppedPosts, MAX_CONNECTION_RESETS * 2);
+const few: Resets = { retriedGets: 0, droppedPosts: 0 };
+await drain(
+  Array.from({ length: MAX_CONNECTION_RESETS }, () => slowPost(few)),
+  few,
+);
+assert.equal(few.droppedPosts, MAX_CONNECTION_RESETS);
+slow.close();
 console.log("check-load: ok");
