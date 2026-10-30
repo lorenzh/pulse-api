@@ -261,8 +261,16 @@ async function servePing(
   res.writeHead(204).end();
 }
 
+const OPS_PATHS: ReadonlySet<string> = new Set(["/healthz", "/readyz", "/metrics"]);
+
 /** Serve `/healthz`, `/readyz` and `/metrics`. Returns false for any other path. None needs auth. */
 function serveOps(ops: Ops, req: IncomingMessage, res: ServerResponse): boolean {
+  // kit's handleOps answers a wrong method with plain text, so reject it here as JSON.
+  // Same path rule as kit: the query string is ignored.
+  const opsPath = (req.url ?? "/").split("?")[0] ?? "";
+  if (OPS_PATHS.has(opsPath) && (req.method ?? "GET") !== "GET") {
+    throw new HttpError(405, "method not allowed", { Allow: "GET" });
+  }
   return handleOps(req, res, {
     // Liveness only: no database access, and 200 also while shutting down.
     live: () => ({ ready: true }),
