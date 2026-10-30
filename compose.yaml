@@ -25,11 +25,25 @@ services:
       PULSE_API_URL: http://api:3000
       PULSE_LOCATION: ${PULSE_LOCATION:-default}
       PULSE_PROBE_TOKEN: ${PULSE_PROBE_TOKEN:-}
+      # Resolved by the probe for the header {"env": "SVC_TOKEN"} of the check e2e-post.
+      # The env value is the whole header value, so it carries the "Bearer " scheme.
+      SVC_TOKEN: Bearer ${E2E_SVC_TOKEN:-e2e-svc-token-sentinel}
     depends_on:
       api:
         condition: service_healthy
       status:
         condition: service_healthy
+      e2e-target:
+        condition: service_started
+
+  # Target of the check e2e-post in compose/checks.json: see compose/e2e/target.mjs.
+  e2e-target:
+    image: node:24-alpine
+    command: ["node", "/e2e/target.mjs"]
+    environment:
+      SVC_TOKEN: ${E2E_SVC_TOKEN:-e2e-svc-token-sentinel}
+    volumes:
+      - ./compose/e2e/target.mjs:/e2e/target.mjs:ro
 
   status:
     build: https://github.com/lorenzh/pulse-status.git#main

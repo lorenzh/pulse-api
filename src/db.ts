@@ -15,6 +15,11 @@ CREATE TABLE IF NOT EXISTS checks (
   retries INTEGER,
   retry_delay_ms INTEGER,
   keyword TEXT,
+  method TEXT,
+  headers_json TEXT,
+  body TEXT,
+  expected_status_json TEXT,
+  json_assert_json TEXT,
   period_ms INTEGER,
   grace_ms INTEGER,
   state TEXT NOT NULL DEFAULT 'unknown',
@@ -83,6 +88,11 @@ function migrate(db: DatabaseSync): void {
   addCheckColumn("retries", "retries INTEGER");
   addCheckColumn("retry_delay_ms", "retry_delay_ms INTEGER");
   addCheckColumn("keyword", "keyword TEXT");
+  addCheckColumn("method", "method TEXT");
+  addCheckColumn("headers_json", "headers_json TEXT");
+  addCheckColumn("body", "body TEXT");
+  addCheckColumn("expected_status_json", "expected_status_json TEXT");
+  addCheckColumn("json_assert_json", "json_assert_json TEXT");
   addCheckColumn("period_ms", "period_ms INTEGER");
   addCheckColumn("grace_ms", "grace_ms INTEGER");
   addCheckColumn("active", "active INTEGER NOT NULL DEFAULT 1");

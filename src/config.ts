@@ -5,6 +5,7 @@ import {
   MAX_TIMER_MS,
   type MaintenanceWindow,
   type TlsCheck,
+  validateCheck,
 } from "@lorenzh/pulse-contract";
 import { z } from "zod";
 import { firstIssue, type Issue, pathName, unknownKey } from "./issue-path.ts";
@@ -98,6 +99,12 @@ const HTTP_SCHEMA = z.strictObject({
   timeoutMs: timerMs().optional(),
   latencyObjectiveMs: timerMs().optional(),
   keyword: KEYWORD,
+  // The contract validates these; see parseHttp.
+  method: z.unknown().optional(),
+  headers: z.unknown().optional(),
+  body: z.unknown().optional(),
+  expectedStatus: z.unknown().optional(),
+  jsonAssert: z.unknown().optional(),
 });
 
 const TLS_HOST = "must be a host name without scheme, port or path";
@@ -114,6 +121,11 @@ const TLS_SCHEMA = z.strictObject({
   intervalMs: timerMs(),
   timeoutMs: timerMs().optional(),
   keyword: z.never({ error: "is not allowed on a tls check" }).optional(),
+  method: z.never({ error: "is not allowed on a tls check" }).optional(),
+  headers: z.never({ error: "is not allowed on a tls check" }).optional(),
+  body: z.never({ error: "is not allowed on a tls check" }).optional(),
+  expectedStatus: z.never({ error: "is not allowed on a tls check" }).optional(),
+  jsonAssert: z.never({ error: "is not allowed on a tls check" }).optional(),
 });
 
 const SECRET_TEXT = `is required: ${MIN_SECRET_LENGTH} to ${MAX_SECRET_LENGTH} characters from A-Z a-z 0-9 . _ ~ -`;
@@ -177,7 +189,24 @@ function parseHttp(raw: Record<string, unknown>, where: (string | number)[]): Ht
   if (v.type === "http") check.type = "http";
   if (v.keyword !== undefined) check.keyword = v.keyword;
   if (v.timeoutMs !== undefined) check.timeoutMs = v.timeoutMs;
-  return check;
+  const request = { method: v.method, headers: v.headers, body: v.body };
+  const rules = { expectedStatus: v.expectedStatus, jsonAssert: v.jsonAssert };
+  const candidate = { ...check, ...request, ...rules };
+  // The contract owns the limits. Its messages name the field path and never quote a value.
+  const verdict = validateCheck(candidate, pathName(where));
+  if (!verdict.ok) throw new ConfigError(verdict.error);
+  return verdict.value.type === "tls" || verdict.value.type === "heartbeat"
+    ? check
+    : withoutUndefined(verdict.value);
+}
+
+/** The contract validators accept explicit `undefined`; the stored check has no such keys. */
+function withoutUndefined(check: HttpCheck): HttpCheck {
+  const out: HttpCheck = { ...check };
+  for (const key of ["method", "headers", "body", "expectedStatus", "jsonAssert"] as const) {
+    if (out[key] === undefined) delete out[key];
+  }
+  return out;
 }
 
 function parseTls(raw: Record<string, unknown>, where: (string | number)[]): TlsCheck {
@@ -337,7 +366,8 @@ function readJson(path: string): unknown {
   try {
     return JSON.parse(text);
   } catch (err) {
-    throw new ConfigError(`checks file ${path} is not valid JSON: ${(err as Error).message}`);
+    // The JSON parser message can quote file content (a header value or a body), so it is left out.
+    throw new ConfigError(`checks file ${path} is not valid JSON`, { cause: err });
   }
 }
 

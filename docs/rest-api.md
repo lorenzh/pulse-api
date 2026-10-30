@@ -73,7 +73,7 @@ The response is `HTTP/1.1 204 No Content`. A request with an old fixed `timestam
 
 ## GET /checks
 
-Returns every active check (checks removed from the checks file are left out) in database rowid order (the order in which the checks were first inserted, not the order of the checks file) with its state (`CheckWithState[]`): the check fields plus `state`, `consecutiveDown`, `lastResultAt`, `lastReason`, `locations`, and when set `maintenance` and `certDaysLeft`. `retries` and `retryDelayMs` are always present for HTTP checks. `timeoutMs`, `latencyObjectiveMs` and `keyword` are present when configured. `locations` has one `{ location, result, stale }` per location ever seen, sorted by name, and is empty for a check without results.
+Returns every active check (checks removed from the checks file are left out) in database rowid order (the order in which the checks were first inserted, not the order of the checks file) with its state (`CheckWithState[]`): the check fields plus `state`, `consecutiveDown`, `lastResultAt`, `lastReason`, `locations`, and when set `maintenance` and `certDaysLeft`. `retries` and `retryDelayMs` are always present for HTTP checks. `timeoutMs`, `latencyObjectiveMs` and `keyword` are present when configured. `method` and `expectedStatus` are present only when they are not the defaults (`GET`, `200-299`). `headers`, `body` and `jsonAssert` are never served here: see [GET /probe/checks](#get-probechecks). `locations` has one `{ location, result, stale }` per location ever seen, sorted by name, and is empty for a check without results.
 
 ```sh
 curl http://localhost:3000/checks
@@ -115,6 +115,14 @@ curl http://localhost:3000/checks
 ```
 
 (The output above is shortened to the first check.)
+
+## GET /probe/checks
+
+Needs the probe `Authorization: Bearer <token>` header, like `POST /results`. Answers `401` without a valid token and `405` for other methods. Returns every active check as written in the checks file (`Check[]`), without state, including `method`, `headers`, `body`, `expectedStatus` and `jsonAssert`. A header value `{"env": "NAME"}` is served as it is: the probe resolves it. Literal header values and bodies are served in clear text, so keep the probe tokens secret.
+
+```sh
+curl -H "Authorization: Bearer $PULSE_PROBE_TOKEN" http://localhost:3000/probe/checks
+```
 
 ## GET /checks/:id/results
 

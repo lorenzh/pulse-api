@@ -63,11 +63,26 @@ An HTTP check has `type` absent or `"http"` and these fields besides the common 
 | `retryDelayMs`       | no       | Integer 0 to 60000, default 1000. Wait between attempts.                                                                                                                |
 | `latencyObjectiveMs` | no       | Integer 1 to 2147483647, milliseconds. A successful (2xx) result slower than this is `degraded`. Absent means no objective.                                             |
 | `keyword`            | no       | Non-empty string, case-sensitive substring. A 2xx answer whose body does not contain it is `down` with the reason `keyword "<text>" not found`. Rejected on TLS checks. |
+| `method`             | no       | `GET` (default), `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE` or `OPTIONS`. Upper case.                                                                                     |
+| `headers`            | no       | Object of request headers, at most 20. A value is a string or `{"env": "NAME"}`.                                                                                        |
+| `body`               | no       | Request body, at most 65536 bytes. Not allowed with `GET` or `HEAD`. No `Content-Type` is added: set it in `headers`.                                                   |
+| `expectedStatus`     | no       | Non-empty list, at most 20, of integers 100 to 599 or ranges `"lo-hi"`. Default `["200-299"]`. The probe judges the final status after redirects.                       |
+| `jsonAssert`         | no       | List of at most 10 assertions on the JSON body, see below. Not allowed with `HEAD`.                                                                                     |
+
+A `jsonAssert` item is `{ "pointer": "/a/b", "equals": <JSON> }` or `{ "pointer": "/a/b", "exists": true }`. `pointer` is an RFC 6901 JSON pointer (an empty string is the whole document).
+
+The contract (`@lorenzh/pulse-contract`) owns the exact limits: header names must be tokens and may not be `host`, `content-length`, `transfer-encoding`, `connection` or `user-agent`; names are unique ignoring case; names and literal values total at most 16 KiB. The new fields are rejected on TLS and heartbeat checks. A validation error names the field path and never quotes a value.
 
 Notes:
 
+- **Secrets.** Use `{"env": "NAME"}` for a secret. The probe resolves it from its own environment, so the secret lives in the probe's environment and never in the API's. The API never resolves an `env` reference. A check whose variable is unset in a probe is skipped by that probe, with a log line that names the variable. Every probe location needs the variable.
+- A literal header value and a `body` are stored in the API database and served to every probe that sends a valid token on `GET /probe/checks`. Treat the checks file, the database and the probe tokens as sensitive.
+- `GET /checks` (public) never serves `headers`, `body` or `jsonAssert`, not even names. It serves `method` and `expectedStatus` only when they are not the defaults. See [REST API](rest-api.md#get-probechecks).
+- **Rollout order.** Upgrade the contract, then every probe and the status page, then the API. A new probe falls back to `GET /checks` when `GET /probe/checks` answers `404`. An old probe reads only the public `GET /checks`, so it would misjudge a non-default `method` or `expectedStatus`: upgrade all probes before you add these fields to the checks file.
+- Failure reasons the probe writes: `HTTP <code> not in <expectedStatus>`, `keyword "<text>" not found`, `json: invalid body`, `json <pointer>: expected <JSON>, got <JSON>` and `json <pointer>: missing`.
+
 - The probe looks for the keyword within the first 1 MiB (1,048,576 bytes) of the body. Reading the body counts towards the latency.
-- When a check is removed from the checks file, its `keyword` is cleared at the next start. The check and its results stay, but the check is inactive: see [Changing checks](operation.md#changing-checks).
+- When a check is removed from the checks file, its `keyword`, `method`, `headers`, `body`, `expectedStatus` and `jsonAssert` are cleared at the next start. The check and its results stay, but the check is inactive: see [Changing checks](operation.md#changing-checks).
 - An objective at or above `timeoutMs` can never be degraded.
 - `GET /checks` always serves the resolved `retries` and `retryDelayMs`.
 - When `retries` is above 0, the file is rejected unless the worst case `(retries + 1) * timeoutMs + retries * retryDelayMs` fits within `intervalMs`. `timeoutMs` defaults to 5000 in this formula.

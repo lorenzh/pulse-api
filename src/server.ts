@@ -164,6 +164,7 @@ const HEARTBEAT_PATH = /^\/heartbeat\/([^/]+)(?:\/([^/]+))?$/;
 const ROUTES = [
   "/results",
   "/checks",
+  "/probe/checks",
   "/uptime",
   "/incidents",
   "/maintenance",
@@ -315,6 +316,7 @@ async function handle(
   const known =
     path === "/results" ||
     path === "/checks" ||
+    path === "/probe/checks" ||
     path === "/uptime" ||
     path === "/incidents" ||
     path === "/maintenance" ||
@@ -354,6 +356,15 @@ async function handle(
   }
 
   if (method !== "GET") throw new HttpError(405, "method not allowed");
+
+  if (path === "/probe/checks") {
+    // Carries headers and bodies exactly as written, so it needs a probe token.
+    if (authenticate(tokens, req.headers.authorization) === undefined) {
+      throw new HttpError(401, "unauthorized", { "www-authenticate": "Bearer" });
+    }
+    sendJson(res, 200, service.listProbeChecks());
+    return;
+  }
 
   if (path === "/checks") {
     sendJson(res, 200, service.listChecks());

@@ -8,6 +8,28 @@
       "timeoutMs": 2000
     },
     {
+      "id": "e2e-post",
+      "name": "E2E POST",
+      "url": "http://e2e-target:8000/svc",
+      "intervalMs": 4000,
+      "timeoutMs": 2000,
+      "method": "POST",
+      "headers": {
+        "Authorization": {
+          "env": "SVC_TOKEN"
+        },
+        "Content-Type": "application/json"
+      },
+      "body": "{\"ping\":\"e2e-body-sentinel\"}",
+      "expectedStatus": [200],
+      "jsonAssert": [
+        {
+          "pointer": "/status",
+          "equals": "ok"
+        }
+      ]
+    },
+    {
       "id": "heartbeat-e2e",
       "name": "Heartbeat e2e",
       "type": "heartbeat",

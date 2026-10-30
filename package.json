@@ -25,7 +25,7 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
-    "@lorenzh/pulse-contract": "github:lorenzh/pulse-contract#55e67ab0ff8a9f3838162ab8b20d61fb64ce6f5d",
+    "@lorenzh/pulse-contract": "github:lorenzh/pulse-contract#79e42fdac901d26f4dd5ea65ebf8a6c65843e373",
     "@lorenzh/pulse-kit": "github:lorenzh/pulse-kit#72adb59b980e2dd4802a1fb8b28eaa5b43b040fc",
     "zod": "4.6.7"
   }
