@@ -1,4 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import { z } from "zod";
+import { firstIssue, type Issue, pathName } from "./issue-path.ts";
 import { MAX_LOCATION_LENGTH } from "./service.ts";
 
 export const MIN_TOKEN_LENGTH = 16;
@@ -16,56 +18,77 @@ export class TokensError extends Error {
   override name = "TokensError";
 }
 
+const TOKEN_LENGTH_TEXT = `token must be a string of at least ${MIN_TOKEN_LENGTH} characters`;
+const LOCATION_TEXT = "must be a non-empty string";
+const TOKENS_SHAPE = 'tokens file must be an object with a "tokens" array';
+
+// Unknown keys in an entry are ignored, as before. The token messages never contain a token.
+const ENTRY_SCHEMA = z.object(
+  {
+    location: z
+      .string({ error: LOCATION_TEXT })
+      .refine((v) => v.trim() !== "", LOCATION_TEXT)
+      .refine(
+        (v) => v.trim().length <= MAX_LOCATION_LENGTH,
+        `must be at most ${MAX_LOCATION_LENGTH} characters`,
+      ),
+    token: z
+      .string({ error: TOKEN_LENGTH_TEXT })
+      .min(MIN_TOKEN_LENGTH, TOKEN_LENGTH_TEXT)
+      .refine((v) => !v.startsWith(PLACEHOLDER_PREFIX), "still has the example placeholder token")
+      .refine((v) => !/\s/.test(v), "token must not contain whitespace")
+      .refine((v) => !EXAMPLE_TOKENS.includes(v), "uses a public example token: generate your own"),
+  },
+  { error: "must be an object" },
+);
+
+const TOKENS_SCHEMA = z.object(
+  {
+    tokens: z
+      .array(ENTRY_SCHEMA, { error: TOKENS_SHAPE })
+      .min(1, "tokens file needs at least one entry"),
+  },
+  { error: TOKENS_SHAPE },
+);
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-function parseEntry(raw: unknown, index: number): ProbeToken {
-  const where = `tokens[${index}]`;
-  if (!isRecord(raw)) throw new TokensError(`${where} must be an object`);
-  if (typeof raw.location !== "string" || raw.location.trim() === "") {
-    throw new TokensError(`${where}.location must be a non-empty string`);
-  }
-  const location = raw.location.trim();
-  if (location.length > MAX_LOCATION_LENGTH) {
-    throw new TokensError(`${where}.location must be at most ${MAX_LOCATION_LENGTH} characters`);
-  }
-  if (typeof raw.token !== "string" || raw.token.length < MIN_TOKEN_LENGTH) {
-    throw new TokensError(
-      `${where} (location "${location}") token must be a string of at least ${MIN_TOKEN_LENGTH} characters`,
-    );
-  }
-  if (raw.token.startsWith(PLACEHOLDER_PREFIX)) {
-    throw new TokensError(
-      `${where} (location "${location}") still has the example placeholder token`,
-    );
-  }
-  if (/\s/.test(raw.token)) {
-    throw new TokensError(`${where} (location "${location}") token must not contain whitespace`);
-  }
-  if (EXAMPLE_TOKENS.includes(raw.token)) {
-    throw new TokensError(
-      `${where} (location "${location}") uses a public example token: generate your own`,
-    );
-  }
-  return { location, token: raw.token };
+/** The trimmed location of entry `index` in the raw data, for a message about its token. */
+function locationOf(data: unknown, index: number): string | undefined {
+  if (!isRecord(data) || !Array.isArray(data.tokens)) return undefined;
+  const entry: unknown = data.tokens[index];
+  if (!isRecord(entry) || typeof entry.location !== "string") return undefined;
+  return entry.location.trim();
+}
+
+function describeIssue(issue: Issue, data: unknown): string {
+  const [root, index, field] = issue.path;
+  if (root !== "tokens") return issue.message;
+  if (index === undefined) return issue.message;
+  const where = pathName(["tokens", index]);
+  if (field === undefined) return `${where} ${issue.message}`;
+  if (field === "location") return `${where}.location ${issue.message}`;
+  const location = typeof index === "number" ? locationOf(data, index) : undefined;
+  return `${where} (location "${location ?? ""}") ${issue.message}`;
 }
 
 /** Validate the parsed tokens file; throws TokensError. Messages never contain a token. */
 export function parseTokens(data: unknown): ProbeToken[] {
-  if (!isRecord(data) || !Array.isArray(data.tokens)) {
-    throw new TokensError('tokens file must be an object with a "tokens" array');
+  const parsed = TOKENS_SCHEMA.safeParse(data);
+  if (!parsed.success) {
+    const issue = firstIssue(parsed.error.issues);
+    throw new TokensError(issue === undefined ? TOKENS_SHAPE : describeIssue(issue, data));
   }
-  if (data.tokens.length === 0) throw new TokensError("tokens file needs at least one entry");
   const seen = new Map<string, number>();
-  return data.tokens.map((raw: unknown, index: number) => {
-    const entry = parseEntry(raw, index);
-    const first = seen.get(entry.token);
+  return parsed.data.tokens.map((raw, index) => {
+    const first = seen.get(raw.token);
     if (first !== undefined) {
       throw new TokensError(`tokens[${index}] repeats the token of tokens[${first}]`);
     }
-    seen.set(entry.token, index);
-    return entry;
+    seen.set(raw.token, index);
+    return { location: raw.location.trim(), token: raw.token };
   });
 }
 
