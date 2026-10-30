@@ -43,6 +43,32 @@
       "intervalMs": 3600000
     },
     {
+      "id": "example-tcp",
+      "name": "Example database port",
+      "type": "tcp",
+      "host": "db.example.com",
+      "port": 5432,
+      "intervalMs": 30000,
+      "timeoutMs": 2000
+    },
+    {
+      "id": "example-dns",
+      "name": "Example DNS record",
+      "type": "dns",
+      "dnsName": "www.example.com",
+      "recordType": "A",
+      "expected": ["192.0.2.10"],
+      "intervalMs": 60000
+    },
+    {
+      "id": "example-domain",
+      "name": "Example domain registration",
+      "type": "domain",
+      "domain": "example.com",
+      "warnDays": 30,
+      "intervalMs": 3600000
+    },
+    {
       "id": "nightly-backup",
       "name": "Nightly backup",
       "type": "heartbeat",

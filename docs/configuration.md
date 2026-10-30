@@ -45,13 +45,13 @@ See `checks.example.json` for a complete example.
 
 ### Fields of every check
 
-| Field        | Required | Meaning                                                                                     |
-| ------------ | -------- | ------------------------------------------------------------------------------------------- |
-| `id`         | yes      | Non-empty string, unique in the file.                                                       |
-| `name`       | yes      | Non-empty string.                                                                           |
-| `type`       | no       | `"http"` (default) or `"tls"`. Any other value is rejected.                                 |
-| `intervalMs` | yes      | Integer 1 to 2147483647, milliseconds between probes.                                       |
-| `timeoutMs`  | no       | Integer 1 to 2147483647, milliseconds. When omitted, the probe uses its own default (5000). |
+| Field        | Required | Meaning                                                                                                  |
+| ------------ | -------- | -------------------------------------------------------------------------------------------------------- |
+| `id`         | yes      | Non-empty string, unique in the file.                                                                    |
+| `name`       | yes      | Non-empty string.                                                                                        |
+| `type`       | no       | `"http"` (default), `"tls"`, `"tcp"`, `"dns"`, `"domain"` or `"heartbeat"`. Any other value is rejected. |
+| `intervalMs` | yes      | Integer 1 to 2147483647, milliseconds between probes.                                                    |
+| `timeoutMs`  | no       | Integer 1 to 2147483647, milliseconds. When omitted, the probe uses its own default (5000).              |
 
 ### HTTP checks
 
@@ -103,6 +103,83 @@ A TLS check (`"type": "tls"`) watches the expiry of the leaf certificate of a se
 | `warnDays` | no       | Integer 0 or more, default 14. The check is down when this many days or fewer are left. |
 
 Only the expiry of the leaf certificate is judged. The chain and the host name are not verified. Results carry `certDaysLeft`. `GET /checks` shows the latest value and `GET /checks/:id/results` includes it. A TLS check ignores `retries`, `retryDelayMs` and `latencyObjectiveMs`.
+
+### TCP checks
+
+A TCP check (`"type": "tcp"`) is up when a connection to `host:port` opens. The probe closes it at once and sends nothing.
+
+| Field                     | Required | Meaning                                                             |
+| ------------------------- | -------- | ------------------------------------------------------------------- |
+| `host`                    | yes      | Non-empty host name or IP.                                          |
+| `port`                    | yes      | Integer 1 to 65535.                                                 |
+| `intervalMs`              | yes      | Integer 1 to 2147483647.                                            |
+| `timeoutMs`               | no       | Integer 1 to 2147483647.                                            |
+| `retries`, `retryDelayMs` | no       | As for HTTP checks: 0 to 10 (default 0), 0 to 60000 (default 1000). |
+
+Reasons: `connection refused (ECONNREFUSED)`, `host not found (ENOTFOUND)`, `timeout after <ms>ms`.
+
+```json
+{
+  "id": "db",
+  "name": "Database port",
+  "type": "tcp",
+  "host": "db.example.com",
+  "port": 5432,
+  "intervalMs": 30000
+}
+```
+
+### DNS checks
+
+A DNS check (`"type": "dns"`) resolves a record and compares the answer.
+
+| Field        | Required | Meaning                                                                                                                                                       |
+| ------------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dnsName`    | yes      | Host name to resolve (`name` is the display name of every check).                                                                                             |
+| `recordType` | yes      | `A`, `AAAA`, `CNAME`, `MX`, `TXT` or `NS` (upper case).                                                                                                       |
+| `expected`   | no       | 1 to 20 non-empty strings. The answer must contain all of them (extra records are fine). MX values are `<priority> <exchange>`. Without it, any answer is up. |
+| `resolver`   | no       | IPv4 or IPv6 address of the resolver, no port and no host name. Default: the system resolver.                                                                 |
+
+It also takes `intervalMs`, `timeoutMs`, `retries` and `retryDelayMs` like a TCP check. Reasons: `NXDOMAIN: <dnsName> does not exist`, `no <TYPE> record for <dnsName>`, `expected [..], got [..]`, `timeout after <ms>ms`.
+
+```json
+{
+  "id": "www-dns",
+  "name": "www A record",
+  "type": "dns",
+  "dnsName": "www.example.com",
+  "recordType": "A",
+  "expected": ["192.0.2.10"],
+  "intervalMs": 60000
+}
+```
+
+### Domain checks
+
+A domain check (`"type": "domain"`) watches the registration expiry through RDAP (no WHOIS).
+
+| Field        | Required | Meaning                                                                           |
+| ------------ | -------- | --------------------------------------------------------------------------------- |
+| `domain`     | yes      | Lowercase domain name with at least two labels, without scheme, port or path.     |
+| `warnDays`   | yes      | Integer 0 or more. The check is `degraded` when this many days or fewer are left. |
+| `intervalMs` | yes      | At least 3600000 (1 hour). There is no default.                                   |
+
+It also takes `timeoutMs`, `retries` and `retryDelayMs`. The check is `down` when the domain has expired (`domain expired`) or no expiry date is found (`expiry date not found in RDAP answer`). Results carry `certDaysLeft` (whole days, negative when expired). Registries without RDAP, such as some country codes, give `down`.
+
+```json
+{
+  "id": "example-domain",
+  "name": "example.com registration",
+  "type": "domain",
+  "domain": "example.com",
+  "warnDays": 30,
+  "intervalMs": 3600000
+}
+```
+
+### Privacy of targets
+
+`host`, `port` (tcp), `dnsName`, `expected`, `resolver` and `domain` are check targets, served like a TLS `host` and `port`: `GET /probe/checks` and `GET /checks` carry them. The status page keeps them private by default. These types reject the HTTP-only fields (`url`, `method`, `headers`, `body`, `expectedStatus`, `jsonAssert`, `keyword`, `latencyObjectiveMs`) with `<path> is not allowed on a <type> check`. Probes must be updated before such a check is added; see [Rolling out a new check type](operation.md#rolling-out-a-new-check-type).
 
 ### Heartbeat checks
 

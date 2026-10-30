@@ -54,6 +54,6 @@ test("heartbeat config: secret is rejected on other types; duplicate ids stay re
   assert.throws(() => parseConfig({ checks: [hb, hb] }), /duplicate check id "job"/);
   assert.throws(
     () => parseConfig({ checks: [{ ...hb, type: "cron" }] }),
-    /"http", "tls" or "heartbeat"/,
+    /"http", "tls", "tcp", "dns", "domain" or "heartbeat"/,
   );
 });

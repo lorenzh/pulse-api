@@ -1,4 +1,4 @@
-import type { Database } from "bun:sqlite";
+import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -480,4 +480,18 @@ test("with the admin tokens setting the reads list the stored incidents", async 
     [result.id],
   );
   assert.equal(result.item, 200);
+});
+
+test("a database from a newer program is a startup error", async () => {
+  const path = join(dir, "newer.db");
+  const raw = new Database(path);
+  raw.run("PRAGMA user_version = 99");
+  raw.close();
+  const { base } = deps({ PULSE_DB: path });
+  await assert.rejects(
+    startApi(base),
+    (err: unknown) =>
+      err instanceof StartupError &&
+      err.message.includes("database schema version 99 is newer than this program supports"),
+  );
 });

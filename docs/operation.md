@@ -20,7 +20,14 @@ The database is one SQLite file, at `PULSE_DB` (default `./pulse.db`, `/data/pul
 
 ### Schema
 
-The schema is created at start (`CREATE TABLE IF NOT EXISTS`), with all tables and indexes in one step. There are no migrations: there is no upgrade path from database files of older versions. Delete the old file and start again, or keep the older version for it.
+The schema is versioned with `PRAGMA user_version`. At start the API creates missing tables, then runs every numbered step (`src/migrations.ts`) above the file's version, all in one transaction. A failing step rolls everything back and the start fails. Version 1 rebuilds `checks` to hold tcp, dns and domain checks; `results` and `incidents` are not touched.
+
+- Upgrades are automatic. Back up the database file first.
+- A file whose `user_version` is higher than the program supports is refused at start with exit code 2 (`database schema version 2 is newer than this program supports (1); downgrades are not supported`). Downgrades are not supported: restore the backup.
+
+#### Rolling out a new check type
+
+A new check type (tcp, dns, domain) needs every probe location updated first. An old probe logs `skipping invalid check <id>: ...` for a type it does not know, keeps running the other checks, and the new check stays `unknown` for that location. That `unknown` state is expected until the probe is updated. Order: update the contract users (probes, status), then add the check to the checks file.
 
 ### Upgrades
 

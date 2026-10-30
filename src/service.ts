@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import type {
   Check,
   CheckState,
+  CheckStateFields,
   CheckStatus,
   CheckUptime,
   CheckWithState,
@@ -13,6 +14,7 @@ import type {
   UptimeDay,
 } from "@lorenzh/pulse-contract";
 import {
+  dnsRecordTypeSchema,
   expectedStatusSchema,
   headerValueSchema,
   httpMethodSchema,
@@ -27,6 +29,7 @@ export const MAX_LOCATION_LENGTH = 64;
 const WINDOW_INTERVALS = 2;
 
 const HEADERS_COLUMN = z.record(z.string(), headerValueSchema);
+const DNS_EXPECTED_COLUMN = z.array(z.string());
 const JSON_ASSERT_COLUMN = z.array(jsonAssertSchema);
 const STATE_KEYS = [
   "state",
@@ -135,10 +138,10 @@ interface CheckRow {
   id: string;
   name: string;
   type: string | null;
-  url: string;
-  host: string;
-  port: number;
-  warn_days: number;
+  url: string | null;
+  host: string | null;
+  port: number | null;
+  warn_days: number | null;
   interval_ms: number;
   timeout_ms: number | null;
   latency_objective_ms: number | null;
@@ -152,6 +155,11 @@ interface CheckRow {
   json_assert_json: string | null;
   period_ms: number | null;
   grace_ms: number | null;
+  dns_name: string | null;
+  record_type: string | null;
+  expected_json: string | null;
+  resolver: string | null;
+  domain: string | null;
   state: CheckState;
   consecutive_down: number;
   last_result_at: number | null;
@@ -198,6 +206,85 @@ export interface ServiceOptions {
   onIncident?: (event: "opened" | "resolved") => void;
 }
 
+/** TLS and domain checks report `certDaysLeft`. */
+function hasDaysLeft(type: string | null | undefined): boolean {
+  return type === "tls" || type === "domain";
+}
+
+type Column = string | number | null;
+
+/** The values of one `checks` row in the column order of the upsert; columns of other types are NULL. */
+function columnsOf(c: Check): Column[] {
+  const row: Record<string, Column> = {
+    id: c.id,
+    name: c.name,
+    url: null,
+    type: c.type ?? "http",
+    host: null,
+    port: null,
+    warn_days: null,
+    interval_ms: 0,
+    timeout_ms: null,
+    latency_objective_ms: null,
+    retries: null,
+    retry_delay_ms: null,
+    keyword: null,
+    period_ms: null,
+    grace_ms: null,
+    method: null,
+    headers_json: null,
+    body: null,
+    expected_status_json: null,
+    json_assert_json: null,
+    dns_name: null,
+    record_type: null,
+    expected_json: null,
+    resolver: null,
+    domain: null,
+  };
+  if (c.type === "heartbeat") {
+    // interval_ms is NOT NULL: the period stands in as the interval; url is empty as it always was.
+    row.url = "";
+    row.interval_ms = c.period;
+    row.period_ms = c.period;
+    row.grace_ms = c.grace;
+    return Object.values(row);
+  }
+  row.interval_ms = c.intervalMs;
+  row.timeout_ms = c.timeoutMs ?? null;
+  if (c.type === "tls") {
+    row.url = "";
+    row.host = c.host;
+    row.port = c.port;
+    row.warn_days = c.warnDays;
+  } else if (c.type === "tcp") {
+    row.host = c.host;
+    row.port = c.port;
+  } else if (c.type === "dns") {
+    row.dns_name = c.dnsName;
+    row.record_type = c.recordType;
+    row.expected_json = jsonOrNull(c.expected);
+    row.resolver = c.resolver ?? null;
+  } else if (c.type === "domain") {
+    row.domain = c.domain;
+    row.warn_days = c.warnDays;
+  } else {
+    row.url = c.url;
+    row.latency_objective_ms = c.latencyObjectiveMs ?? null;
+    row.keyword = c.keyword ?? null;
+    row.method = c.method ?? null;
+    row.headers_json = jsonOrNull(c.headers);
+    row.body = c.body ?? null;
+    row.expected_status_json = jsonOrNull(c.expectedStatus);
+    row.json_assert_json = jsonOrNull(c.jsonAssert);
+  }
+  if (c.type !== "tls") {
+    row.retries = c.retries ?? 0;
+    row.retry_delay_ms = c.retryDelayMs ?? 1000;
+  }
+  return Object.values(row);
+}
+
 export function createService(
   db: Database,
   {
@@ -237,8 +324,8 @@ export function createService(
     "UPDATE checks SET last_result_at = ?, last_reason = ? WHERE id = ?",
   );
   const upsert = db.prepare(`
-    INSERT INTO checks (id, name, url, type, host, port, warn_days, interval_ms, timeout_ms, latency_objective_ms, retries, retry_delay_ms, keyword, period_ms, grace_ms, method, headers_json, body, expected_status_json, json_assert_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO checks (id, name, url, type, host, port, warn_days, interval_ms, timeout_ms, latency_objective_ms, retries, retry_delay_ms, keyword, period_ms, grace_ms, method, headers_json, body, expected_status_json, json_assert_json, dns_name, record_type, expected_json, resolver, domain)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET name = excluded.name, url = excluded.url, type = excluded.type,
       host = excluded.host, port = excluded.port, warn_days = excluded.warn_days,
       interval_ms = excluded.interval_ms, timeout_ms = excluded.timeout_ms,
@@ -247,6 +334,8 @@ export function createService(
       keyword = excluded.keyword, period_ms = excluded.period_ms, grace_ms = excluded.grace_ms,
       method = excluded.method, headers_json = excluded.headers_json, body = excluded.body,
       expected_status_json = excluded.expected_status_json, json_assert_json = excluded.json_assert_json,
+      dns_name = excluded.dns_name, record_type = excluded.record_type,
+      expected_json = excluded.expected_json, resolver = excluded.resolver, domain = excluded.domain,
       active = 1`);
   const clearOptions = db.prepare(
     `UPDATE checks SET keyword = NULL, method = NULL, headers_json = NULL, body = NULL,
@@ -336,7 +425,7 @@ export function createService(
     "SELECT 1 AS x FROM incidents WHERE check_id = ? AND resolved_at IS NULL LIMIT 1",
   );
 
-  /** certDaysLeft is emitted for TLS checks (null when unread) and for any stored value. */
+  /** certDaysLeft is emitted for TLS and domain checks (null when unread) and for any stored value. */
   function toResult(r: ResultRow, tls = false): Result {
     const result: Result = {
       checkId: r.check_id,
@@ -370,34 +459,78 @@ export function createService(
         ...state,
       };
     }
-    const c: CheckWithState =
-      r.type === "tls"
-        ? {
-            id: r.id,
-            name: r.name,
-            type: "tls",
-            host: r.host,
-            port: r.port,
-            warnDays: r.warn_days,
-            intervalMs: r.interval_ms,
-            ...state,
-          }
-        : {
-            id: r.id,
-            name: r.name,
-            url: r.url,
-            intervalMs: r.interval_ms,
-            retries: r.retries ?? 0,
-            retryDelayMs: r.retry_delay_ms ?? 1000,
-            ...state,
-          };
+    const c = baseCheck(r, state);
     if (r.timeout_ms !== null) c.timeoutMs = r.timeout_ms;
-    if (r.latency_objective_ms !== null && c.type !== "tls") {
-      c.latencyObjectiveMs = r.latency_objective_ms;
+    if (c.type === undefined || c.type === "http") {
+      if (r.latency_objective_ms !== null) c.latencyObjectiveMs = r.latency_objective_ms;
+      if (r.keyword !== null) c.keyword = r.keyword;
+      addRequestOptions(c, r, isFull);
     }
-    if (r.keyword !== null && c.type !== "tls") c.keyword = r.keyword;
-    if (c.type !== "tls") addRequestOptions(c, r, isFull);
     return c;
+  }
+
+  function baseCheck(
+    r: CheckRow,
+    state: CheckStateFields,
+  ): Exclude<CheckWithState, { type: "heartbeat" }> {
+    const base = { id: r.id, name: r.name };
+    const retries = { retries: r.retries ?? 0, retryDelayMs: r.retry_delay_ms ?? 1000 };
+    switch (r.type ?? "http") {
+      case "tls":
+        return {
+          ...base,
+          type: "tls",
+          host: r.host ?? "",
+          port: r.port ?? 0,
+          warnDays: r.warn_days ?? 0,
+          intervalMs: r.interval_ms,
+          ...state,
+        };
+      case "tcp":
+        return {
+          ...base,
+          type: "tcp",
+          host: r.host ?? "",
+          port: r.port ?? 0,
+          intervalMs: r.interval_ms,
+          ...retries,
+          ...state,
+        };
+      case "dns": {
+        const expected = readColumn(DNS_EXPECTED_COLUMN, r.expected_json);
+        const recordType = dnsRecordTypeSchema.safeParse(r.record_type);
+        return {
+          ...base,
+          type: "dns",
+          dnsName: r.dns_name ?? "",
+          recordType: recordType.success ? recordType.data : "A",
+          ...(expected === undefined ? {} : { expected }),
+          ...(r.resolver === null ? {} : { resolver: r.resolver }),
+          intervalMs: r.interval_ms,
+          ...retries,
+          ...state,
+        };
+      }
+      case "domain":
+        return {
+          ...base,
+          type: "domain",
+          domain: r.domain ?? "",
+          warnDays: r.warn_days ?? 0,
+          intervalMs: r.interval_ms,
+          ...retries,
+          ...state,
+        };
+      case "http":
+      default:
+        return {
+          ...base,
+          url: r.url ?? "",
+          intervalMs: r.interval_ms,
+          ...retries,
+          ...state,
+        };
+    }
   }
 
   /** Combined status of the latest result per location in the window [T - 2*interval, T]. */
@@ -440,7 +573,7 @@ export function createService(
         .all() as unknown as CheckRow[]
     ).map((r) => {
       const c = toCheck(r);
-      const tls = c.type === "tls";
+      const tls = hasDaysLeft(c.type);
       const intervalMs = c.type === "heartbeat" ? c.period : c.intervalMs;
       const latest = latestPerLocation(c.id).map((l) => toResult(l, tls));
       const newest = Math.max(...latest.map((l) => l.timestamp));
@@ -501,82 +634,7 @@ export function createService(
         // Clear first, then upsert: checks removed from the file lose their keyword and request options without a long NOT IN list.
         clearOptions.run();
         deactivateAll.run();
-        for (const c of checks) {
-          if (c.type === "heartbeat") {
-            // url and interval_ms are NOT NULL: the period stands in as the interval.
-            upsert.run(
-              c.id,
-              c.name,
-              "",
-              "heartbeat",
-              null,
-              null,
-              null,
-              c.period,
-              null,
-              null,
-              null,
-              null,
-              null,
-              c.period,
-              c.grace,
-              null,
-              null,
-              null,
-              null,
-              null,
-            );
-            continue;
-          }
-          const timeout = c.timeoutMs ?? null;
-          if (c.type === "tls") {
-            upsert.run(
-              c.id,
-              c.name,
-              "",
-              "tls",
-              c.host,
-              c.port,
-              c.warnDays,
-              c.intervalMs,
-              timeout,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-            );
-          } else {
-            upsert.run(
-              c.id,
-              c.name,
-              c.url,
-              "http",
-              null,
-              null,
-              null,
-              c.intervalMs,
-              timeout,
-              c.latencyObjectiveMs ?? null,
-              c.retries ?? 0,
-              c.retryDelayMs ?? 1000,
-              c.keyword ?? null,
-              null,
-              null,
-              c.method ?? null,
-              jsonOrNull(c.headers),
-              c.body ?? null,
-              jsonOrNull(c.expectedStatus),
-              jsonOrNull(c.jsonAssert),
-            );
-          }
-        }
+        for (const c of checks) upsert.run(...columnsOf(c));
         // Removed checks keep their rows and history, but no incident stays open and no stale state survives.
         const closing = openInactive.all() as unknown as { id: string }[];
         resolveInactiveIncidents.run(now());
@@ -754,7 +812,7 @@ export function createService(
         // Equal timestamps (several locations) must not be split across pages: the next page starts below them.
         rows.push(...(tiedRows.all(checkId, last.timestamp, last.id) as unknown as ResultRow[]));
       }
-      const tls = (getCheck.get(checkId) as CheckRow | undefined)?.type === "tls";
+      const tls = hasDaysLeft((getCheck.get(checkId) as CheckRow | undefined)?.type);
       return rows.map((r) => toResult(r, tls));
     },
 

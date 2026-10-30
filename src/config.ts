@@ -2,9 +2,12 @@ import { readFileSync } from "node:fs";
 import {
   type Check,
   type Component,
+  type DnsCheck,
+  type DomainCheck,
   type HttpCheck,
   MAX_TIMER_MS,
   type MaintenanceWindow,
+  type TcpCheck,
   type TlsCheck,
   validateCheck,
   validateComponent,
@@ -131,6 +134,54 @@ const TLS_SCHEMA = z.strictObject({
   jsonAssert: z.never({ error: "is not allowed on a tls check" }).optional(),
 });
 
+const HTTP_ONLY_FIELDS = [
+  "url",
+  "method",
+  "headers",
+  "body",
+  "expectedStatus",
+  "jsonAssert",
+  "keyword",
+  "latencyObjectiveMs",
+] as const;
+
+type ProbedCheck = TcpCheck | DnsCheck | DomainCheck;
+
+/**
+ * A tcp, dns or domain check. The contract owns the field rules (including the one hour minimum
+ * of a domain check); this adds the "not allowed" wording, the defaults and the retry budget.
+ */
+function parseProbed(
+  raw: Record<string, unknown>,
+  where: (string | number)[],
+  type: ProbedCheck["type"],
+): ProbedCheck {
+  for (const field of HTTP_ONLY_FIELDS) {
+    if (raw[field] !== undefined) {
+      throw new ConfigError(`${pathName([...where, field])} is not allowed on a ${type} check`);
+    }
+  }
+  const verdict = validateCheck(raw, pathName(where));
+  if (!verdict.ok) throw new ConfigError(verdict.error);
+  const check = verdict.value;
+  if (check.type !== "tcp" && check.type !== "dns" && check.type !== "domain") {
+    throw new ConfigError(`${pathName(where)}.type is not ${type}`);
+  }
+  const retries = check.retries ?? 0;
+  const retryDelayMs = check.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
+  const worst = (retries + 1) * (check.timeoutMs ?? DEFAULT_TIMEOUT_MS) + retries * retryDelayMs;
+  if (retries > 0 && worst > check.intervalMs) {
+    throw new ConfigError(
+      `${pathName(where)}: worst case ${worst} ms ((retries + 1) * timeoutMs + retries * retryDelayMs) exceeds intervalMs ${check.intervalMs}`,
+    );
+  }
+  const out: ProbedCheck = { ...check, retries, retryDelayMs };
+  for (const [key, value] of Object.entries(out)) {
+    if (value === undefined) Reflect.deleteProperty(out, key);
+  }
+  return out;
+}
+
 const SECRET_TEXT = `is required: ${MIN_SECRET_LENGTH} to ${MAX_SECRET_LENGTH} characters from A-Z a-z 0-9 . _ ~ -`;
 const HEARTBEAT_SCHEMA = z.strictObject({
   ...ID_NAME,
@@ -198,9 +249,9 @@ function parseHttp(raw: Record<string, unknown>, where: (string | number)[]): Ht
   // The contract owns the limits. Its messages name the field path and never quote a value.
   const verdict = validateCheck(candidate, pathName(where));
   if (!verdict.ok) throw new ConfigError(verdict.error);
-  return verdict.value.type === "tls" || verdict.value.type === "heartbeat"
-    ? check
-    : withoutUndefined(verdict.value);
+  return verdict.value.type === undefined || verdict.value.type === "http"
+    ? withoutUndefined(verdict.value)
+    : check;
 }
 
 /** The contract validators accept explicit `undefined`; the stored check has no such keys. */
@@ -229,6 +280,12 @@ function parseHeartbeat(
   if (!parsed.success) return failWith(parsed.error, where);
   const { id, name, period, grace, secret } = parsed.data;
   return { check: { id, name, type: "heartbeat", period, grace }, secret };
+}
+
+const CHECK_TYPES = ["http", "tls", "tcp", "dns", "domain", "heartbeat"] as const;
+
+function isCheckType(v: unknown): v is (typeof CHECK_TYPES)[number] {
+  return CHECK_TYPES.some((t) => t === v);
 }
 
 export interface ParsedChecks {
@@ -267,14 +324,18 @@ export function parseChecksWithSecrets(data: unknown): ParsedChecks {
     const where = ["checks", i];
     if (!isRecord(raw)) throw new ConfigError(`${pathName(where)} must be an object`);
     const type = raw.type ?? "http";
-    if (type !== "http" && type !== "tls" && type !== "heartbeat") {
-      throw new ConfigError(`${pathName(where)}.type must be "http", "tls" or "heartbeat"`);
+    if (!isCheckType(type)) {
+      throw new ConfigError(
+        `${pathName(where)}.type must be "http", "tls", "tcp", "dns", "domain" or "heartbeat"`,
+      );
     }
     let check: Check;
     if (type === "heartbeat") {
       const parsed = parseHeartbeat(raw, where);
       check = parsed.check;
       secrets.set(check.id, parsed.secret);
+    } else if (type === "tcp" || type === "dns" || type === "domain") {
+      check = parseProbed(raw, where, type);
     } else {
       check = type === "tls" ? parseTls(raw, where) : parseHttp(raw, where);
     }
