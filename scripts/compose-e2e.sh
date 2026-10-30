@@ -9,6 +9,8 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 # COMPOSE_PROJECT_NAME such as `pulse` would delete real volumes.
 export COMPOSE_PROJECT_NAME=pulse-e2e
 project="$COMPOSE_PROJECT_NAME"
+# The e2e fixtures live in compose.e2e.yaml, merged after compose.yaml for every call.
+export COMPOSE_FILE=compose.yaml:compose.e2e.yaml
 
 # Timeouts in seconds. Override them with environment variables.
 T_UP="${E2E_TIMEOUT_UP:-600}"
@@ -22,7 +24,8 @@ T_DEMO="${E2E_TIMEOUT_DEMO:-300}"
 STABLE_WINDOW="${E2E_STABLE_WINDOW:-12}"
 POLL_INTERVAL="${E2E_POLL_INTERVAL:-2}"
 
-checks_file=compose/checks.json
+regular_checks=compose/checks.json
+checks_file=compose/e2e/checks.json
 checks_backup=""
 created_env=0
 
@@ -218,6 +221,10 @@ done
 if ! docker compose config | grep -qx "name: ${project}"; then
   fail "COMPOSE_PROJECT_NAME does not override the name in compose.yaml"
 fi
+# The regular stack must carry no e2e fixture: only the e2e files may.
+jq -e '[.checks[].id | select(test("e2e"))] | length == 0' "$regular_checks" >/dev/null ||
+  fail "$regular_checks holds an e2e check"
+echo "ok: $regular_checks holds no e2e check"
 if [[ ! -f .env ]]; then
   # The example token is a placeholder the API rejects: write a random one.
   {
@@ -229,6 +236,12 @@ fi
 api_port=$(env_value PULSE_API_PORT 3000)
 status_port=$(env_value PULSE_STATUS_PORT 8080)
 demo_status_port=$(env_value PULSE_DEMO_STATUS_PORT 8081)
+regular_services=$(COMPOSE_FILE=compose.yaml docker compose config --services | sort | paste -sd' ' -)
+[[ "$regular_services" == "api notify probe status" ]] ||
+  fail "the regular stack has the services: ${regular_services}"
+regular_demo_services=$(COMPOSE_FILE=compose.yaml docker compose --profile demo config --services | sort | paste -sd' ' -)
+[[ "$regular_demo_services" != *e2e* ]] || fail "the regular stack lists an e2e service"
+echo "ok: the regular stack has exactly api, notify, probe and status"
 checks_backup=$(mktemp)
 cp "$checks_file" "$checks_backup"
 docker compose --profile demo down -v --remove-orphans

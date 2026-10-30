@@ -4,17 +4,19 @@ The API serves JSON over HTTP. The types come from [pulse-contract](https://gith
 
 ## Overview
 
-| Method | Path                  | Auth         | Response                                       |
-| ------ | --------------------- | ------------ | ---------------------------------------------- |
-| `POST` | `/results`            | Bearer token | `204`, no body                                 |
-| `GET`  | `/checks`             | none         | `ChecksResponse` (`CheckWithState[]`)          |
-| `GET`  | `/checks/:id/results` | none         | `ResultsResponse` (`Result[]`)                 |
-| `GET`  | `/uptime`             | none         | `UptimeResponse` (`CheckUptime[]`)             |
-| `GET`  | `/incidents`          | none         | `IncidentsResponse` (`Incident[]`)             |
-| `GET`  | `/maintenance`        | none         | `MaintenanceResponse` (`MaintenanceWindow[]`)  |
-| `GET`  | `/healthz`            | none         | `200 ok` (liveness, `text/plain`)              |
-| `GET`  | `/readyz`             | none         | `200 ok` or `503` with a reason (`text/plain`) |
-| `GET`  | `/metrics`            | none         | Prometheus text                                |
+| Method        | Path                       | Auth             | Response                                               |
+| ------------- | -------------------------- | ---------------- | ------------------------------------------------------ |
+| `POST`        | `/results`                 | Bearer token     | `204`, no body                                         |
+| `GET`         | `/probe/checks`            | Bearer token     | `Check[]` (active checks as configured)                |
+| `GET`         | `/checks`                  | none             | `ChecksResponse` (`CheckWithState[]`)                  |
+| `GET`         | `/checks/:id/results`      | none             | `ResultsResponse` (`Result[]`)                         |
+| `GET`         | `/uptime`                  | none             | `UptimeResponse` (`CheckUptime[]`)                     |
+| `GET`         | `/incidents`               | none             | `IncidentsResponse` (`Incident[]`)                     |
+| `GET`         | `/maintenance`             | none             | `MaintenanceResponse` (`MaintenanceWindow[]`)          |
+| `GET`, `POST` | `/heartbeat/:id[/:secret]` | Heartbeat secret | `204`, no body; `401` for a wrong secret or unknown id |
+| `GET`         | `/healthz`                 | none             | `200 ok` (liveness, `text/plain`)                      |
+| `GET`         | `/readyz`                  | none             | `200 ok` or `503` with a reason (`text/plain`)         |
+| `GET`         | `/metrics`                 | none             | Prometheus text                                        |
 
 General rules:
 
