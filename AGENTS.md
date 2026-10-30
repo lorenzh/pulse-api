@@ -98,7 +98,7 @@ repository. Bun 1.4.0 (runtime, package manager, test runner), ESM, strict TypeS
 
 ## This repository
 
-- Storage is `bun:sqlite`. The current schema is in `src/db.ts`; there are no migrations and no upgrade path from older database files. `get()` returns `null` for a missing row; SQL queries stay in `src/service.ts`, where rows are mapped to contract types.
+- Storage is `bun:sqlite`. The version 0 schema is in `src/db.ts`; later changes are numbered steps in `src/migrations.ts` (`PRAGMA user_version`), applied on open. Never edit a released step: add a new one. A file from a newer program is refused. `get()` returns `null` for a missing row; SQL queries stay in `src/service.ts`, where rows are mapped to contract types.
 - Tests use a database in a `mkdtemp` directory, never `./pulse.db`.
 - `bun start` runs `src/main.ts`. It reads the database path from `PULSE_DB` (default `./pulse.db`) and the checks from `PULSE_CHECKS_FILE` (default `./checks.json`); copy `checks.example.json` to `checks.json`.
 

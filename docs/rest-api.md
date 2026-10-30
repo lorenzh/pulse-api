@@ -45,7 +45,7 @@ Headers: `Authorization: Bearer <token>` (the word `Bearer` is case-insensitive,
 | `reason`       | string or `null`               | Required. At most 1000 UTF-16 code units (`MAX_REASON_LENGTH`).                                                                                                                                   |
 | `location`     | string                         | Optional. Trimmed, at most 64 characters. Blank means the token's location.                                                                                                                       |
 | `attempts`     | integer                        | Optional, 1 to 100 (`MAX_ATTEMPTS`). A missing value is stored as 1.                                                                                                                              |
-| `certDaysLeft` | integer or `null`              | Optional. For TLS checks.                                                                                                                                                                         |
+| `certDaysLeft` | integer or `null`              | Optional. For TLS checks (certificate) and domain checks (registration expiry, negative when expired).                                                                                            |
 
 The checks run in this order:
 
