@@ -2,7 +2,7 @@
 import { chmod, copyFile, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { checksFileJson, tokensFileJson } from "./fixtures.ts";
-import { IDLE_S, runLoad } from "./load.ts";
+import { IDLE_S, type OptionalRoute, runLoad } from "./load.ts";
 import { readContainerProcess, runChecked, runCommand } from "./measure.ts";
 
 export const SERVICES = ["api", "probe", "status", "notify"] as const;
@@ -24,6 +24,8 @@ export interface SideDirs {
   work: Record<string, string>;
   /** Seeded database of this side's api. */
   seedDb: string;
+  /** Measured routes this side's api lacks; always empty for side B. */
+  missingRoutes: OptionalRoute[];
 }
 
 export interface StackMetrics {
@@ -32,7 +34,7 @@ export interface StackMetrics {
   idleRssMiB: Record<ServiceName, number>;
   peakRssMiB: Record<ServiceName, number>;
   loadCpuS: Record<ServiceName, number>;
-  p95GetChecksMs: number | null;
+  p95GetChecksMs: number;
   p95PostResultsMs: number;
   p95GetLatencyMs: number | null;
   p95GetCheckLatencyMs: number | null;
@@ -187,7 +189,7 @@ export async function runStack(
     const atWindowStart: Partial<Record<ServiceName, number>> = {};
     const load = await runLoad({
       apiUrl: `http://127.0.0.1:${info("api").port}`,
-      allowMissingRoutes: dirs.side === "a",
+      missingRoutes: dirs.missingRoutes,
       onWindowStart: async () => {
         const samples = await sampleAll(project);
         for (const service of SERVICES) atWindowStart[service] = samples[service].cpuSeconds;

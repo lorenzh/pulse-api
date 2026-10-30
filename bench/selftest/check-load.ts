@@ -68,7 +68,7 @@ const slow = createServer((socket: Socket) => {
 });
 await new Promise<void>((resolve) => slow.listen(0, "127.0.0.1", resolve));
 const slowUrl = `http://127.0.0.1:${(slow.address() as { port: number }).port}/`;
-const slowPost = (resets: Resets): Promise<boolean> =>
+const slowPost = (resets: Resets): Promise<void> =>
   timed(slowUrl, { method: "POST", body: "{}" }, 204, undefined, resets);
 const tooMany: Resets = { retriedGets: 0, droppedPosts: 0 };
 const late = Array.from({ length: MAX_CONNECTION_RESETS * 2 }, () => slowPost(tooMany));

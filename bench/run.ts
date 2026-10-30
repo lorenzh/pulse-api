@@ -12,6 +12,7 @@ import {
   renderTable,
   type Samples,
 } from "./compare.ts";
+import { routesMissingFrom } from "./load.ts";
 import { runChecked } from "./measure.ts";
 import { type Baseline, REPOS, type RepoName, repoUrl, resolveRefs } from "./refs.ts";
 import { buildImages, imageSizeMB, runStack, SERVICES, type SideDirs } from "./stack.ts";
@@ -107,7 +108,11 @@ async function prepareSide(side: Side, refs: Record<RepoName, string>): Promise<
   await runChecked("rm", ["-rf", dirname(seedDb)]);
   await mkdir(dirname(seedDb), { recursive: true });
   await runChecked("bun", [join(BENCH_DIR, "seed.ts"), apiDir, seedDb]);
-  const dirs: SideDirs = { side, work, seedDb };
+  // Only A may predate a measured route; B must serve them all, so a 404 there fails the load.
+  const missingRoutes =
+    side === "a" ? routesMissingFrom(await readFile(join(apiDir, "src", "server.ts"), "utf8")) : [];
+  if (missingRoutes.length > 0) log(`api A lacks ${missingRoutes.join(", ")}: not measured on A`);
+  const dirs: SideDirs = { side, work, seedDb, missingRoutes };
   log(`build images (${side})`);
   await buildImages(dirs, COMPOSE_FILE, join(WORK_ROOT, "run", side));
   return dirs;
@@ -151,13 +156,13 @@ async function measureStack(
     add(samples, service, "load_cpu_s", m.loadCpuS[service]);
     add(samples, service, "image_mb", await imageSizeMB(dirs, service));
   }
+  add(samples, "api", "p95_get_checks_ms", m.p95GetChecksMs);
   add(samples, "api", "p95_post_results_ms", m.p95PostResultsMs);
   for (const [metric, value] of [
-    ["p95_get_checks_ms", m.p95GetChecksMs],
     ["p95_get_latency_ms", m.p95GetLatencyMs],
     ["p95_get_check_latency_ms", m.p95GetCheckLatencyMs],
   ] as const) {
-    // Only side A may lack a route; the load of side B fails on a 404.
+    // Null only for a route that side A's source lacks (see prepareSide).
     if (value === null) missingOnA.add(`api.${metric}`);
     else add(samples, "api", metric, value);
   }
@@ -199,7 +204,6 @@ async function main(): Promise<number> {
     }
   }
   const rows = buildRows(budgets, samples.a, samples.b, missingOnA);
-  for (const key of missingOnA) log(`not available on A: ${key} (A answers its route with 404)`);
   const table = renderTable(rows);
   console.log(table);
   await mkdir(args.out, { recursive: true });

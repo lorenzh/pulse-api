@@ -1,26 +1,31 @@
-// Self-test: a route that side A answers with 404 is reported, not compared; side B must serve it.
+// Self-test: a route side A's source lacks is reported, not compared; a 404 from a route that exists fails.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { type Budgets, buildRows, EMITTED_METRICS, isFailure, renderTable } from "../compare.ts";
-import { type Resets, timed } from "../load.ts";
+import { type Resets, routesMissingFrom, timed } from "../load.ts";
 
-const statusOf: Record<string, number> = { "/old": 200, "/new": 404, "/broken": 500 };
+// Capability check from A's route table: only a route its source lacks is skipped on A.
+const oldApi = 'const ROUTES = ["/checks", "/uptime", "/components/uptime"];';
+const newApi = `const ROUTES = ["/checks", "/uptime", "/latency"];\n  return "/checks/:id/latency";`;
+assert.deepEqual(routesMissingFrom(oldApi), ["/latency", "/checks/:id/latency"]);
+assert.deepEqual(routesMissingFrom(newApi), []);
+assert.deepEqual(routesMissingFrom('"/latency"'), ["/checks/:id/latency"]);
+
+// Every requested route must answer 200: a 404 from an A that has the route, or from B, fails.
 const server = createServer((req, res) => {
-  res.writeHead(statusOf[req.url ?? ""] ?? 404).end();
+  res.writeHead(req.url === "/old" ? 200 : 404).end();
 });
 await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 const resets: Resets = { retriedGets: 0, droppedPosts: 0 };
-
-// Side A (404 allowed): the new route is missing, the old one measured, any other status fails.
-const aSamples: number[] = [];
-assert.equal(await timed(`${base}/new`, {}, 200, aSamples, resets, true), false);
-assert.equal(aSamples.length, 0);
-assert.equal(await timed(`${base}/old`, {}, 200, aSamples, resets, true), true);
-assert.equal(aSamples.length, 1);
-await assert.rejects(timed(`${base}/broken`, {}, 200, undefined, resets, true), /status 500/);
-// Side B (strict): a 404 fails the run.
-await assert.rejects(timed(`${base}/new`, {}, 200, undefined, resets), /GET .*\/new: status 404/);
+const samples: number[] = [];
+await timed(`${base}/old`, {}, 200, samples, resets);
+assert.equal(samples.length, 1);
+await assert.rejects(
+  timed(`${base}/latency`, {}, 200, samples, resets),
+  /GET .*\/latency: status 404/,
+);
+assert.equal(samples.length, 1);
 server.close();
 
 // A without the latency metric, B with it: one reported row, no failure.
