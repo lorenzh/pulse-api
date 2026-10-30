@@ -20,7 +20,7 @@
       "method": "POST",
       "headers": {
         "Authorization": {
-          "env": "EXAMPLE_API_TOKEN"
+          "env": "PULSE_HEADER_EXAMPLE_API_TOKEN"
         },
         "Content-Type": "application/json"
       },

@@ -19,7 +19,10 @@ function messageOf(check: Record<string, unknown>): string {
 test("config: accepts the request options on an http check", () => {
   const options = {
     method: "POST",
-    headers: { Authorization: { env: "SVC_TOKEN" }, "Content-Type": "application/json" },
+    headers: {
+      Authorization: { env: "PULSE_HEADER_SVC_TOKEN" },
+      "Content-Type": "application/json",
+    },
     body: '{"a":1}',
     expectedStatus: [200, "300-399"],
     jsonAssert: [

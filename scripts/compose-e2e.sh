@@ -342,7 +342,7 @@ set_target_mode() { # set_target_mode <mode>
 # None of the strings may appear in the text of a response or a log.
 assert_absent() { # assert_absent <description> <text>
   local needle
-  for needle in "$e2e_token" "$e2e_body_sentinel" SVC_TOKEN; do
+  for needle in "$e2e_token" "$e2e_body_sentinel" PULSE_HEADER_SVC_TOKEN; do
     if grep -qF -- "$needle" <<<"$2"; then fail "$1 shows ${needle}"; fi
   done
   echo "ok: $1 shows no secret"

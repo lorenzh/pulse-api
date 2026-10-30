@@ -25,9 +25,9 @@ services:
 
   probe:
     environment:
-      # Resolved by the probe for the header {"env": "SVC_TOKEN"} of the check e2e-post.
+      # Resolved by the probe for the header {"env": "PULSE_HEADER_SVC_TOKEN"} of the check e2e-post.
       # The env value is the whole header value, so it carries the "Bearer " scheme.
-      SVC_TOKEN: Bearer ${E2E_SVC_TOKEN:-e2e-svc-token-sentinel}
+      PULSE_HEADER_SVC_TOKEN: Bearer ${E2E_SVC_TOKEN:-e2e-svc-token-sentinel}
     depends_on:
       e2e-target:
         condition: service_started
@@ -37,7 +37,7 @@ services:
     image: oven/bun:1.4.0-alpine@sha256:07235578f79ef8c6f97d94aee7938e76f5cdba5f21ae5dbfdd3d3d38058437eb
     command: ["bun", "/e2e/target.mjs"]
     environment:
-      SVC_TOKEN: ${E2E_SVC_TOKEN:-e2e-svc-token-sentinel}
+      PULSE_HEADER_SVC_TOKEN: ${E2E_SVC_TOKEN:-e2e-svc-token-sentinel}
     volumes:
       - ./compose/e2e/target.mjs:/e2e/target.mjs:ro
 
