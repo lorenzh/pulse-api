@@ -6,20 +6,24 @@ import {
   isAdminRevision,
 } from "@lorenzh/pulse-contract";
 import { BodyError, readBody, readJsonBody, sendJson } from "@lorenzh/pulse-kit";
+import { type AdminAuthFailures, tokenKindOf } from "./admin-auth-failures.ts";
+import type { AdminToken } from "./admin-tokens.ts";
 import type { ConfigEdit, ConfigKind, ConfigWriter, WriteFailure } from "./config-write.ts";
 import { ConfigWriteError } from "./config-write.ts";
 import type { ConfigWriteAction, ConfigWriteResult, Metrics } from "./metrics.ts";
-import { matchesAnyToken } from "./tokens.ts";
+import { findByToken } from "./tokens.ts";
 
 export interface AdminRoutesDeps {
   writer: ConfigWriter;
   metrics: Pick<Metrics, "recordConfigWrite">;
-  /** Admin tokens by token value; the name is what the log line carries. */
-  adminTokens: ReadonlyMap<string, string>;
+  /** Admin tokens; the name is what the log line carries. */
+  adminTokens: readonly AdminToken[];
   /** True for a valid probe token: it gets 403 instead of 401. */
   isProbeToken: (authorization: string | undefined) => boolean;
   info: (message: string, fields: Record<string, string>) => void;
   warn: (message: string, fields: Record<string, string>) => void;
+  /** Logs and counts a failed authentication; shared with the manual-incident routes. */
+  authFailures: AdminAuthFailures;
 }
 
 const ADMIN_PATH = /^\/admin\/(config|checks|components|maintenance)(?:\/([^/]+))?$/;
@@ -136,15 +140,17 @@ interface Target {
 export function createAdminHandler(
   deps: AdminRoutesDeps,
 ): (req: IncomingMessage, res: ServerResponse) => Promise<boolean> {
-  const authorize = (req: IncomingMessage): string => {
+  const authorize = (req: IncomingMessage, route: string): string => {
     const header = req.headers.authorization;
-    const tokens = [...deps.adminTokens.keys()];
-    if (!matchesAnyToken(tokens, header)) {
-      if (deps.isProbeToken(header)) throw new RouteError(403, "forbidden");
-      throw new RouteError(401, "unauthorized", { "www-authenticate": "Bearer" });
+    const admin = findByToken(deps.adminTokens, header);
+    if (admin !== undefined) return admin.name;
+    const kind = tokenKindOf(header, deps.isProbeToken);
+    if (kind === "probe") {
+      deps.authFailures.record(route, 403, kind);
+      throw new RouteError(403, "forbidden");
     }
-    const presented = /^Bearer (.+)$/i.exec(header ?? "")?.[1];
-    return (presented === undefined ? undefined : deps.adminTokens.get(presented)) ?? "admin";
+    deps.authFailures.record(route, 401, kind);
+    throw new RouteError(401, "unauthorized", { "www-authenticate": "Bearer" });
   };
 
   const write = async (
@@ -221,7 +227,8 @@ export function createAdminHandler(
     let target: Target | undefined;
     let action: ConfigWriteAction | undefined;
     try {
-      const tokenName = authorize(req);
+      // The route pattern, as in the request metric: never the raw path.
+      const tokenName = authorize(req, `/admin/${section}${match[2] === undefined ? "" : "/:id"}`);
       if (section === "config") {
         if (match[2] !== undefined) throw new RouteError(404, "not found");
         if (method !== "GET") throw new RouteError(405, "method not allowed", { Allow: "GET" });

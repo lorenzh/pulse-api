@@ -35,6 +35,8 @@ export interface Metrics {
     action: ConfigWriteAction,
     result: ConfigWriteResult,
   ): void;
+  /** Count one failed admin authentication; `route` is a route pattern, never a raw path. */
+  recordAdminAuthFailure(route: string, status: 401 | 403): void;
   /** Prometheus text exposition. Only check ids, locations, states and route patterns appear. */
   render(): string;
 }
@@ -107,6 +109,11 @@ export function createMetrics({
     "pulse_api_config_writes_total",
     "Admin writes to the checks file, by kind, action and result.",
   );
+  // No series before the first failure: an alert uses increase(...) > 0, with or vector(0) as needed.
+  const adminAuthFailures = registry.counter(
+    "pulse_api_admin_auth_failures_total",
+    "Failed admin authentications, by route pattern and status.",
+  );
   for (const result of CONFIG_RELOAD_RESULTS) configReloads.inc({ result }, 0);
   for (const kind of CONFIG_WRITE_KINDS) {
     for (const action of CONFIG_WRITE_ACTIONS) {
@@ -167,6 +174,9 @@ export function createMetrics({
     },
     recordConfigWrite(kind, action, result) {
       configWrites.inc({ kind, action, result });
+    },
+    recordAdminAuthFailure(route, status) {
+      adminAuthFailures.inc({ route, status: String(status) });
     },
     render: () => registry.render(),
   };

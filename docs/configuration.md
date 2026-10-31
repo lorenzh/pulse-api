@@ -107,7 +107,7 @@ A TLS check (`"type": "tls"`) watches the expiry of the leaf certificate of a se
 | `port`     | no       | Integer 1 to 65535, default 443.                                                        |
 | `warnDays` | no       | Integer 0 or more, default 14. The check is down when this many days or fewer are left. |
 
-Only the expiry of the leaf certificate is judged. The chain and the host name are not verified. Results carry `certDaysLeft`. `GET /checks` shows the latest value and `GET /checks/:id/results` includes it. A TLS check ignores `retries`, `retryDelayMs` and `latencyObjectiveMs`.
+Only the expiry of the leaf certificate is judged. The chain and the host name are not verified. Results carry `certDaysLeft`. `GET /checks` shows the latest value and `GET /checks/:id/results` includes it. The API accepts `certDaysLeft` from −3000000 to 3000000 days. This covers a certificate that expires in year 9999 ("no expiry", common on self-signed appliance certificates); a value outside the range gets `400`. A TLS check ignores `retries`, `retryDelayMs` and `latencyObjectiveMs`.
 
 ### TCP checks
 
@@ -169,7 +169,7 @@ A domain check (`"type": "domain"`) watches the registration expiry through RDAP
 | `warnDays`   | yes      | Integer 0 or more. The check is `degraded` when this many days or fewer are left. |
 | `intervalMs` | yes      | At least 3600000 (1 hour). There is no default.                                   |
 
-It also takes `timeoutMs`, `retries` and `retryDelayMs`. The check is `down` when the domain has expired (`domain expired`) or no expiry date is found (`expiry date not found in RDAP answer`). Results carry `certDaysLeft` (whole days, negative when expired). Registries without RDAP, such as some country codes, give `down`.
+It also takes `timeoutMs`, `retries` and `retryDelayMs`. The check is `down` when the domain has expired (`domain expired`) or no expiry date is found (`expiry date not found in RDAP answer`). Results carry `certDaysLeft` (whole days, negative when expired), from −3000000 to 3000000 days like a TLS check, so a registration that expires in year 9999 is accepted; a value outside the range gets `400`. Registries without RDAP, such as some country codes, give `down`.
 
 ```json
 {
@@ -190,13 +190,15 @@ It also takes `timeoutMs`, `retries` and `retryDelayMs`. The check is `down` whe
 
 A heartbeat check (`"type": "heartbeat"`) is for cron jobs and workers. The job pings the API; the check is `down` when no ping arrives within `period + grace`. The probe never runs it. It takes no `url`, `host`, `intervalMs`, `timeoutMs` or `keyword`.
 
-| Field    | Required | Meaning                                                                                                 |
-| -------- | -------- | ------------------------------------------------------------------------------------------------------- |
-| `period` | yes      | Expected time between pings in ms, integer 1000 to 86400000.                                            |
-| `grace`  | no       | Extra wait in ms before the check is down, integer 0 to 86400000, default 0.                            |
-| `secret` | yes      | 16 to 128 characters from `A-Z a-z 0-9 . _ ~ -`. The credential of the ping. Allowed on this type only. |
+| Field    | Required | Meaning                                                                                                                                    |
+| -------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `period` | yes      | Expected time between pings in ms, integer 1000 to 86400000.                                                                               |
+| `grace`  | no       | Extra wait in ms before the check is down, integer 0 to 86400000, default 0.                                                               |
+| `secret` | yes      | 16 to 128 characters from `A-Z a-z 0-9 . _ ~ -`, not starting with `replace-with-`. The credential of the ping. Allowed on this type only. |
 
-The secret is kept in memory only. `GET /checks`, `/metrics`, incident reasons and error messages never contain it. It is not a probe token: a probe token cannot ping, and the secret cannot post to `/results`. See [Heartbeat checks](operation.md#heartbeat-checks) for use and [GET|POST /heartbeat/:id](rest-api.md#getpost-heartbeatidsecret) for the endpoint.
+A secret that still starts with the example placeholder `replace-with-` (case-sensitive) is refused with `checks[<i>].secret still has the example placeholder secret`, at start, on reload and on `POST`/`PUT /admin/checks`. Generate one with `openssl rand -hex 32`.
+
+The secret is kept in memory only. `GET /checks`, `/metrics`, incident reasons and error messages never contain it. It is not a probe token: a probe token cannot ping, and the secret cannot post to `/results`. `POST /results` for a heartbeat check answers `403` for every probe token, so only a ping changes a heartbeat check. See [Heartbeat checks](operation.md#heartbeat-checks) for use and [GET|POST /heartbeat/:id](rest-api.md#getpost-heartbeatidsecret) for the endpoint.
 
 ### maintenance
 

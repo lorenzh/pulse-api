@@ -16,7 +16,13 @@ import {
 import { z } from "zod";
 import { type AdminToken, parseAdminTokens } from "./admin-tokens.ts";
 import { firstIssue, type Issue, pathName, unknownKey } from "./issue-path.ts";
-import { type ProbeToken, parseTokens, TokensError } from "./tokens.ts";
+import {
+  MIN_TOKEN_LENGTH,
+  PLACEHOLDER_PREFIX,
+  type ProbeToken,
+  parseTokens,
+  TokensError,
+} from "./tokens.ts";
 
 export class ConfigError extends Error {
   override name = "ConfigError";
@@ -36,7 +42,7 @@ const DEFAULT_TLS_PORT = 443;
 const DEFAULT_WARN_DAYS = 14;
 const MIN_HEARTBEAT_PERIOD_MS = 1000;
 const MAX_HEARTBEAT_MS = 86_400_000;
-const MIN_SECRET_LENGTH = 16;
+const MIN_SECRET_LENGTH = MIN_TOKEN_LENGTH;
 const MAX_SECRET_LENGTH = 128;
 const SECRET_PATTERN = /^[A-Za-z0-9._~-]+$/;
 
@@ -191,7 +197,8 @@ const HEARTBEAT_SCHEMA = z.strictObject({
     .string({ error: SECRET_TEXT })
     .min(MIN_SECRET_LENGTH, SECRET_TEXT)
     .max(MAX_SECRET_LENGTH, SECRET_TEXT)
-    .regex(SECRET_PATTERN, SECRET_TEXT),
+    .regex(SECRET_PATTERN, SECRET_TEXT)
+    .refine((v) => !v.startsWith(PLACEHOLDER_PREFIX), "still has the example placeholder secret"),
   availabilityTarget: AVAILABILITY_TARGET,
 });
 

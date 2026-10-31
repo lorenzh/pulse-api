@@ -11,6 +11,12 @@ import {
   WIRE_VERSION_HEADER,
 } from "@lorenzh/pulse-contract";
 import { BodyError, handleOps, readBody, readJsonBody, sendJson } from "@lorenzh/pulse-kit";
+import {
+  type AdminAuthFailures,
+  createAdminAuthFailures,
+  tokenKindOf,
+} from "./admin-auth-failures.ts";
+import type { AdminToken } from "./admin-tokens.ts";
 import { componentsUptime, componentsWithState } from "./components.ts";
 import {
   ManualIncidentConflictError,
@@ -26,7 +32,7 @@ import {
   type Service,
   UnknownCheckError,
 } from "./service.ts";
-import { authenticate, matchesAnyToken, type ProbeToken } from "./tokens.ts";
+import { authenticate, findByToken, type ProbeToken } from "./tokens.ts";
 
 const MAX_BODY = 1_000_000;
 const MAX_PING_BODY = 1024;
@@ -35,6 +41,8 @@ export const MAX_RESULT_AGE_MS = 7 * 86_400_000;
 export const MAX_REASON_LENGTH = 1000;
 export const MAX_ATTEMPTS = 100;
 export const MAX_LATENCY_MS = 86_400_000;
+/** Covers every expiry up to year 9999 (the X.509 and RDAP maximum), even from a clock at the epoch. */
+export const MAX_CERT_DAYS = 3_000_000;
 export const DEFAULT_LIMIT = 100;
 export const MAX_LIMIT = 1000;
 export const DEFAULT_INCIDENT_LIMIT = 1000;
@@ -108,9 +116,9 @@ function checkMeasurements(b: Record<string, unknown>): string | undefined {
   if (
     b.certDaysLeft !== undefined &&
     b.certDaysLeft !== null &&
-    !(typeof b.certDaysLeft === "number" && Number.isInteger(b.certDaysLeft))
+    !isIntegerIn(b.certDaysLeft, -MAX_CERT_DAYS, MAX_CERT_DAYS)
   ) {
-    return "certDaysLeft must be an integer or null";
+    return `certDaysLeft must be null or an integer from -${MAX_CERT_DAYS} to ${MAX_CERT_DAYS}`;
   }
   if (b.attempts !== undefined && !isIntegerIn(b.attempts, 1, MAX_ATTEMPTS))
     return `attempts must be an integer from 1 to ${MAX_ATTEMPTS}`;
@@ -212,6 +220,8 @@ function routeOf(rawUrl: string | undefined): string {
   return ROUTES.find((r) => r === path) ?? "unmatched";
 }
 
+type LogFn = (message: string, fields: Record<string, string>) => void;
+
 type Ops = {
   service: Service;
   metrics: Metrics;
@@ -220,7 +230,12 @@ type Ops = {
   components: () => readonly Component[];
   manualIncidents: ManualIncidentStore;
   /** Admin tokens; undefined when the feature is off and the write routes answer 404. */
-  adminTokens: readonly string[] | undefined;
+  adminTokens: readonly AdminToken[] | undefined;
+  /** True for a valid probe token, so a failed admin authentication is logged with kind `probe`. */
+  isProbeToken: (authorization: string | undefined) => boolean;
+  authFailures: AdminAuthFailures;
+  info: LogFn;
+  warn: LogFn;
   /** Handles `/admin/*`; undefined when the config writes are off. */
   admin: ((req: IncomingMessage, res: ServerResponse) => Promise<boolean>) | undefined;
 };
@@ -390,35 +405,83 @@ function manualId(idText: string | undefined): number | undefined {
   return Number(idText);
 }
 
-function requireAdmin(ops: Ops, req: IncomingMessage): void {
+/** Authorize a manual-incident write; returns the admin token's name. */
+function requireAdmin(ops: Ops, req: IncomingMessage, route: string): string {
   // Without admin tokens the feature is off and the write routes do not exist.
   if (ops.adminTokens === undefined) throw new HttpError(404, "not found");
-  if (!matchesAnyToken(ops.adminTokens, req.headers.authorization)) {
+  const header = req.headers.authorization;
+  const admin = findByToken(ops.adminTokens, header);
+  if (admin === undefined) {
+    // A probe token also answers 401 here; only the log line tells it apart.
+    ops.authFailures.record(route, 401, tokenKindOf(header, ops.isProbeToken));
     throw new HttpError(401, "unauthorized", { "www-authenticate": "Bearer" });
+  }
+  return admin.name;
+}
+
+type ManualWrite = "create" | "update" | "resolve" | "delete";
+
+/** Apply one write and answer it; returns the id of the incident written. */
+async function applyManualWrite(
+  store: ManualIncidentStore,
+  req: IncomingMessage,
+  res: ServerResponse,
+  action: ManualWrite,
+  id: number | undefined,
+): Promise<number> {
+  if (action === "create") {
+    const created = store.create(await readManualBody(req, false));
+    sendJson(res, 201, created);
+    return created.id;
+  }
+  // The action table gives these actions only on an item path, which has an id.
+  if (id === undefined) throw new HttpError(404, "not found");
+  switch (action) {
+    case "update":
+      sendJson(res, 201, store.addUpdate(id, await readManualBody(req, false)));
+      return id;
+    case "resolve":
+      sendJson(res, 200, store.resolve(id, await readManualBody(req, true)));
+      return id;
+    case "delete":
+      store.remove(id);
+      res.writeHead(204).end();
+      return id;
+    default: {
+      const never: never = action;
+      return never;
+    }
   }
 }
 
-/** Run a write route; the store's errors map to a status. */
+/** Run a write route and log it; the store's errors map to a status. */
 async function writeManual(
   ops: Ops,
   req: IncomingMessage,
   res: ServerResponse,
-  action: ManualAction,
-  id: number,
+  action: ManualWrite,
+  id: number | undefined,
+  tokenName: string,
 ): Promise<void> {
-  const store = ops.manualIncidents;
   try {
-    if (action === "update") {
-      sendJson(res, 201, store.addUpdate(id, await readManualBody(req, false)));
-    } else if (action === "resolve") {
-      sendJson(res, 200, store.resolve(id, await readManualBody(req, true)));
-    } else {
-      store.remove(id);
-      res.writeHead(204).end();
-    }
+    const written = await applyManualWrite(ops.manualIncidents, req, res, action, id);
+    // Names, the action and the id only: no title, message, body or header value.
+    ops.info("manual incident write", { token: tokenName, action, id: String(written) });
   } catch (err) {
-    throw manualFailure(err);
+    const failure = manualFailure(err);
+    // A 500 is logged once, as "request failed".
+    if (failure instanceof HttpError) {
+      const fields: Record<string, string> = { status: String(failure.status), action };
+      if (action !== "create" && id !== undefined) fields.id = String(id);
+      ops.warn("manual incident write failed", fields);
+    }
+    throw failure;
   }
+}
+
+function manualRoute(shape: string): string {
+  if (shape === "list") return "/manual-incidents";
+  return shape === "item" ? "/manual-incidents/:id" : `/manual-incidents/:id/${shape}`;
 }
 
 /** Serve `/manual-incidents[/<id>[/updates|/resolve]]`. Writes need an admin token. */
@@ -446,16 +509,8 @@ async function serveManualIncidents(
     sendJson(res, 200, incident);
     return;
   }
-  requireAdmin(ops, req);
-  if (action === "create") {
-    try {
-      sendJson(res, 201, store.create(await readManualBody(req, false)));
-    } catch (err) {
-      throw manualFailure(err);
-    }
-    return;
-  }
-  if (id !== undefined) await writeManual(ops, req, res, action, id);
+  const tokenName = requireAdmin(ops, req, manualRoute(shape));
+  await writeManual(ops, req, res, action, id, tokenName);
 }
 
 function decodeCheckId(encoded: string | undefined): string {
@@ -517,8 +572,16 @@ async function handle(
     } catch (err) {
       throw bodyFailure(err);
     }
-    const result = validateResult(parsed, now(), (id) => service.findActiveCheck(id));
+    // One lookup per request: validation fetches the check, the type guard reuses it.
+    let check: Check | undefined;
+    const result = validateResult(parsed, now(), (id) => {
+      check = service.findActiveCheck(id);
+      return check;
+    });
     if (typeof result === "string") throw new HttpError(400, result);
+    // Only its ping secret changes a heartbeat check. Checked after auth and validation, so an
+    // unauthenticated caller learns nothing about check types.
+    if (check?.type === "heartbeat") throw new HttpError(403, "heartbeat checks accept only pings");
     // validateResult maps an omitted or blank location to the default: the token decides then.
     const sent = (parsed as { location?: unknown }).location;
     if (typeof sent === "string" && sent.trim() !== "" && result.location !== tokenLocation) {
@@ -652,7 +715,13 @@ export type ApiServerOptions = {
   /** Store behind `/manual-incidents`. Without it, or without `adminTokens`, the reads are empty. */
   manualIncidents?: ManualIncidentStore;
   /** Tokens that may write manual incidents. Without them the writes answer 404 and the reads are empty. */
-  adminTokens?: readonly string[];
+  adminTokens?: readonly AdminToken[];
+  /** Logs and counts failed admin authentications; defaults to one that only counts in `metrics`. */
+  adminAuthFailures?: AdminAuthFailures;
+  /** Receives the manual-incident write lines. */
+  info?: LogFn;
+  /** Receives the failed manual-incident write lines. */
+  warn?: LogFn;
   /** Handler of `/admin/*` (see admin-routes.ts). Without it those paths answer 404. */
   admin?: (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
 };
@@ -675,9 +744,13 @@ function emptyManualIncidents(): ManualIncidentStore {
 
 export function createApiServer(service: Service, options: ApiServerOptions): Server {
   const now = options.now ?? Date.now;
+  const metrics = options.metrics ?? createMetrics({ listStates: () => service.listCheckStates() });
+  const ignore: LogFn = () => {
+    // No logger given: the lines are dropped on purpose.
+  };
   const ops: Ops = {
     service,
-    metrics: options.metrics ?? createMetrics({ listStates: () => service.listCheckStates() }),
+    metrics,
     notReadyReason: options.notReadyReason ?? (() => undefined),
     heartbeatSecrets: options.heartbeatSecrets ?? (() => new Map()),
     components: options.components ?? (() => []),
@@ -687,6 +760,11 @@ export function createApiServer(service: Service, options: ApiServerOptions): Se
         ? emptyManualIncidents()
         : (options.manualIncidents ?? emptyManualIncidents()),
     adminTokens: options.adminTokens,
+    isProbeToken: (header) => authenticate(options.tokens, header) !== undefined,
+    authFailures:
+      options.adminAuthFailures ?? createAdminAuthFailures({ now, warn: ignore, metrics }),
+    info: options.info ?? ignore,
+    warn: options.warn ?? ignore,
     admin: options.admin,
   };
   const logError = options.logError ?? ((_message, err) => console.error(err));

@@ -52,6 +52,7 @@ The checks file is invalid. The API prints one line `pulse-api: <path>: <message
 - `maintenance[<i>].checkId must reference a configured check`
 - `maintenance[<i>].start must be an ISO 8601 string with an explicit offset (Z or ±hh:mm)`
 - `maintenance[<i>].end must be after start`
+- `checks[<i>].secret still has the example placeholder secret`: a heartbeat `secret` still starts with `replace-with-`, as in `checks.example.json`. Set a secret of your own (`openssl rand -hex 32`) and give it to the job that pings, or remove the check.
 
 A wrong type reads like an out-of-range value, for example `checks[0].intervalMs must be an integer from 1 to 2147483647 (milliseconds)` for a string. The file is read with zod schemas, which report only the first problem, in this order: unknown keys, then the fields of the check. Messages that changed with the zod parser:
 
@@ -82,6 +83,7 @@ The body is invalid. The message names the field. `body is not valid JSON` comes
 - `latencyMs must be a number from 0 to 86400000`
 - `reason must be at most 1000 characters`
 - `attempts must be an integer from 1 to 100`
+- `certDaysLeft must be null or an integer from -3000000 to 3000000`: no real certificate or registration date (up to year 9999) gives such a value. Check the probe version.
 - `location must be at most 64 characters`: a location longer than 64 characters after trim. Use a shorter `PULSE_LOCATION`.
 
 ## 401 on POST /results
@@ -89,6 +91,8 @@ The body is invalid. The message names the field. `body is not valid JSON` comes
 `{"error":"unauthorized"}` with `WWW-Authenticate: Bearer`. The `Authorization` header is missing, is not `Bearer <token>`, or the token is not in the tokens file. Check that the probe's `PULSE_PROBE_TOKEN` is in the tokens file, and that the API was restarted after you added it.
 
 ## 403 on POST /results
+
+`{"error":"heartbeat checks accept only pings"}`. The `checkId` names a heartbeat check. Only a ping to `/heartbeat/:id` changes it; a probe never posts results for it. Check the check id.
 
 `{"error":"location does not match token"}`. The probe sent a location that differs from the location of its token. Make the probe's `PULSE_LOCATION` equal to the `location` of its token entry. See [Locations and tokens](concepts.md#locations-and-tokens).
 

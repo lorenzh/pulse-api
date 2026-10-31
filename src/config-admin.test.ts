@@ -705,6 +705,21 @@ test("admin: a heartbeat secret can be set, kept and rotated, and is never read 
   assert.equal(bad.status, 422);
 });
 
+test("admin: a heartbeat with the example placeholder secret answers 422 without the value", async () => {
+  const b = await boot();
+  const placeholder = "replace-with-xxxxxxxxxxxxxxxx";
+  const hb = { id: "job", name: "Job", type: "heartbeat", period: 60000, grace: 0 };
+  const r = await b.call("POST", "/admin/checks", {
+    body: { ...hb, secret: placeholder },
+    ifMatch: await b.revision(),
+  });
+  assert.equal(r.status, 422);
+  const { error } = (await r.json()) as ErrorResponse;
+  assert.match(error, /secret still has the example placeholder secret/);
+  assert.ok(!error.includes(placeholder));
+  assert.ok(!b.lines.some((l) => l.line.includes(placeholder)));
+});
+
 // ---- sentinel ----
 
 test("sentinel: header values, env names, bodies and secrets stay out of every output", async () => {

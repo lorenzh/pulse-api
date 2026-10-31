@@ -4,7 +4,8 @@ import { firstIssue, type Issue, pathName } from "./issue-path.ts";
 import { MAX_LOCATION_LENGTH } from "./service.ts";
 
 export const MIN_TOKEN_LENGTH = 16;
-const PLACEHOLDER_PREFIX = "replace-with-";
+/** The prefix of every placeholder secret and token in the repository's examples. */
+export const PLACEHOLDER_PREFIX = "replace-with-";
 
 /** Tokens printed in the repository's examples. They are public, so they never authenticate. */
 export const EXAMPLE_TOKENS: readonly string[] = [
@@ -101,17 +102,27 @@ function digest(value: string): Buffer {
   return createHash("sha256").update(value).digest();
 }
 
-/** True when `header` is a Bearer header whose token is one of `tokens`. Compares every token. */
-export function matchesAnyToken(tokens: readonly string[], header: string | undefined): boolean {
+/**
+ * The first entry whose token is the Bearer token in `header`, or undefined. Compares the digest
+ * against every entry without an early exit, so the time does not reveal which entry matched.
+ */
+export function findByToken<T extends { token: string }>(
+  entries: readonly T[],
+  header: string | undefined,
+): T | undefined {
   const presented = header === undefined ? undefined : BEARER.exec(header)?.[1];
-  if (presented === undefined) return false;
+  if (presented === undefined) return undefined;
   const wanted = digest(presented);
-  let isMatch = false;
-  // No early exit: every configured token is compared.
-  for (const token of tokens) {
-    if (timingSafeEqual(wanted, digest(token))) isMatch = true;
+  let found: T | undefined;
+  for (const entry of entries) {
+    if (timingSafeEqual(wanted, digest(entry.token)) && found === undefined) found = entry;
   }
-  return isMatch;
+  return found;
+}
+
+/** True when `header` has the Bearer form that `findByToken` reads. */
+export function isBearer(header: string | undefined): boolean {
+  return header !== undefined && BEARER.test(header);
 }
 
 /** Return the location bound to the bearer token in `header`, or undefined. */
@@ -119,15 +130,5 @@ export function authenticate(
   tokens: readonly ProbeToken[],
   header: string | undefined,
 ): string | undefined {
-  const presented = header === undefined ? undefined : BEARER.exec(header)?.[1];
-  if (presented === undefined) return undefined;
-  const wanted = digest(presented);
-  let location: string | undefined;
-  // No early exit: every configured token is compared.
-  for (const entry of tokens) {
-    if (timingSafeEqual(wanted, digest(entry.token)) && location === undefined) {
-      location = entry.location;
-    }
-  }
-  return location;
+  return findByToken(tokens, header)?.location;
 }

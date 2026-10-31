@@ -1,8 +1,12 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import type { Check, Result } from "@lorenzh/pulse-contract";
+import type { AddressInfo } from "node:net";
+import type { Check, ChecksResponse, ErrorResponse, Result } from "@lorenzh/pulse-contract";
+import { openDb } from "./db.ts";
 import {
+  createApiServer,
   MAX_ATTEMPTS,
+  MAX_CERT_DAYS,
   MAX_FUTURE_SKEW_MS,
   MAX_LATENCY_MS,
   MAX_REASON_LENGTH,
@@ -10,6 +14,7 @@ import {
   maxFutureSkewMs,
   validateResult,
 } from "./server.ts";
+import { createService } from "./service.ts";
 
 const NOW = 10 * 86_400_000;
 
@@ -105,4 +110,77 @@ test("validateResult: a 10 s check rejects a timestamp 30 s ahead and names the 
     typeof validateResult({ ...base, timestamp: NOW + 60_000 }, NOW, () => undefined),
     "object",
   );
+});
+
+const CERT_TEXT = "certDaysLeft must be null or an integer from -3000000 to 3000000";
+
+test("validateResult: certDaysLeft is absent, null or an integer within MAX_CERT_DAYS", () => {
+  assert.equal(MAX_CERT_DAYS, 3_000_000);
+  for (const v of [1e9, 3_000_001, -3_000_001, Number.MAX_SAFE_INTEGER]) {
+    assert.equal(
+      validateResult({ ...base, certDaysLeft: v }, NOW, () => undefined),
+      CERT_TEXT,
+    );
+  }
+  rejected({ certDaysLeft: 30.5 }, "certDaysLeft");
+  for (const v of [3_000_000, -3_000_000, 0, null, 30, -5, 2_912_000, 40_000]) {
+    const out = validateResult({ ...base, certDaysLeft: v }, NOW, () => undefined);
+    assert.equal(typeof out === "object" ? out.certDaysLeft : out, v);
+  }
+  const absent = validateResult(base, NOW, () => undefined);
+  assert.ok(typeof absent === "object" && !("certDaysLeft" in absent));
+});
+
+const PROBE = "probe-token-0123456789abcdef";
+const TLS: Check = {
+  id: "t",
+  name: "T",
+  type: "tls",
+  host: "example.com",
+  port: 443,
+  warnDays: 14,
+  intervalMs: 60_000,
+};
+
+test("POST /results: certDaysLeft out of range answers 400, a far expiry is stored and served", async () => {
+  const service = createService(openDb(":memory:"), { now: () => NOW });
+  service.upsertChecks([TLS]);
+  let lookups = 0;
+  const counted = {
+    ...service,
+    findActiveCheck: (id: string) => {
+      lookups += 1;
+      return service.findActiveCheck(id);
+    },
+  };
+  const server = createApiServer(counted, {
+    tokens: [{ location: "default", token: PROBE }],
+    now: () => NOW,
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const host = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const post = (certDaysLeft: unknown, timestamp: number) =>
+    fetch(`${host}/results`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${PROBE}` },
+      body: JSON.stringify({ ...base, checkId: "t", statusCode: null, timestamp, certDaysLeft }),
+    });
+  try {
+    const bad = await post(1e9, NOW);
+    assert.equal(bad.status, 400);
+    assert.deepEqual((await bad.json()) as ErrorResponse, { error: CERT_TEXT });
+    assert.equal(lookups, 1);
+    assert.equal((await post(3_000_001, NOW)).status, 400);
+    assert.equal((await post(2_912_000, NOW)).status, 204);
+    assert.equal(lookups, 3);
+    const checks = (await (await fetch(`${host}/checks`)).json()) as ChecksResponse;
+    assert.equal(checks[0]?.certDaysLeft, 2_912_000);
+    assert.equal((await post(null, NOW + 1)).status, 204);
+    assert.equal(service.listResults("t", 10)[0]?.certDaysLeft, null);
+  } finally {
+    await new Promise<void>((r) => {
+      server.close(() => r());
+      server.closeAllConnections();
+    });
+  }
 });

@@ -1,7 +1,7 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { assertDistinctFromProbeTokens, parseAdminTokens } from "./admin-tokens.ts";
-import { EXAMPLE_TOKENS, matchesAnyToken, TokensError } from "./tokens.ts";
+import { EXAMPLE_TOKENS, findByToken, TokensError } from "./tokens.ts";
 
 const A = "admin-a-0123456789abcdef";
 const B = "admin-b-0123456789abcdef";
@@ -58,11 +58,13 @@ test("assertDistinctFromProbeTokens: an overlap is a startup error without the t
   );
 });
 
-test("matchesAnyToken: needs a Bearer header with a configured token", () => {
-  assert.equal(matchesAnyToken([A, B], `Bearer ${B}`), true);
-  assert.equal(matchesAnyToken([A, B], `bearer ${A}`), true);
-  assert.equal(matchesAnyToken([A], `Bearer ${B}`), false);
-  assert.equal(matchesAnyToken([A], A), false);
-  assert.equal(matchesAnyToken([A], undefined), false);
-  assert.equal(matchesAnyToken([], `Bearer ${A}`), false);
+test("findByToken: needs a Bearer header with a configured token", () => {
+  const a = { name: "a", token: A };
+  const b = { name: "b", token: B };
+  assert.equal(findByToken([a, b], `Bearer ${B}`), b);
+  assert.equal(findByToken([a, b], `bearer ${A}`), a);
+  assert.equal(findByToken([a], `Bearer ${B}`), undefined);
+  assert.equal(findByToken([a], A), undefined);
+  assert.equal(findByToken([a], undefined), undefined);
+  assert.equal(findByToken([], `Bearer ${A}`), undefined);
 });

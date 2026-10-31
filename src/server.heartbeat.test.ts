@@ -166,3 +166,132 @@ test("metrics count accepted pings; route label has no id or secret; no secret i
   assert.equal(text.includes("bad-secret"), false);
   assert.equal(errors.join("\n").includes(SECRET), false);
 });
+
+/** A fresh API with an active heartbeat check "hb", an inactive one "old" and an http check. */
+async function freshApi(): Promise<{
+  base: string;
+  service: ReturnType<typeof createService>;
+  metrics: ReturnType<typeof createMetrics>;
+  close: () => Promise<void>;
+}> {
+  const m = createMetrics();
+  const s = createService(openDb(":memory:"), { now: () => NOW });
+  s.upsertChecks([{ id: "old", name: "Old", type: "heartbeat", period: 60000, grace: 0 }]);
+  s.upsertChecks([
+    { id: "hb", name: "HB", type: "heartbeat", period: 60000, grace: 0 },
+    // eslint-disable-next-line sonarjs/no-clear-text-protocols -- local test fixture, never requested
+    { id: "c1", name: "C1", url: "http://x/", intervalMs: 60000 },
+  ]);
+  const srv = createApiServer(s, {
+    tokens: [{ location: "default", token: TOKEN }],
+    heartbeatSecrets: () => new Map([["hb", SECRET]]),
+    metrics: m,
+    now: () => NOW,
+  });
+  await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+  return {
+    base: `http://127.0.0.1:${(srv.address() as AddressInfo).port}`,
+    service: s,
+    metrics: m,
+    close: () =>
+      new Promise<void>((r) => {
+        srv.close(() => r());
+        srv.closeAllConnections();
+      }),
+  };
+}
+
+function result(fields: Record<string, unknown>): string {
+  return JSON.stringify({
+    checkId: "hb",
+    timestamp: NOW,
+    status: "up",
+    statusCode: null,
+    latencyMs: 1,
+    reason: null,
+    ...fields,
+  });
+}
+
+async function postResult(
+  host: string,
+  body: string,
+  headers: Record<string, string> = bearer(TOKEN),
+): Promise<{ status: number; body: unknown }> {
+  const r = await fetch(`${host}/results`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...headers },
+    body,
+  });
+  return { status: r.status, body: await r.json() };
+}
+
+const ONLY_PINGS: ErrorResponse = { error: "heartbeat checks accept only pings" };
+
+test("POST /results for a heartbeat check answers 403 and changes nothing", async () => {
+  const api = await freshApi();
+  try {
+    const before = api.service.listChecks().find((c) => c.id === "hb");
+    const up = await postResult(api.base, result({ status: "up" }));
+    assert.deepEqual(up, { status: 403, body: ONLY_PINGS });
+    for (let i = 0; i < 3; i++) {
+      const down = await postResult(
+        api.base,
+        result({ status: "down", timestamp: NOW - i, reason: "x" }),
+      );
+      assert.deepEqual(down, { status: 403, body: ONLY_PINGS });
+    }
+    assert.deepEqual(api.service.listResults("hb", 10), []);
+    const after = api.service.listChecks().find((c) => c.id === "hb");
+    assert.deepEqual(after, before);
+    assert.equal(after?.consecutiveDown, 0);
+    assert.deepEqual(api.service.listIncidents("open"), []);
+    const text = api.metrics.render();
+    assert.doesNotMatch(text, /pulse_api_results_ingested_total\{/);
+    assert.match(text, /pulse_api_http_requests_total\{route="\/results",code="403"\} 4\n/);
+  } finally {
+    await api.close();
+  }
+});
+
+test("POST /results for a heartbeat check: 401, 400 and 404 keep their place", async () => {
+  const api = await freshApi();
+  try {
+    assert.equal((await postResult(api.base, result({}), {})).status, 401);
+    assert.equal((await postResult(api.base, result({ status: "maybe" }))).status, 400);
+    // The heartbeat guard comes before the location check.
+    assert.deepEqual(await postResult(api.base, result({ location: "elsewhere" })), {
+      status: 403,
+      body: ONLY_PINGS,
+    });
+    assert.deepEqual(await postResult(api.base, result({ checkId: "old" })), {
+      status: 404,
+      body: { error: 'unknown check "old"' },
+    });
+    // A non-heartbeat check is still accepted.
+    assert.equal(
+      (
+        await fetch(`${api.base}/results`, {
+          method: "POST",
+          headers: { "content-type": "application/json", ...bearer(TOKEN) },
+          body: result({ checkId: "c1" }),
+        })
+      ).status,
+      204,
+    );
+  } finally {
+    await api.close();
+  }
+});
+
+test("a ping still records an up result for the heartbeat check", async () => {
+  const api = await freshApi();
+  try {
+    const r = await fetch(`${api.base}/heartbeat/hb/${SECRET}`);
+    assert.equal(r.status, 204);
+    assert.equal(api.service.listResults("hb", 10).length, 1);
+    assert.equal(api.service.listChecks().find((c) => c.id === "hb")?.state, "up");
+  } finally {
+    await api.close();
+  }
+});

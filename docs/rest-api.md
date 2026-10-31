@@ -47,7 +47,7 @@ Headers: `Authorization: Bearer <token>` (the word `Bearer` is case-insensitive,
 | `reason`       | string or `null`               | Required. At most 1000 UTF-16 code units (`MAX_REASON_LENGTH`).                                                                                                                                   |
 | `location`     | string                         | Optional. Trimmed, at most 64 characters. Blank means the token's location.                                                                                                                       |
 | `attempts`     | integer                        | Optional, 1 to 100 (`MAX_ATTEMPTS`). A missing value is stored as 1.                                                                                                                              |
-| `certDaysLeft` | integer or `null`              | Optional. For TLS checks (certificate) and domain checks (registration expiry, negative when expired).                                                                                            |
+| `certDaysLeft` | integer or `null`              | Optional. For TLS checks (certificate) and domain checks (registration expiry, negative when expired). From −3000000 to 3000000 (`MAX_CERT_DAYS`), which covers an expiry in year 9999.           |
 
 The checks run in this order:
 
@@ -56,9 +56,10 @@ The checks run in this order:
 3. `413` if the body is too large.
 4. `400` `body is not valid JSON`.
 5. `400` with the first failing field message. The body is first checked by the contract validator `validatePostResultRequest`, whose messages name the path, for example `result.status: must be one of "up", "degraded", "down"`. Then the api checks run: timestamp window, `latencyMs`, `reason` length, `attempts` and `location`. The messages are listed in [Troubleshooting](troubleshooting.md#400-on-post-results).
-6. `403` `location does not match token` if the body has a `location` that differs from the token's location (after trim).
-7. `404` `unknown check "<id>"` (also for a check removed from the checks file).
-8. `204` and the result is stored. The stored location is always the token's.
+6. `403` `heartbeat checks accept only pings` if `checkId` names an active heartbeat check. Only a [ping](#getpost-heartbeatidsecret) changes such a check; nothing is stored.
+7. `403` `location does not match token` if the body has a `location` that differs from the token's location (after trim).
+8. `404` `unknown check "<id>"` (also for a check removed from the checks file).
+9. `204` and the result is stored. The stored location is always the token's.
 
 Every message names the field, for example `timestamp is more than 60000 ms in the future` or `timestamp is older than 7 days`. Nothing is stored when a request is rejected.
 
@@ -281,7 +282,9 @@ Public, like the other reads. `?status=open|resolved|all` (default `all`): open 
 
 ### Write routes
 
-All need `Authorization: Bearer <admin token>` (see [admin-tokens.json](configuration.md#admin-tokensjson)). A missing, wrong or probe token answers `401`. Without `PULSE_API_ADMIN_TOKENS_FILE` they answer `404`.
+All need `Authorization: Bearer <admin token>` (see [admin-tokens.json](configuration.md#admin-tokensjson)). A missing, wrong or probe token answers `401`; the `admin auth failed` log line tells them apart with `token` `missing`, `unknown` or `probe`. Without `PULSE_API_ADMIN_TOKENS_FILE` they answer `404` and log nothing.
+
+Each successful write logs one `info` line `manual incident write` with the admin token name, the action and the id. A write that fails after authentication (`400`, `404`, `409`, `413`) logs one `warn` line `manual incident write failed` with the status, the action and, except for a create, the id. No title, message or body goes into a line. See [Logs](operation.md#logs).
 
 | Route                                | Body                                                                                                      | Answer                 |
 | ------------------------------------ | --------------------------------------------------------------------------------------------------------- | ---------------------- |
@@ -322,7 +325,7 @@ Operators change checks, components and maintenance windows through the API. The
 
 The **revision** is `sha256-<hex>` of the bytes of the file. It is sent as a quoted `ETag` and as `revision` in bodies. Every write needs `If-Match: "<revision>"`: missing gives `428`, stale gives `412`, `*` or a malformed value gives `400`. Every success carries the new `ETag`.
 
-Statuses, in the order the API decides them: `404` feature off, `401` missing or wrong token, `403` a valid probe token, `413` body over 1 MB, `400` bad JSON, bad `If-Match` or id mismatch, `428`, `503` the checks file cannot be written, `412`, `422` the body or the resulting file is invalid (the same messages as the checks file; they never quote a value), `409` id exists or still referenced, `404` unknown id or index. `405` for another method.
+Statuses, in the order the API decides them: `404` feature off, `401` missing or wrong token, `403` a valid probe token, `413` body over 1 MB, `400` bad JSON, bad `If-Match` or id mismatch, `428`, `503` the checks file cannot be written, `412`, `422` the body or the resulting file is invalid (the same messages as the checks file; they never quote a value), `409` id exists or still referenced, `404` unknown id or index. `405` for another method. A `401` or `403` is logged as `admin auth failed` and counted in `pulse_api_admin_auth_failures_total` (see [Logs](operation.md#logs)).
 
 Bodies are validated by the same parsers as the file, so unknown keys, limits and `{"env": NAME}` headers behave as in [checks.json](configuration.md#checksjson). A maintenance window may carry `start` and `end` as ISO strings or epoch milliseconds; the file keeps ISO strings. Responses never contain header values, `{"env": NAME}` references, request bodies or heartbeat secrets: a check lists its header names under `headers`, `hasBody: true` stands for a body, and a heartbeat check shows `hasSecret: true`. A heartbeat `secret` is write-only: send it on `POST` or to rotate it with `PUT`; a `PUT` without `secret` keeps the old one, and changing a check to a heartbeat check needs one.
 
@@ -340,18 +343,19 @@ Readiness, no token. Returns `200 ok` when `SELECT 1` works on the database and 
 
 Prometheus text format, no authentication. Counters live in memory and reset at restart. Any other method gives the same `405` as on `/healthz`.
 
-| Series                                             | Type      | Labels                                                                                                                                   |
-| -------------------------------------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `pulse_up`                                         | gauge     | none. Always `1`.                                                                                                                        |
-| `pulse_api_check_state`                            | gauge     | `check`, `state`. `1` for the current state of each check, `0` for the others.                                                           |
-| `pulse_api_results_ingested_total`                 | counter   | `location`. A repeated post is not counted.                                                                                              |
-| `pulse_api_location_last_result_timestamp_seconds` | gauge     | `location`. `lastResultAt` of `GET /locations` in Unix seconds, read at the scrape.                                                      |
-| `pulse_api_result_latency_seconds`                 | histogram | `check`. The latency the probe reported. Buckets 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10 s.                                                  |
-| `pulse_api_slo_budget_remaining_ratio`             | gauge     | `check` or `component`. Error budget left as a ratio (0.5 is 50 %, negative when exceeded). Omitted without a target or without results. |
-| `pulse_api_incidents_opened_total`                 | counter   | none                                                                                                                                     |
-| `pulse_api_incidents_resolved_total`               | counter   | none                                                                                                                                     |
-| `pulse_api_http_requests_total`                    | counter   | `route` (a pattern such as `/checks/:id/results`, `/checks/:id/latency`, `/heartbeat/:id`, or `unmatched`), `code`                       |
-| `pulse_heartbeat_pings_total`                      | counter   | `check`. Accepted pings. Failed pings are only in the request counter, with code 401.                                                    |
-| `pulse_heartbeat_missed_total`                     | counter   | `check`. One per `period` elapsed after the deadline `period + grace`.                                                                   |
+| Series                                             | Type      | Labels                                                                                                                                                                                                                     |
+| -------------------------------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pulse_up`                                         | gauge     | none. Always `1`.                                                                                                                                                                                                          |
+| `pulse_api_check_state`                            | gauge     | `check`, `state`. `1` for the current state of each check, `0` for the others.                                                                                                                                             |
+| `pulse_api_results_ingested_total`                 | counter   | `location`. A repeated post is not counted.                                                                                                                                                                                |
+| `pulse_api_location_last_result_timestamp_seconds` | gauge     | `location`. `lastResultAt` of `GET /locations` in Unix seconds, read at the scrape.                                                                                                                                        |
+| `pulse_api_result_latency_seconds`                 | histogram | `check`. The latency the probe reported. Buckets 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10 s.                                                                                                                                    |
+| `pulse_api_slo_budget_remaining_ratio`             | gauge     | `check` or `component`. Error budget left as a ratio (0.5 is 50 %, negative when exceeded). Omitted without a target or without results.                                                                                   |
+| `pulse_api_incidents_opened_total`                 | counter   | none                                                                                                                                                                                                                       |
+| `pulse_api_incidents_resolved_total`               | counter   | none                                                                                                                                                                                                                       |
+| `pulse_api_http_requests_total`                    | counter   | `route` (a pattern such as `/checks/:id/results`, `/checks/:id/latency`, `/heartbeat/:id`, or `unmatched`), `code`                                                                                                         |
+| `pulse_heartbeat_pings_total`                      | counter   | `check`. Accepted pings. Failed pings are only in the request counter, with code 401.                                                                                                                                      |
+| `pulse_heartbeat_missed_total`                     | counter   | `check`. One per `period` elapsed after the deadline `period + grace`.                                                                                                                                                     |
+| `pulse_api_admin_auth_failures_total`              | counter   | `route` (pattern), `status` (`401`, `403`). Failed admin authentications on `/admin/*` and the manual-incident writes. A series appears at its first failure; alert with `increase(...) > 0` and `or vector(0)` as needed. |
 
 The labels hold check ids and locations only. Check URLs, hosts, keywords, reasons and tokens never appear. The check ids are still configuration, so do not publish `/metrics` on a public network: scrape it from the private network, as with the read routes above.
