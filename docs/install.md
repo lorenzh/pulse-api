@@ -39,7 +39,7 @@ sed -i.bak "s/^PULSE_PROBE_TOKEN=.*/PULSE_PROBE_TOKEN=$(openssl rand -hex 32)/" 
 docker compose up -d --build
 ```
 
-Open http://localhost:8080. The example check (`compose/checks.json`, only `status-page`) probes the status page itself, so the stack works offline. Its state leaves `unknown` after the first 10 s interval.
+Open http://localhost:8080. The example check (`compose/checks.json`, only `status-page`) probes the status page itself, so the stack works offline. Its state leaves `unknown` after the first 10 s interval. The stack sets `PULSE_STATUS_SHOW_CHECKS=true`, so the status page lists the checks by name; without it, the status image hides them.
 
 Stop the stack with `docker compose down`. The `api-data` and `notify-data` volumes keep the database and the notify ledger for the next start. `docker compose down -v` deletes them.
 

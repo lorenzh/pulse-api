@@ -29,7 +29,7 @@ The schema is versioned with `PRAGMA user_version`. At start the API creates mis
 
 A new check type (tcp, dns, domain) needs every probe location updated first. An old probe logs `skipping invalid check <id>: ...` for a type it does not know, keeps running the other checks, and the new check stays `unknown` for that location. That `unknown` state is expected until the probe is updated. Order: update the contract users (probes, status), then add the check to the checks file.
 
-The table `latency_daily` (daily p50 and p95 per check) is created with `CREATE TABLE IF NOT EXISTS` on every open, so a file from an older release gets it without a numbered step and `user_version` does not change. Back it up with the database file; it can be rebuilt from the results, so restoring a file without it is safe. The backfill refills the closed days at the next start.
+The table `latency_daily` (daily p50 and p95 per check) is created with `CREATE TABLE IF NOT EXISTS` on every open, so a file from an older release gets it without a numbered step and `user_version` does not change. Back it up with the database file; it can be rebuilt from the results, so restoring a file without it is safe. The background backfill after the next start refills the closed days, and a read fills the days of the checks it returns.
 
 #### Rolling out latency history and availability objectives
 
@@ -40,7 +40,16 @@ Roll out in this order:
 3. This API. `GET /probe/checks` is built from the stored check columns and never carries `availabilityTarget`, `slo` or any latency field, so an API upgrade does not break a probe that has not been updated. Setting `availabilityTarget` in the checks file is therefore safe before step 2, but the probes do not need the field to measure.
 4. The status page: its proxy must allow `/api/latency` before it can draw the chart.
 
-Timings measured on a database with 1 M results: the first `GET /checks` after start that builds `slo` values takes about 0.4 s, and the initial backfill of the closed days takes about 1.7 s. Later reads come from the cache.
+Timings measured on a database with 1 M results: the first `GET /checks` after start that builds `slo` values takes about 0.4 s. The backfill of the closed days computes for about 1.7 s in total, as background work after start, spread over many small batches. Later reads come from the cache.
+
+The latency backfill starts 5 s after the API listens, so it is not part of the start. It computes one day of one check per batch and yields to waiting requests after each batch. Only closed days without a row are computed, so a restart on the same day computes nothing. After the first run it repeats hourly. The first run logs two lines, also when it stores nothing:
+
+```text
+latency rollup: backfill started (20 checks)
+latency rollup: backfill done, stored 1780 days in 2412 ms
+```
+
+An hourly run logs `latency rollup: stored <N> days in <D> ms` only when it stored days. A failed run logs `latency rollup failed: <message>`. A shutdown waits for the batch in progress before it closes the database.
 
 ### Upgrades
 

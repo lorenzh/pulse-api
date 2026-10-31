@@ -206,15 +206,6 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     deleteLatencyRollups: (cutoff) => service.deleteExpiredLatency(cutoff),
   });
 
-  const latencyRollup = startLatencyRollup({
-    service,
-    sleep: deps.sleep,
-    ...(deps.retentionIntervalMs === undefined ? {} : { intervalMs: deps.retentionIntervalMs }),
-    setTimeout: (fn, ms) => deps.setTimeout(() => void fn(), ms),
-    clearTimeout: deps.clearTimeout,
-    log: (line) => logger.info(line),
-  });
-
   const heartbeat = startHeartbeatEvaluator({
     evaluator: createHeartbeatEvaluator({ service, metrics, now: deps.now }),
     setTimeout: deps.setTimeout,
@@ -288,7 +279,6 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     });
   } catch (err) {
     await retention.stop();
-    await latencyRollup.stop();
     heartbeat.stop();
     polling.stop();
     removeSignal?.();
@@ -313,6 +303,17 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     locationSilentMs: locationSilentMs ?? "auto",
     reloadIntervalMs,
     configWrites: adminTokens === undefined ? "off" : "on",
+  });
+
+  // Created only after listen: the backfill must not run inside the startup work.
+  const latencyRollup = startLatencyRollup({
+    service,
+    sleep: deps.sleep,
+    now: deps.now,
+    ...(deps.retentionIntervalMs === undefined ? {} : { intervalMs: deps.retentionIntervalMs }),
+    setTimeout: (fn, ms) => deps.setTimeout(() => void fn(), ms),
+    clearTimeout: deps.clearTimeout,
+    log: (line) => logger.info(line),
   });
 
   const timeoutMs = deps.shutdownTimeoutMs ?? SHUTDOWN_TIMEOUT_MS;

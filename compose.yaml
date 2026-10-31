@@ -42,6 +42,8 @@ services:
     image: pulse-status:local
     environment:
       PULSE_API_URL: http://api:3000
+      # The stack shows check names; the e2e test reads them. Hidden is the image default since lorenzh/pulse-status#54.
+      PULSE_STATUS_SHOW_CHECKS: "true"
     ports:
       - "${PULSE_STATUS_PORT:-8080}:8080"
     healthcheck:
