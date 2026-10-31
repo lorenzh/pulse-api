@@ -262,7 +262,8 @@ An admin token must differ from every probe token, and tokens must not repeat. E
 | `PULSE_LOCATION`         | `default` | Location of the probe. It is the location of the token in the tokens file. |
 | `PULSE_API_PORT`         | `3000`    | Host port of the API. Bound to 127.0.0.1.                                  |
 | `PULSE_STATUS_PORT`      | `8080`    | Host port of the status page.                                              |
+| `PULSE_CONSOLE_PORT`     | `8082`    | Host port of the console. Bound to 127.0.0.1.                              |
 | `PULSE_DEMO_API_PORT`    | `3001`    | Host port of `demo-api` (demo profile). Bound to 127.0.0.1.                |
 | `PULSE_DEMO_STATUS_PORT` | `8081`    | Host port of `demo-status` (demo profile).                                 |
 
-`.env.example` sets `PULSE_PROBE_TOKEN` to the placeholder `replace-with-a-random-token` and `PULSE_LOCATION=default`. The two port lines are commented out. The API rejects the placeholder at start, so replace it with your own token. See [Install](install.md#the-env-file).
+`.env.example` sets `PULSE_PROBE_TOKEN` to the placeholder `replace-with-a-random-token` and `PULSE_LOCATION=default`. The three port lines are commented out. The API rejects the placeholder at start, so replace it with your own token. See [Install](install.md#the-env-file).
