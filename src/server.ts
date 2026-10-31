@@ -146,6 +146,9 @@ export function validateResult(
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
     return "body must be a JSON object";
   }
+  // An accessor would run untrusted code on each read; JSON.parse never makes one.
+  if (Object.values(Object.getOwnPropertyDescriptors(body)).some((d) => !("value" in d)))
+    return "body must not have accessor properties";
   const b = body as Record<string, unknown>;
   if (typeof b.checkId !== "string" || b.checkId === "")
     return "checkId must be a non-empty string";

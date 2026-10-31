@@ -52,11 +52,21 @@ function errorCode(err: unknown): string {
 const SAFE_NAME = /^[A-Za-z][A-Za-z0-9]{0,63}$/;
 const SAFE_CODE = /^[A-Z0-9_]{1,64}$/;
 
+/** A data property along the prototype chain; an accessor is never called, since it could return file values. */
+function dataProperty(obj: object, key: string): unknown {
+  for (let o: object | null = obj; o !== null; o = Object.getPrototypeOf(o)) {
+    const d = Object.getOwnPropertyDescriptor(o, key);
+    if (d !== undefined) return "value" in d ? d.value : undefined;
+  }
+  return undefined;
+}
+
 /** Name and code of an apply error only: its message can quote values of the file. */
 function applyErrorText(err: unknown): string {
   if (!(err instanceof Error)) return "unknown error";
-  const name = SAFE_NAME.test(err.name) ? err.name : "Error";
-  const code: unknown = Reflect.get(err, "code");
+  const rawName = dataProperty(err, "name");
+  const name = typeof rawName === "string" && SAFE_NAME.test(rawName) ? rawName : "Error";
+  const code = dataProperty(err, "code");
   return typeof code === "string" && SAFE_CODE.test(code) ? `${name} ${code}` : name;
 }
 
