@@ -48,6 +48,8 @@ Each release publishes a multi-arch image (linux/amd64, linux/arm64) with build 
 docker pull ghcr.io/lorenzh/pulse-api:0.1.0
 ```
 
+The image runs `bun --no-env-file`: it never reads `.env` files, also not mounted ones. Pass settings with `-e`, `--env-file` or Compose `environment:`.
+
 See [Releasing](docs/development.md#releasing) for the tags and how to verify an image.
 
 ## Heartbeat checks
