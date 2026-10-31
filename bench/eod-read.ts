@@ -3,7 +3,8 @@
 // The end-of-day phase without Docker: seeds a temp 1x database with this change's bench/seed.ts
 // (schema of the --seed-with worktree, default --api), adds results of today, runs
 // `bun <api>/src/main.ts` as a child process and measures each read right after one ingest
-// (bench/eod.ts). Prints one JSON object; exits 1 when `eod_get_checks_ms` or `eod_get_latency_ms`
+// (bench/eod.ts). Like the full bench it waits until 00:10 UTC and runs again after a UTC day
+// change (runEodPhase). Prints one JSON object; exits 1 when `eod_get_checks_ms` or `eod_get_latency_ms`
 // is at or above its limit, 2 on an error.
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
@@ -11,7 +12,15 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { addTodayRows, countTodayRows, processCpuMs, waitReady } from "./cold.ts";
-import { EOD_CYCLES, EOD_TODAY_ROWS, type EodTarget, overEodLimits, runEodReads } from "./eod.ts";
+import {
+  EOD_CYCLES,
+  EOD_TODAY_ROWS,
+  type EodPhase,
+  type EodTarget,
+  overEodLimits,
+  runEodPhase,
+  runEodReads,
+} from "./eod.ts";
 import { eodChecksFileJson, tokensFileJson } from "./fixtures.ts";
 import { checkIds } from "./load.ts";
 import { parseStatusMiB, runChecked } from "./measure.ts";
@@ -102,63 +111,88 @@ function localTarget(api: string, env: Record<string, string>, port: number) {
   return { target, stop };
 }
 
-async function main(): Promise<number> {
-  const args = parseArgs(process.argv.slice(2));
+interface EodReadDeps {
+  log: (line: string) => void;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/** Runs the phase through `runEodPhase`, so it waits until 00:10 UTC and retries a day change. */
+export async function runEodRead(argv: readonly string[], deps: EodReadDeps): Promise<number> {
+  const args = parseArgs(argv);
+  const { log } = deps;
   const dir = await mkdtemp(join(tmpdir(), "pulse-eod-read-"));
-  const log = (line: string): void => console.error(`[eod-read] ${line}`);
+  const db = join(dir, "pulse.db");
+  const local = localTarget(
+    args.api,
+    {
+      PULSE_DB: db,
+      PULSE_CHECKS_FILE: join(dir, "checks.json"),
+      PULSE_TOKENS_FILE: join(dir, "tokens.json"),
+    },
+    await freePort(),
+  );
+  let seedNow = 0;
+  const phase: EodPhase = {
+    seed: async (now) => {
+      seedNow = now;
+      await rm(db, { force: true });
+      await rm(`${db}-wal`, { force: true });
+      await rm(`${db}-shm`, { force: true });
+      await writeFile(join(dir, "checks.json"), eodChecksFileJson());
+      await writeFile(join(dir, "tokens.json"), tokensFileJson());
+      const seeded = await runChecked("bun", [
+        join(BENCH_DIR, "seed.ts"),
+        args.seedWith,
+        db,
+        "1",
+        String(now),
+      ]);
+      log(seeded.stdout.trim());
+      const added = addTodayRows(db, checkIds(), args.todayRows, now);
+      log(`added ${added} results of today`);
+      return countTodayRows(db, now);
+    },
+    measure: async () => {
+      try {
+        return await runEodReads(local.target, log, [], args.cycles);
+      } finally {
+        await local.stop();
+      }
+    },
+  };
   try {
-    const db = join(dir, "pulse.db");
-    await writeFile(join(dir, "checks.json"), eodChecksFileJson());
-    await writeFile(join(dir, "tokens.json"), tokensFileJson());
-    const seedNow = Date.now();
-    const seeded = await runChecked("bun", [
-      join(BENCH_DIR, "seed.ts"),
-      args.seedWith,
-      db,
-      "1",
-      String(seedNow),
-    ]);
-    log(seeded.stdout.trim());
-    const added = addTodayRows(db, checkIds(), args.todayRows, seedNow);
-    const todayRows = countTodayRows(db, seedNow);
-    log(`added ${added} results of today: ${todayRows} rows of today`);
-    const local = localTarget(
-      args.api,
-      {
-        PULSE_DB: db,
-        PULSE_CHECKS_FILE: join(dir, "checks.json"),
-        PULSE_TOKENS_FILE: join(dir, "tokens.json"),
-      },
-      await freePort(),
-    );
-    try {
-      const { medians, ...metrics } = await runEodReads(local.target, log, [], args.cycles);
-      const failed = overEodLimits(metrics, args.checksLimitMs, args.latencyLimitMs);
-      const report = {
-        api: args.api,
-        seed_with: args.seedWith,
-        cycles: args.cycles,
-        checks_limit_ms: args.checksLimitMs,
-        latency_limit_ms: args.latencyLimitMs,
-        seed_now_ms: seedNow,
-        today_rows: todayRows,
-        ...metrics,
-        medians,
-        over_limit: failed,
-      };
-      console.log(JSON.stringify(report, null, 2));
-      return failed.length === 0 ? 0 : 1;
-    } finally {
-      await local.stop();
-    }
+    const { medians, today_rows, ...metrics } = await runEodPhase(phase, log, deps.now, deps.sleep);
+    const failed = overEodLimits(metrics, args.checksLimitMs, args.latencyLimitMs);
+    const report = {
+      api: args.api,
+      seed_with: args.seedWith,
+      cycles: args.cycles,
+      checks_limit_ms: args.checksLimitMs,
+      latency_limit_ms: args.latencyLimitMs,
+      seed_now_ms: seedNow,
+      today_rows,
+      ...metrics,
+      medians,
+      over_limit: failed,
+    };
+    console.log(JSON.stringify(report, null, 2));
+    return failed.length === 0 ? 0 : 1;
   } finally {
+    await local.stop();
     await rm(dir, { recursive: true, force: true });
   }
 }
 
-try {
-  process.exit(await main());
-} catch (err) {
-  console.error(`eod-read: ${err instanceof Error ? err.message : String(err)}`);
-  process.exit(2);
+if (import.meta.main) {
+  try {
+    process.exit(
+      await runEodRead(process.argv.slice(2), {
+        log: (line) => console.error(`[eod-read] ${line}`),
+      }),
+    );
+  } catch (err) {
+    console.error(`eod-read: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(2);
+  }
 }

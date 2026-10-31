@@ -9,6 +9,7 @@ import {
   overEodLimits,
   runEodPhase,
 } from "../eod.ts";
+import { runEodRead } from "../eod-read.ts";
 import { eodChecksFileJson } from "../fixtures.ts";
 
 // The p95 of 20 samples is the 19th smallest, in any order.
@@ -124,4 +125,23 @@ assert.deepEqual(await phase([late, late, midnight + 1, next, next, next + 1]), 
 });
 // The day changes twice: a harness error.
 assert.equal((await phase([late, late, midnight + 1, next, next, next + 86_400_000])).ok, false);
+// eod-read.ts at 00:00:01 UTC: waits until 00:10 before it seeds anything.
+class StopAfterSleep extends Error {
+  override name = "StopAfterSleep";
+}
+const readLog: string[] = [];
+const readSlept: number[] = [];
+await assert.rejects(
+  runEodRead(["--api", process.cwd()], {
+    log: (line) => readLog.push(line),
+    now: () => midnight + 1000,
+    sleep: (ms) => {
+      readSlept.push(ms);
+      return Promise.reject(new StopAfterSleep("stop"));
+    },
+  }),
+  StopAfterSleep,
+);
+assert.deepEqual(readSlept, [599_000]);
+assert.deepEqual(readLog, ["eod: waiting until 00:10 UTC so today's rows fit"]);
 console.log("check-eod: ok");
