@@ -347,7 +347,9 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     }
     // The database closes only after the run in progress has ended, so nothing writes after close.
     await retentionEnded;
-    db.close();
+    // `true` finalizes the prepared statements first. Without it SQLite keeps the connection open
+    // until exit, so the WAL is not checkpointed and -wal and -shm stay next to the file.
+    db.close(true);
     logger.info("stopped");
   };
   let closing: Promise<void> | undefined;

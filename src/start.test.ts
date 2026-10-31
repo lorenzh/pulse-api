@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ChecksResponse } from "@lorenzh/pulse-contract";
@@ -542,4 +542,16 @@ test("a database from a newer program is a startup error", async () => {
       err instanceof StartupError &&
       err.message.includes("database schema version 99 is newer than this program supports"),
   );
+});
+
+test("a clean shutdown closes the database: the WAL is checkpointed and -wal and -shm removed", async () => {
+  const path = join(dir, "wal-close.db");
+  const { base } = deps({ PULSE_DB: path });
+  const api = await startApi(base);
+  const res = await fetch(`http://127.0.0.1:${api.port}/checks`);
+  assert.equal(res.status, 200);
+  assert.equal(existsSync(`${path}-wal`), true);
+  await api.close();
+  assert.equal(existsSync(`${path}-wal`), false);
+  assert.equal(existsSync(`${path}-shm`), false);
 });

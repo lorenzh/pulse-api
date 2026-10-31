@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -62,5 +63,41 @@ test("foreign keys are enforced", () => {
       "INSERT INTO results (check_id, timestamp, status, latency_ms) VALUES ('nope', 1, 'up', 1)",
     ),
   ).toThrow();
+  db.close();
+});
+
+function pragmas(db: { query: (sql: string) => { get: () => unknown } }): {
+  mode: unknown;
+  sync: unknown;
+} {
+  const mode = (db.query("PRAGMA journal_mode").get() as { journal_mode: unknown }).journal_mode;
+  const sync = (db.query("PRAGMA synchronous").get() as { synchronous: unknown }).synchronous;
+  return { mode, sync };
+}
+
+test("a file database uses WAL with synchronous NORMAL, also a file made in delete mode", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pulse-db-"));
+  try {
+    const path = join(dir, "pulse.db");
+    const db = openDb(path);
+    assert.deepEqual(pragmas(db), { mode: "wal", sync: 1 });
+    db.close();
+
+    const old = join(dir, "old.db");
+    const plain = new Database(old);
+    plain.run("PRAGMA journal_mode = DELETE");
+    plain.run("CREATE TABLE t (x INTEGER)");
+    plain.close();
+    const migrated = openDb(old);
+    assert.deepEqual(pragmas(migrated), { mode: "wal", sync: 1 });
+    migrated.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an in-memory database keeps its journal mode and synchronous FULL", () => {
+  const db = openDb(":memory:");
+  assert.deepEqual(pragmas(db), { mode: "memory", sync: 2 });
   db.close();
 });
