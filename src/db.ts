@@ -147,9 +147,26 @@ function migrate(db: Database, steps: readonly string[], log: (line: string) => 
 }
 
 /**
- * Open (or create) the database at `path` (":memory:" in tests) and bring it to the current
- * schema in one transaction. A file from a newer program is refused with a SchemaVersionError.
- * `log` receives one line when a migration deleted duplicate rows.
+ * WAL lets a second connection (a backup) read while the API writes. It must be set outside a
+ * transaction, so before `migrate()`. `synchronous = NORMAL` is crash-safe only with WAL, so it
+ * stays at the default `FULL` when the file system refuses WAL (no shared memory).
+ */
+function setJournal(db: Database, path: string, log: (line: string) => void): void {
+  if (path === ":memory:" || path === "") return;
+  const row = db.query("PRAGMA journal_mode = WAL").get() as { journal_mode: string } | null;
+  const mode = row?.journal_mode ?? "unknown";
+  if (mode !== "wal") {
+    log(`journal mode stays ${mode}: WAL is not available for this file`);
+    return;
+  }
+  db.run("PRAGMA synchronous = NORMAL");
+}
+
+/**
+ * Open (or create) the database at `path` (":memory:" in tests), switch a file to WAL and bring
+ * it to the current schema in one transaction. A file from a newer program is refused with a
+ * SchemaVersionError. `log` receives one line when a migration deleted duplicate rows, and one
+ * when WAL is not available.
  */
 export function openDb(
   path: string,
@@ -158,6 +175,7 @@ export function openDb(
 ): Database {
   const db = new Database(path);
   try {
+    setJournal(db, path, log);
     migrate(db, steps, log);
   } catch (err) {
     db.close();

@@ -16,14 +16,18 @@ Everything else is kept in the database, so a restart loses no state. The check 
 
 ## Database
 
-The database is one SQLite file, at `PULSE_DB` (default `./pulse.db`, `/data/pulse.db` in the Docker image). The API does not set a journal mode, so SQLite uses its default (a rollback journal). In a run of the API with the example files, the directory held only `pulse.db`; there were no `-wal` or `-shm` files. A short-lived `pulse.db-journal` file can exist while a write runs.
+The database is one SQLite file, at `PULSE_DB` (default `./pulse.db`, `/data/pulse.db` in the Docker image). The API opens the file in journal mode WAL with `synchronous = NORMAL`. A reader on a second connection, such as the [backup command](#backup-and-restore), is never blocked by a write. With `NORMAL` a crash or power loss can lose the last committed transactions, but never corrupts the file; probes re-send buffered results and `POST /results` is idempotent, so lost results are mostly sent again.
+
+While the API runs, `pulse.db-wal` and `pulse.db-shm` sit next to `pulse.db`. The process user creates them in the same directory, so that directory must be writable (`/data` in the image is). SQLite's default auto-checkpoint (1000 pages, on commit) moves the WAL into the file. A clean shutdown checkpoints and removes both files. An older file in rollback-journal mode is switched to WAL at start; an older API version can open a WAL file.
+
+If the file system does not support WAL (no shared memory, such as some network mounts), the start goes on in the old journal mode and logs one line `journal mode stays <mode>: WAL is not available for this file`. `synchronous` then stays `FULL`.
 
 ### Schema
 
 The schema is versioned with `PRAGMA user_version`. At start the API creates missing tables, then runs every numbered step (`src/migrations.ts`) above the file's version, all in one transaction. A failing step rolls everything back and the start fails. Version 1 rebuilds `checks` to hold tcp, dns and domain checks; `results` and `incidents` are not touched. Version 2 makes `results` unique on (`check_id`, `location`, `timestamp`): it deletes duplicate rows, keeping the first by row id, and adds the unique index. The start logs `migration 2: removed <n> duplicate results, kept the first of each` when it deleted any. On a large database this step takes seconds (about 1.8 s for 1 million results in a local measurement).
 
-- Upgrades are automatic. Back up the database file first.
-- A file whose `user_version` is higher than the program supports is refused at start with exit code 2 (`database schema version 2 is newer than this program supports (1); downgrades are not supported`). Downgrades are not supported: restore the backup.
+- Upgrades are automatic. Back up the database file first (see [Backup and restore](#backup-and-restore)).
+- A file whose `user_version` is higher than the program supports is refused at start with exit code 2 (`database schema version 2 is newer than this program supports (1); downgrades are not supported`). Downgrades are not supported: restore the backup (see [Backup and restore](#backup-and-restore)).
 
 #### Rolling out a new check type
 
@@ -53,24 +57,46 @@ An hourly run logs `latency rollup: stored <N> days in <D> ms` only when it stor
 
 ### Upgrades
 
-1. Back up the database file (see below).
+1. Back up the database file (see [Backup and restore](#backup-and-restore)).
 2. Stop the API and start the new version with the same `PULSE_DB`.
 3. Look at the start log line to see that it came up (see [Logs](#logs)).
 
-Do not open a database file of an older version with this version. Restore the backup to go back.
+Do not open a database file of an older version with this version. Restore the backup to go back (see [Backup and restore](#backup-and-restore)).
 
 A checks file whose heartbeat `secret` still starts with `replace-with-` (the example placeholder) stops the start with `checks[<i>].secret still has the example placeholder secret` and exit code 2. Replace the secret with `openssl rand -hex 32` and update the job that pings, or remove the check. An API that is already running rejects such a reload and keeps its config.
 
 ### Backup and restore
 
-The tested method is a file copy with the API stopped:
+`bun run backup <file>` writes a consistent copy of the database at `PULSE_DB` to `<file>`. It works while the API serves traffic: it reads one snapshot on its own read-only connection and never blocks the API's writes. With Compose:
 
 ```sh
-# stop the API first
-cp /path/to/pulse.db /path/to/backup/pulse.db
+docker compose exec api bun run backup /data/backup-2026-10-31.db
+docker compose cp api:/data/backup-2026-10-31.db ./
 ```
 
-To restore, stop the API, put the file back at `PULSE_DB` and start the API. With Compose the file is in the `api-data` volume. No other method has been tested, and the API has no backup command. Do not copy the file while the API runs.
+On success it prints one line with the numbers of the copy (not of the live file, which may have moved on):
+
+```text
+backup /data/backup-2026-10-31.db: schema version 2, checks 12, results 340512, incidents 7
+```
+
+- Exit code `0`: the backup is written. `2`: a wrong number of arguments, an empty argument, or a target that exists. `1`: any other error (missing source, missing target directory, copy, write or report failure). An error is one line `pulse-api backup: <message>` on stderr, with the paths and the SQLite message.
+- It never overwrites a file: a target that exists, also a symlink, is refused. The target's directory must exist; it is not created. The copy is written to a temp file `.<name>.tmp-<pid>` in the same directory and then linked to the target name, so a failed run leaves no partial file. On a file system without hard links it renames the temp file after a second check; another process that creates the target between that check and the rename would lose its file.
+- It needs free space for a full copy in the target's file system.
+- It opens the source read-only and never migrates or changes it; any schema version is accepted. A missing source is an error and is not created.
+- It also works with the API stopped. Then SQLite creates `pulse.db-wal` and `pulse.db-shm` and leaves them, so the source directory must be writable. Run it as the image's default user (no `docker compose exec -u root`), or those files can end up owned by root.
+- While the backup reads, a checkpoint cannot move past its snapshot, so `pulse.db-wal` grows for the length of the backup. A later checkpoint resets it.
+
+A cold copy (`cp pulse.db`) is safe only after a clean stop, when no `pulse.db-wal` is left. After a crash or `SIGKILL` the last transactions can still be in `pulse.db-wal`: use the backup command, or copy `pulse.db-wal` together with the file.
+
+To restore:
+
+1. Stop the API.
+2. Replace `pulse.db` at `PULSE_DB` with the backup file.
+3. Delete `pulse.db-wal` and `pulse.db-shm` if they exist. A stale WAL belongs to the old file and must not be applied to the restored one.
+4. Start the API.
+
+A backup from an older version is migrated at start. A file with a newer schema version is refused with exit code 2 (see [Schema](#schema)). With Compose the file is in the `api-data` volume.
 
 ## Retention and disk space
 

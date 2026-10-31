@@ -10,6 +10,7 @@
   },
   "scripts": {
     "start": "bun src/main.ts",
+    "backup": "bun src/backup-main.ts",
     "typecheck": "bun node_modules/typescript7/bin/tsc --noEmit",
     "test": "bun test",
     "lint": "biome check . && pulse-eslint .",

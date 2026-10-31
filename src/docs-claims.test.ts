@@ -18,3 +18,11 @@ test("troubleshooting: a restart keeps a location reporting while its stored res
 test("bench README: the api no longer stores a repeated result twice", () => {
   assert.doesNotMatch(read("bench/README.md"), /results have no unique key/);
 });
+
+test("operation: the database runs in WAL mode and has a backup command", () => {
+  const doc = read("docs/operation.md");
+  assert.doesNotMatch(doc, /does not set a journal mode/);
+  assert.doesNotMatch(doc, /the API has no backup command/);
+  assert.match(doc, /bun run backup/);
+  assert.match(doc, /pulse\.db-wal/);
+});
