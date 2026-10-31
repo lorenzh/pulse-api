@@ -7,7 +7,7 @@ const onSignal = (): void => controller.abort();
 for (const signal of SIGNALS) process.on(signal, onSignal);
 
 try {
-  const line = await runBackup(process.argv.slice(2), process.env, process.pid, {
+  const line = await runBackup(process.argv.slice(2), process.env, {
     pause: () => new Promise((resolve) => setImmediate(resolve)),
     signal: controller.signal,
   });

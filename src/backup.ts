@@ -1,18 +1,6 @@
 import { Database } from "bun:sqlite";
-import {
-  closeSync,
-  fstatSync,
-  fsyncSync,
-  ftruncateSync,
-  linkSync,
-  lstatSync,
-  openSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeSync,
-} from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { linkSync, lstatSync, mkdtempSync, renameSync, rmdirSync, rmSync, statSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { readString } from "@lorenzh/pulse-kit";
 
 const BACKUP_USAGE = "usage: bun run backup <target-file>";
@@ -60,131 +48,84 @@ function assertIsKind(path: string, kind: "file" | "directory", what: string): v
   if (!isKind) throw new BackupError(`${what} ${path} is not a ${kind}`, 1);
 }
 
-type FileId = { readonly dev: number; readonly ino: number };
-type Temp = FileId & { readonly fd: number };
-
-/**
- * Exclusive create: fails with EEXIST on anything already at `temp`, also a dangling symlink, so
- * the copy is never written through a planted link and never replaces a file of someone else.
- */
-function createTemp(temp: string): Temp {
-  let fd: number;
-  try {
-    fd = openSync(temp, "wx", 0o600);
-  } catch (err) {
-    throw new BackupError(`cannot create temp file ${temp}: ${messageOf(err)}`, 1, { cause: err });
-  }
-  try {
-    const stat = fstatSync(fd);
-    return { fd, dev: stat.dev, ino: stat.ino };
-  } catch (err) {
-    closeSync(fd);
-    throw new BackupError(`cannot check temp file ${temp}: ${messageOf(err)}`, 1, { cause: err });
-  }
-}
-
-function isSameFile(path: string, id: FileId): boolean {
-  try {
-    const stat = lstatSync(path);
-    return stat.isFile() && stat.dev === id.dev && stat.ino === id.ino;
-  } catch (err) {
-    if (codeOf(err) === "ENOENT") return false;
-    throw new BackupError(`cannot check temp file ${path}: ${messageOf(err)}`, 1, { cause: err });
-  }
-}
-
-/** The name can be swapped after the create: refuse to publish what this run did not write. */
-function assertSameTemp(temp: string, id: FileId): void {
-  if (!isSameFile(temp, id)) {
-    throw new BackupError(`temp file ${temp} was replaced during the backup`, 1);
-  }
-}
-
-/** Bytes per write; between two writes the command yields, so a signal can stop it. */
-const CHUNK_BYTES = 4 * 1024 * 1024;
-
 /** Side effects of a run. `main` wires a real pause and a signal that SIGINT or SIGTERM aborts. */
 export type BackupDeps = {
-  readonly read?: (source: string) => Snapshot;
-  /** Yields to the event loop, so signal handlers run during a long copy. */
+  /** Yields to the event loop before and after the copy, so signal handlers can run. */
   readonly pause?: () => Promise<void>;
   readonly signal?: AbortSignal;
 };
 
-/** Checked after each pause: an interrupted run removes its temp file instead of leaving a copy. */
+/** Checked after each pause: an interrupted run removes its temp directory instead of a copy. */
 function assertNotAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted === true) {
-    throw new BackupError("interrupted; no backup written and the temp file is removed", 1);
+    throw new BackupError("interrupted; no backup written and the temp directory is removed", 1);
   }
 }
 
-/** Through the fd of the exclusive create, never by name: a swapped name gets no data. */
-async function writeImage(
-  temp: string,
-  fd: number,
-  image: Uint8Array,
-  pause: () => Promise<void>,
-  signal: AbortSignal | undefined,
-): Promise<void> {
-  let offset = 0;
-  while (offset < image.length) {
-    try {
-      offset += writeSync(fd, image, offset, Math.min(CHUNK_BYTES, image.length - offset));
-    } catch (err) {
-      throw new BackupError(`cannot write temp file ${temp}: ${messageOf(err)}`, 1, { cause: err });
-    }
-    await pause();
-    assertNotAborted(signal);
+/** The copy's name inside the private directory; always used relative to it. */
+const COPY = "backup.db";
+
+type DirId = { readonly dev: number; readonly ino: number };
+
+function createPrivateDir(dir: string, target: string): string {
+  try {
+    return mkdtempSync(join(dir, `.${basename(target)}.tmp-`));
+  } catch (err) {
+    throw new BackupError(`cannot create temp directory in ${dir}: ${messageOf(err)}`, 1, {
+      cause: err,
+    });
+  }
+}
+
+/**
+ * mkdtemp creates a new directory with a random name and mode 0700: no other user can create,
+ * swap or read a file in it. The run works inside it by relative names, so a rename of the
+ * directory itself in a shared parent cannot redirect the copy or the publish.
+ */
+function enterPrivateDir(temp: string): DirId {
+  try {
+    process.chdir(temp);
+  } catch (err) {
+    throw new BackupError(`cannot enter temp directory ${temp}: ${messageOf(err)}`, 1, {
+      cause: err,
+    });
+  }
+  const stat = statSync(".");
+  // The name can be swapped between mkdtemp and chdir: only work in this run's own directory.
+  if (stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o700) {
+    throw new BackupError(`temp directory ${temp} was replaced during the backup`, 1);
+  }
+  return { dev: stat.dev, ino: stat.ino };
+}
+
+function isSameDir(path: string, id: DirId): boolean {
+  const stat = lstatSync(path);
+  return stat.isDirectory() && stat.dev === id.dev && stat.ino === id.ino;
+}
+
+/** Remove the copy and the temp directory; never a directory that this run did not create. */
+function leavePrivateDir(home: string, temp: string | undefined, own: DirId | undefined): void {
+  try {
+    if (own !== undefined) rmSync(COPY, { force: true });
+  } catch {
+    // Deliberate: a failed cleanup must not hide the outcome; the directory is owner-only.
   }
   try {
-    fsyncSync(fd);
-  } catch (err) {
-    throw new BackupError(`cannot write temp file ${temp}: ${messageOf(err)}`, 1, { cause: err });
-  }
-}
-
-/** A consistent image of the database and its numbers, read in one read transaction. */
-export type Snapshot = {
-  readonly image: Uint8Array;
-  readonly version: number;
-  readonly checks: number;
-  readonly results: number;
-  readonly incidents: number;
-};
-
-function countRows(db: Database, table: "checks" | "results" | "incidents"): number {
-  const row = db.query(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number } | null;
-  return row?.n ?? 0;
-}
-
-/** Header bytes 18 and 19: 2 marks a WAL file, 1 a rollback-journal file (the SQLite file format). */
-function toRollbackJournal(image: Uint8Array): void {
-  if (image.length >= 20 && image[18] === 2 && image[19] === 2) {
-    image[18] = 1;
-    image[19] = 1;
+    process.chdir(home);
+    if (temp !== undefined && own !== undefined && isSameDir(temp, own)) rmdirSync(temp);
+  } catch {
+    // Deliberate: as above; an empty owner-only directory is all that can stay behind.
   }
 }
 
 /** Read-only: never creates, migrates or writes the live file, and accepts any schema version. */
-function readSnapshot(source: string): Snapshot {
+function copyLive(source: string): void {
   let db: Database | undefined;
   try {
     db = new Database(source, { readonly: true });
     db.run("PRAGMA busy_timeout = 5000");
-    // One read transaction: the numbers and the image come from the same snapshot.
-    db.run("BEGIN");
-    const row = db.query("PRAGMA user_version").get() as { user_version: number } | null;
-    const counts = {
-      version: row?.user_version ?? 0,
-      checks: countRows(db, "checks"),
-      results: countRows(db, "results"),
-      incidents: countRows(db, "incidents"),
-    };
-    // The image is held in memory, so the command needs memory for one copy of the file.
-    const image = db.serialize();
-    // Like a VACUUM INTO copy, the backup has no WAL; the API switches it to WAL on open.
-    toRollbackJournal(image);
-    return { image, ...counts };
+    // Bound, never spliced into SQL. VACUUM copies the live pages only, in rollback-journal mode.
+    db.query("VACUUM INTO ?").run(COPY);
   } catch (err) {
     throw new BackupError(`cannot copy ${source}: ${messageOf(err)}`, 1, { cause: err });
   } finally {
@@ -194,11 +135,14 @@ function readSnapshot(source: string): Snapshot {
 
 const NO_HARD_LINKS = new Set(["EPERM", "ENOTSUP", "EXDEV"]);
 
-/** `link` never replaces an existing target; `rename` is the fallback without hard links. */
-function publish(temp: string, target: string): void {
+/**
+ * `link` never replaces an existing target; `rename` is the fallback without hard links.
+ * Returns true when the copy was linked, so it is still reachable inside the temp directory.
+ */
+function publish(target: string): boolean {
   try {
-    linkSync(temp, target);
-    return;
+    linkSync(COPY, target);
+    return true;
   } catch (err) {
     const code = codeOf(err);
     if (code === "EEXIST") {
@@ -210,73 +154,72 @@ function publish(temp: string, target: string): void {
   }
   assertTargetFree(target);
   try {
-    renameSync(temp, target);
+    renameSync(COPY, target);
   } catch (err) {
     throw new BackupError(`cannot write ${target}: ${messageOf(err)}`, 1, { cause: err });
   }
+  return false;
 }
 
-/** Remove the temp name only while it is still this run's file. */
-function removeOwnTemp(temp: string, id: FileId): void {
-  try {
-    if (isSameFile(temp, id)) rmSync(temp, { force: true });
-  } catch {
-    // Deliberate: a failed cleanup must not hide the outcome; the file is owner-only and emptied.
-  }
+function countRows(db: Database, table: "checks" | "results" | "incidents"): number {
+  const row = db.query(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number } | null;
+  return row?.n ?? 0;
 }
 
-/** On failure the inode may sit under a name that someone else chose: leave it empty. */
-function closeTemp(temp: Temp, isPublished: boolean): void {
+/** The numbers of the published file, not of the live one, which may have moved on. */
+function report(path: string, target: string): string {
+  let db: Database | undefined;
   try {
-    if (!isPublished) ftruncateSync(temp.fd, 0);
-  } catch {
-    // Deliberate: the run's own error is the outcome; the temp name is still removed below.
-  }
-  try {
-    closeSync(temp.fd);
-  } catch {
-    // Deliberate: as above, a failed close must not hide the outcome or skip the removal.
+    db = new Database(path, { readonly: true });
+    const row = db.query("PRAGMA user_version").get() as { user_version: number } | null;
+    return `backup ${target}: schema version ${row?.user_version ?? 0}, checks ${countRows(db, "checks")}, results ${countRows(db, "results")}, incidents ${countRows(db, "incidents")}`;
+  } catch (err) {
+    throw new BackupError(`cannot read ${target}: ${messageOf(err)}`, 1, { cause: err });
+  } finally {
+    db?.close();
   }
 }
 
 const noPause = (): Promise<void> => Promise.resolve();
 
 /**
- * Write a consistent copy of the database at `PULSE_DB` to the one path in `args` and return the
- * report line. Throws a BackupError; the temp file that this run created is removed on every error
- * and on an abort of `deps.signal`. Only SIGKILL or a crash can leave it behind.
+ * Write a consistent copy of the live data at `PULSE_DB` to the one path in `args` and return the
+ * report line. Throws a BackupError; the temp directory that this run created is removed on every
+ * error and on an abort of `deps.signal`. Only SIGKILL or a crash can leave it behind.
  */
 export async function runBackup(
   args: readonly string[],
   env: Env,
-  pid: number,
   deps: BackupDeps = {},
 ): Promise<string> {
-  const { read = readSnapshot, pause = noPause, signal } = deps;
+  const { pause = noPause, signal } = deps;
   const target = args.length === 1 ? args[0] : undefined;
   if (target === undefined || target === "") throw new BackupError(BACKUP_USAGE, 2);
-  const source = readString(env, "PULSE_DB") ?? "./pulse.db";
+  // Absolute: the copy and the publish run inside the temp directory.
+  const source = resolve(readString(env, "PULSE_DB") ?? "./pulse.db");
   assertTargetFree(target);
   const dir = dirname(target);
   assertIsKind(dir, "directory", "target directory");
   assertIsKind(source, "file", "source (PULSE_DB)");
   assertNotAborted(signal);
-  const tempPath = join(dir, `.${basename(target)}.tmp-${pid}`);
-  // Outside the try: a file that this run did not create is never removed.
-  const temp = createTemp(tempPath);
-  let isPublished = false;
+  const home = process.cwd();
+  // Owner-only: the temp directory, and also a copy that SQLite creates outside of it.
+  const umask = process.umask(0o077);
+  let temp: string | undefined;
+  let own: DirId | undefined;
   try {
-    const snapshot = read(source);
-    // The read is synchronous: a signal during it is handled here, before any byte is written.
+    temp = createPrivateDir(dir, target);
+    own = enterPrivateDir(temp);
     await pause();
     assertNotAborted(signal);
-    await writeImage(tempPath, temp.fd, snapshot.image, pause, signal);
-    assertSameTemp(tempPath, temp);
-    publish(tempPath, target);
-    isPublished = true;
-    return `backup ${target}: schema version ${snapshot.version}, checks ${snapshot.checks}, results ${snapshot.results}, incidents ${snapshot.incidents}`;
+    copyLive(source);
+    // VACUUM is synchronous: a signal during it is handled here, before the publish.
+    await pause();
+    assertNotAborted(signal);
+    const published = resolve(home, target);
+    return report(publish(published) ? COPY : published, target);
   } finally {
-    closeTemp(temp, isPublished);
-    removeOwnTemp(tempPath, temp);
+    process.umask(umask);
+    leavePrivateDir(home, temp, own);
   }
 }

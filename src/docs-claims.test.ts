@@ -27,12 +27,19 @@ test("operation: the database runs in WAL mode and has a backup command", () => 
   assert.match(doc, /pulse\.db-wal/);
 });
 
-test("operation: the backup docs name the temp file that only SIGKILL or a crash leaves", () => {
+test("operation: the backup docs name the temp directory that only SIGKILL or a crash leaves", () => {
   const doc = read("docs/operation.md");
   assert.doesNotMatch(doc, /so a failed run leaves no partial file/);
   assert.match(
     doc,
-    /A run ended by `SIGKILL`, a crash or a power loss can leave `\.<name>\.tmp-<pid>` behind/,
+    /A run ended by `SIGKILL`, a crash or a power loss can leave `\.<name>\.tmp-XXXXXX` behind/,
   );
-  assert.match(doc, /interrupted; no backup written and the temp file is removed/);
+  assert.match(doc, /interrupted; no backup written and the temp directory is removed/);
+});
+
+test("operation: the backup is a VACUUM INTO copy without free pages, not a copy held in memory", () => {
+  const doc = read("docs/operation.md");
+  assert.doesNotMatch(doc, /memory for one copy of the file/);
+  assert.doesNotMatch(doc, /it keeps free pages/);
+  assert.match(doc, /without free pages, so deleted rows are not in it/);
 });

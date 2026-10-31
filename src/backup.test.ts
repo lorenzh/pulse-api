@@ -2,7 +2,15 @@ import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, test } from "bun:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -101,6 +109,35 @@ test("backup at a quiet point: an intact copy with the source's counts and one r
   } finally {
     db.close();
   }
+});
+
+const MIB = 1024 * 1024;
+const DELETED = "DELETED-MARKER-492";
+
+test("backup copies only live data: no deleted rows and no free pages", () => {
+  const source = join(dir, "pulse.db");
+  const db = openDb(source);
+  createService(db).upsertChecks([check]);
+  const insert = db.prepare(
+    "INSERT INTO results (check_id, timestamp, status, latency_ms, reason) VALUES ('c1', ?, 'down', 5, ?)",
+  );
+  const reason = `${DELETED}${"x".repeat(4000)}`;
+  db.transaction(() => {
+    for (let t = 0; t < 1000; t += 1) insert.run(t, reason);
+  })();
+  db.run("DELETE FROM results");
+  db.close();
+  // The deleted rows now sit in free pages of a file of more than 4 MiB.
+  assert.ok(statSync(source).size > 4 * MIB);
+  assert.ok(readFileSync(source).includes(DELETED));
+
+  const target = join(dir, "live.db");
+  const run = runBackup([target], source);
+  assert.equal(run.err, "");
+  assert.equal(run.status, 0);
+  const copy = readFileSync(target);
+  assert.equal(copy.includes(DELETED), false);
+  assert.ok(copy.length < MIB, `backup has ${copy.length} bytes`);
 });
 
 const WRITER = `
