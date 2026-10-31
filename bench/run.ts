@@ -13,6 +13,7 @@ import {
   renderTable,
   type Samples,
 } from "./compare.ts";
+import { EOD_ROUTES } from "./eod.ts";
 import { OPTIONAL_ROUTES, routesMissingAt } from "./load.ts";
 import { runChecked } from "./measure.ts";
 import {
@@ -27,6 +28,7 @@ import {
   buildImages,
   imageSizeMB,
   runColdStack,
+  runEodStack,
   runStack,
   SERVICES,
   type SideDirs,
@@ -201,6 +203,16 @@ async function measureStack(
   await runChecked("rm", ["-rf", coldDir]);
   const cold = await runColdStack(dirs, COMPOSE_FILE, coldDir, log, failureLogFile);
   for (const metric of COLD_METRICS) add(samples, "api", metric, cold[metric]);
+  const eodDir = join(WORK_ROOT, "run-eod", dirs.side);
+  await runChecked("rm", ["-rf", eodDir]);
+  const eod = await runEodStack(dirs, COMPOSE_FILE, eodDir, log, failureLogFile);
+  for (const { metric } of EOD_ROUTES) {
+    // Null only for a route that side A's source lacks (see prepareSide).
+    const value = eod[metric];
+    if (value === null) missingOnA.add(`api.${metric}`);
+    else add(samples, "api", metric, value);
+  }
+  add(samples, "api", "eod_read_cpu_ms", eod.eod_read_cpu_ms);
 }
 
 async function main(): Promise<number> {

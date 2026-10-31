@@ -166,7 +166,7 @@ export async function waitReady(base: () => Promise<string>): Promise<string> {
 }
 
 /** Wait until the CPU time grows by less than 20 ms over 2 s, at most 300 s. Returns the wait. */
-async function settle(target: ColdTarget): Promise<number> {
+export async function settle(target: Pick<ColdTarget, "cpuMs">): Promise<number> {
   const started = performance.now();
   let before = await target.cpuMs();
   while (performance.now() - started < SETTLE_MAX_MS) {
@@ -226,6 +226,39 @@ export function countTodayRows(dbPath: string, now: number): number {
     const midnight = Math.floor(now / 86_400_000) * 86_400_000;
     const row = db.query("SELECT COUNT(*) AS n FROM results WHERE timestamp >= ?").get(midnight);
     return (row as { n: number } | null)?.n ?? 0;
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Insert the extra rows of today (see `extraTodayRows`) for every check of `checkIds` into a
+ * seeded file, until it holds at least `target` rows since the UTC midnight of `now`. Returns the
+ * number of rows added.
+ */
+export function addTodayRows(
+  dbPath: string,
+  checkIds: readonly string[],
+  target: number,
+  now: number,
+): number {
+  const rows = extraTodayRows(countTodayRows(dbPath, now), target, checkIds.length, now);
+  if (rows.length === 0) return 0;
+  const db = new Database(dbPath);
+  try {
+    const insert = db.prepare(
+      "INSERT INTO results (check_id, timestamp, status, status_code, latency_ms, reason, location, attempts) VALUES (?, ?, ?, ?, ?, NULL, ?, 1)",
+    );
+    db.transaction(() => {
+      for (const id of checkIds) {
+        for (const row of rows) {
+          const code = row.status === "up" ? 200 : 503;
+          insert.run(id, row.timestamp, row.status, code, row.latencyMs, row.location);
+        }
+      }
+    })();
+    db.run("PRAGMA wal_checkpoint(TRUNCATE)");
+    return rows.length * checkIds.length;
   } finally {
     db.close();
   }

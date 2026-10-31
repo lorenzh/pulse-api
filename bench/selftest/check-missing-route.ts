@@ -36,7 +36,12 @@ await commit('const ROUTES = ["/checks", "/latency"];\n// no handler\n');
 assert.deepEqual(await missingAtHead(), ["/latency"]);
 await assert.rejects(containsCommit(repo, "0".repeat(40)), /cannot fetch/);
 await rm(repo, { recursive: true, force: true });
-assert.deepEqual(Object.keys(OPTIONAL_ROUTES), ["/latency", "/checks/:id/latency"]);
+assert.deepEqual(Object.keys(OPTIONAL_ROUTES), [
+  "/latency",
+  "/checks/:id/latency",
+  "/components",
+  "/components/uptime",
+]);
 
 // Every requested route must answer 200: a 404 from an A after the commit, or from B, fails.
 const server = createServer((req, res) => {

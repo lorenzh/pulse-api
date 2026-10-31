@@ -80,6 +80,41 @@
       "budget": 390,
       "unit": "ms",
       "gating": false
+    },
+    "eod_get_checks_ms": {
+      "budget": 7,
+      "unit": "ms",
+      "gating": false
+    },
+    "eod_get_uptime_ms": {
+      "budget": 3,
+      "unit": "ms",
+      "gating": false
+    },
+    "eod_get_latency_ms": {
+      "budget": 7,
+      "unit": "ms",
+      "gating": false
+    },
+    "eod_get_check_latency_ms": {
+      "budget": 2,
+      "unit": "ms",
+      "gating": false
+    },
+    "eod_get_components_ms": {
+      "budget": 4,
+      "unit": "ms",
+      "gating": false
+    },
+    "eod_get_components_uptime_ms": {
+      "budget": 3,
+      "unit": "ms",
+      "gating": false
+    },
+    "eod_read_cpu_ms": {
+      "budget": 598,
+      "unit": "ms",
+      "gating": true
     }
   },
   "probe": {
