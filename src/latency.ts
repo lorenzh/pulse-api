@@ -16,14 +16,14 @@ export const EMPTY_ROLLUP: LatencyRollup = { p50Ms: null, p95Ms: null, count: 0 
  * Nearest-rank percentile of an ascending list: the value at 1-based index `ceil(percent * n / 100)`,
  * no interpolation. `percent` is an integer 1..100. Null for an empty list.
  */
-export function nearestRank(sorted: readonly number[], percent: number): number | null {
+export function nearestRank(sorted: ArrayLike<number>, percent: number): number | null {
   if (sorted.length === 0) return null;
   const rank = Math.max(1, Math.ceil((percent * sorted.length) / 100));
   return sorted[rank - 1] ?? null;
 }
 
 /** p50 and p95 of one day's latencies (ascending). */
-export function summarizeLatencies(sorted: readonly number[]): LatencyRollup {
+export function summarizeLatencies(sorted: ArrayLike<number>): LatencyRollup {
   return { p50Ms: nearestRank(sorted, 50), p95Ms: nearestRank(sorted, 95), count: sorted.length };
 }
 

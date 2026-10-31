@@ -39,6 +39,8 @@ export function benchTokens(): { simulated: BenchToken[]; real: BenchToken } {
 
 /** The lorenzh/pulse-api commit that added both latency routes (F8, merged in #56). */
 const LATENCY_ROUTES_COMMIT = "f2f90cd81e4d977a29104d11de3607f3216807d3";
+/** The lorenzh/pulse-api commit that added `GET /components` and `GET /components/uptime` (#336). */
+const COMPONENTS_ROUTES_COMMIT = "794b860bddd788234e1b04f0fdd9424887976086";
 
 /**
  * GET routes newer than the oldest api the bench compares against, each with the api commit that
@@ -48,6 +50,9 @@ const LATENCY_ROUTES_COMMIT = "f2f90cd81e4d977a29104d11de3607f3216807d3";
 export const OPTIONAL_ROUTES = {
   "/latency": LATENCY_ROUTES_COMMIT,
   "/checks/:id/latency": LATENCY_ROUTES_COMMIT,
+  // Measured by the end-of-day phase only; the load keeps its four GET streams.
+  "/components": COMPONENTS_ROUTES_COMMIT,
+  "/components/uptime": COMPONENTS_ROUTES_COMMIT,
 } as const;
 export type OptionalRoute = keyof typeof OPTIONAL_ROUTES;
 
