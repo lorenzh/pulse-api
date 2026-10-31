@@ -33,6 +33,14 @@ import { authenticate, TokensError } from "./tokens.ts";
 import { startUptimeRollup } from "./uptime-rollup.ts";
 
 export const SHUTDOWN_TIMEOUT_MS = 5000;
+
+/** The shutdown hit its bound: open connections were closed, cleanup and the database close ran. */
+export class ShutdownTimeoutError extends Error {
+  override name = "ShutdownTimeoutError";
+  constructor(timeoutMs: number) {
+    super(`shutdown did not drain within ${timeoutMs} ms`);
+  }
+}
 export const DEFAULT_CHECKS_RELOAD_INTERVAL_MS = 5000;
 const DEFAULT_PORT = 3000;
 const MIN_RELOAD_INTERVAL_MS = 1000;
@@ -364,6 +372,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     // until exit, so the WAL is not checkpointed and -wal and -shm stay next to the file.
     db.close(true);
     logger.info("stopped");
+    if (outcome === "timeout") throw new ShutdownTimeoutError(timeoutMs);
   };
   let closing: Promise<void> | undefined;
   return {

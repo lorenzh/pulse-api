@@ -1,4 +1,4 @@
-import { type Env, readMs } from "@lorenzh/pulse-kit";
+import { type Env, readInt } from "@lorenzh/pulse-kit";
 import { DAY_MS, type Service, UPTIME_DAYS } from "./service.ts";
 
 export const RETENTION_BATCH_SIZE = 1000;
@@ -7,7 +7,7 @@ const DEFAULT_RETENTION_DAYS = UPTIME_DAYS;
 
 /** Read `PULSE_RETENTION_DAYS`: unset or empty gives the default, else an integer >= UPTIME_DAYS. */
 export function readRetentionDays(env: Env): number {
-  return readMs(env, "PULSE_RETENTION_DAYS", {
+  return readInt(env, "PULSE_RETENTION_DAYS", {
     fallback: DEFAULT_RETENTION_DAYS,
     min: UPTIME_DAYS,
   });

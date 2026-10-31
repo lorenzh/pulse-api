@@ -13,6 +13,7 @@ import {
   validateCheck,
   validateComponent,
 } from "@lorenzh/pulse-contract";
+import { isRecord } from "@lorenzh/pulse-kit";
 import { z } from "zod";
 import { type AdminToken, parseAdminTokens } from "./admin-tokens.ts";
 import { firstIssue, type Issue, pathName, unknownKey } from "./issue-path.ts";
@@ -26,10 +27,6 @@ import {
 
 export class ConfigError extends Error {
   override name = "ConfigError";
-}
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
 const TIMER_RANGE = `an integer from 1 to ${MAX_TIMER_MS} (milliseconds)`;

@@ -20,7 +20,7 @@ import {
   validateAdminConfigResponse,
   validateAdminMaintenanceView,
 } from "@lorenzh/pulse-contract";
-import type { LogLevel } from "@lorenzh/pulse-kit";
+import { type LogLevel, nodeAtomicWriteSyncFs } from "@lorenzh/pulse-kit";
 import { nodeConfigFs } from "./config-fs.ts";
 import { openDb } from "./db.ts";
 import { type RunningApi, type StartDeps, startApi } from "./start.ts";
@@ -539,15 +539,36 @@ test("admin: the file keeps its mode and the format has 2 spaces and a final new
 
 // ---- failures at each stage ----
 
-for (const step of ["writeTemp", "rename", "fsyncDir"] as const) {
+const ENOSPC = (): Error => Object.assign(new Error("boom"), { code: "ENOSPC" });
+
+/** The kit fs with `fsync` number `n` of a write (1 = temp file, 2 = directory) or `rename` broken. */
+function brokenAtomic(step: "fsync-temp" | "rename" | "fsync-dir", isBroken: () => boolean) {
+  const real = nodeAtomicWriteSyncFs;
+  let fsyncs = 0;
+  return {
+    ...real,
+    fsync: (fd: number) => {
+      if (isBroken()) {
+        fsyncs += 1;
+        if ((step === "fsync-temp" && fsyncs === 1) || (step === "fsync-dir" && fsyncs === 2)) {
+          throw ENOSPC();
+        }
+      }
+      real.fsync(fd);
+    },
+    rename: (from: string, to: string) => {
+      if (isBroken() && step === "rename") throw ENOSPC();
+      real.rename(from, to);
+    },
+  };
+}
+
+for (const step of ["fsync-temp", "rename", "fsync-dir"] as const) {
   test(`admin: a failing ${step} leaves a valid file and no temp file`, async () => {
     let isBroken = false;
     const configFs: StartDeps["configFs"] = {
       ...nodeConfigFs,
-      [step]: (...args: unknown[]) => {
-        if (isBroken) throw Object.assign(new Error("boom"), { code: "ENOSPC" });
-        return (nodeConfigFs[step] as (...a: unknown[]) => unknown)(...args);
-      },
+      atomic: brokenAtomic(step, () => isBroken),
     };
     const b = await boot(BASE_FILE, { configFs });
     const before = readFileSync(file, "utf8");
@@ -556,7 +577,7 @@ for (const step of ["writeTemp", "rename", "fsyncDir"] as const) {
     const r = await b.call("POST", "/admin/checks", { body: NEW_CHECK, ifMatch: rev });
     assert.equal(r.status, 500);
     JSON.parse(readFileSync(file, "utf8"));
-    if (step !== "fsyncDir") assert.equal(readFileSync(file, "utf8"), before);
+    if (step !== "fsync-dir") assert.equal(readFileSync(file, "utf8"), before);
     // Nothing is applied before the directory fsync succeeds.
     assert.equal(await b.revision(), rev);
     assert.deepEqual(await checkIds(b), ["api", "web"]);
@@ -571,14 +592,45 @@ for (const step of ["writeTemp", "rename", "fsyncDir"] as const) {
 test("admin: EXDEV on rename answers 503 naming the cause", async () => {
   const configFs: StartDeps["configFs"] = {
     ...nodeConfigFs,
-    rename: () => {
-      throw Object.assign(new Error("x"), { code: "EXDEV" });
+    atomic: {
+      ...nodeAtomicWriteSyncFs,
+      rename: () => {
+        throw Object.assign(new Error("x"), { code: "EXDEV" });
+      },
     },
   };
   const b = await boot(BASE_FILE, { configFs });
   const r = await b.call("POST", "/admin/checks", { body: NEW_CHECK, ifMatch: await b.revision() });
   assert.equal(r.status, 503);
   assert.match(((await r.json()) as { error: string }).error, /\(EXDEV\)/);
+  assert.deepEqual(
+    readdirSync(dir).filter((n) => n.endsWith(".tmp")),
+    [],
+  );
+});
+
+test("admin: a hand edit between the temp file and the rename answers 412 and keeps the edit", async () => {
+  let isArmed = false;
+  const edited = `${JSON.stringify({ ...BASE_FILE, components: [] }, null, 2)}\n`;
+  const configFs: StartDeps["configFs"] = {
+    ...nodeConfigFs,
+    atomic: {
+      ...nodeAtomicWriteSyncFs,
+      close: (fd: number) => {
+        nodeAtomicWriteSyncFs.close(fd);
+        if (isArmed) {
+          isArmed = false;
+          writeFileSync(file, edited);
+        }
+      },
+    },
+  };
+  const b = await boot(BASE_FILE, { configFs });
+  const rev = await b.revision();
+  isArmed = true;
+  const r = await b.call("POST", "/admin/checks", { body: NEW_CHECK, ifMatch: rev });
+  assert.equal(r.status, 412);
+  assert.equal(readFileSync(file, "utf8"), edited);
   assert.deepEqual(
     readdirSync(dir).filter((n) => n.endsWith(".tmp")),
     [],
@@ -621,12 +673,21 @@ test("review fix: a reload the database rejects keeps the running config and rev
 
 test("review fix: an apply failure after the rename syncs the directory and keeps memory consistent", async () => {
   let dirSyncs = 0;
+  const dirFds = new Set<number>();
   const { b, db } = await bootWithDb({
     configFs: {
       ...nodeConfigFs,
-      fsyncDir: (d) => {
-        dirSyncs += 1;
-        nodeConfigFs.fsyncDir(d);
+      atomic: {
+        ...nodeAtomicWriteSyncFs,
+        open: (path, flags, mode) => {
+          const fd = nodeAtomicWriteSyncFs.open(path, flags, mode);
+          if (flags === "r") dirFds.add(fd);
+          return fd;
+        },
+        fsync: (fd) => {
+          if (dirFds.delete(fd)) dirSyncs += 1;
+          nodeAtomicWriteSyncFs.fsync(fd);
+        },
       },
     },
   });
