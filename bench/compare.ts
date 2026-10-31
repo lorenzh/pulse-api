@@ -18,6 +18,10 @@ export const METRIC_KEYS = [
   "p95_get_check_latency_ms",
   "rps",
   "image_mb",
+  "cold_get_checks_ms",
+  "cold_get_uptime_ms",
+  "cold_read_cpu_ms",
+  "cold_concurrent_ms",
 ] as const;
 export type MetricKey = (typeof METRIC_KEYS)[number];
 
@@ -45,6 +49,10 @@ export const EMITTED_METRICS: Readonly<Record<string, readonly MetricKey[]>> = {
     "p95_get_check_latency_ms",
     "rps",
     "image_mb",
+    "cold_get_checks_ms",
+    "cold_get_uptime_ms",
+    "cold_read_cpu_ms",
+    "cold_concurrent_ms",
   ],
   probe: [
     "startup_cpu_ms",

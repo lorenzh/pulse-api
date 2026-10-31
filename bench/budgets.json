@@ -59,6 +59,27 @@
       "budget": 124,
       "unit": "MB",
       "gating": false
+    },
+    "cold_get_checks_ms": {
+      "budget": 200,
+      "unit": "ms",
+      "gating": false
+    },
+    "cold_get_uptime_ms": {
+      "budget": 190,
+      "unit": "ms",
+      "gating": false
+    },
+    "cold_read_cpu_ms": {
+      "budget": 390,
+      "unit": "ms",
+      "gating": true,
+      "floor": 30
+    },
+    "cold_concurrent_ms": {
+      "budget": 390,
+      "unit": "ms",
+      "gating": false
     }
   },
   "probe": {

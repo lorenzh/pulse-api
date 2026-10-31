@@ -29,6 +29,8 @@ export interface CleanupDeps {
   deleteManualIncidents?: (cutoff: number) => number;
   /** Deletes latency rollups before the cutoff day and those of removed checks; returns how many. */
   deleteLatencyRollups?: (cutoff: number) => number;
+  /** Deletes uptime tallies before the cutoff day and those of removed checks; returns how many. */
+  deleteUptimeRollups?: (cutoff: number) => number;
 }
 
 /** Delete expired results in short batches, yielding between them, and resolved manual incidents of the same age. Returns the rows deleted. */
@@ -42,12 +44,14 @@ export async function cleanupResults(
     isAborted = () => false,
     deleteManualIncidents,
     deleteLatencyRollups,
+    deleteUptimeRollups,
   }: CleanupDeps,
 ): Promise<number> {
   const cutoff = retentionCutoff(now(), retentionDays);
   let total = deleteManualIncidents?.(cutoff) ?? 0;
-  // Rollups follow the raw retention, which is never below the 90 days of the latency window.
+  // Rollups follow the raw retention, which is never below the 90 days of the latency and uptime windows.
   total += deleteLatencyRollups?.(cutoff) ?? 0;
+  total += deleteUptimeRollups?.(cutoff) ?? 0;
   for (;;) {
     const deleted = service.deleteExpiredResults(cutoff, batchSize);
     total += deleted;

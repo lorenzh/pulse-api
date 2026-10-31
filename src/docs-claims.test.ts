@@ -15,6 +15,12 @@ test("troubleshooting: a restart keeps a location reporting while its stored res
   );
 });
 
+test("operation: first reads after a restart come from uptime_daily, not a 0.4 s window scan", () => {
+  const doc = read("docs/operation.md");
+  assert.doesNotMatch(doc, /takes about 0\.4 s/);
+  assert.match(doc, /uptime_daily/);
+});
+
 test("bench README: the api no longer stores a repeated result twice", () => {
   assert.doesNotMatch(read("bench/README.md"), /results have no unique key/);
 });
