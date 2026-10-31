@@ -67,23 +67,8 @@ function isHostName(host: string): boolean {
   );
 }
 
-function protocolOf(url: string): string | undefined {
-  try {
-    return new URL(url).protocol;
-  } catch {
-    // not a URL: the caller reports it
-    return undefined;
-  }
-}
-
-const URL_TEXT = z
-  .string({ error: REQUIRED_TEXT })
-  .refine((v) => v.trim() !== "", REQUIRED_TEXT)
-  .refine((v) => protocolOf(v) !== undefined, "is not a valid URL")
-  .refine((v) => {
-    const protocol = protocolOf(v);
-    return protocol === "http:" || protocol === "https:";
-  }, "must be http or https");
+/** Only the blank check: the contract owns the http/https rule, see parseHttp. */
+const URL_TEXT = requiredText();
 
 const KEYWORD = z
   .string({ error: "must be a non-empty string" })
