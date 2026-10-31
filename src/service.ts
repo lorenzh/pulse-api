@@ -919,21 +919,16 @@ export function createService(
         .all() as unknown as Pick<CheckRow, "id">[]
     ).map((r) => r.id);
 
-  /** The ascending latencies of one UTC day from the results. Down results carry no latency. */
-  function latenciesOfDay(checkId: string, day: number): number[] {
+  /** The figures of one UTC day, computed from the results. Down results carry no latency. */
+  function rollupOfDay(checkId: string, day: number): LatencyRollup {
     const rows = dayLatencies.all(checkId, day * DAY_MS, (day + 1) * DAY_MS) as unknown as {
       latency_ms: number;
     }[];
-    return rows.map((r) => r.latency_ms);
+    return summarizeLatencies(rows.map((r) => r.latency_ms));
   }
 
   function* latencyValues(rows: Iterable<{ latency_ms: number }>): Generator<number> {
     for (const row of rows) yield row.latency_ms;
-  }
-
-  /** The figures of one UTC day, computed from the results. */
-  function rollupOfDay(checkId: string, day: number): LatencyRollup {
-    return summarizeLatencies(latenciesOfDay(checkId, day));
   }
 
   /** Today's figures from the in-memory latencies, built from the results when missing or stale. */
