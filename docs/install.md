@@ -62,7 +62,7 @@ All images run as the non-root `bun` user. `status` and `notify` wait for `api` 
 openssl rand -hex 32
 ```
 
-Compose writes the API's tokens file from these two variables and gives the same two variables to the probe, so the location matches the token. Without a `.env` the token is empty. The API then stops at start with `token must be a string of at least 16 characters`. Copy `.env.example` to `.env` and set the token first. The Compose demo profile has its own public tokens in `compose.yaml` and still starts without `.env`. All Compose variables are listed in [Configuration](configuration.md#compose-variables).
+Compose writes the API's tokens file from these two variables and gives the same two variables to the probe, so the location matches the token. Without a `.env` the token is empty. The API then stops at start with `token must be a string of at least 16 characters`. Copy `.env.example` to `.env` and set the token first. Compose reads this `.env` on the host; the API process in the container never reads it. The Compose demo profile has its own public tokens in `compose.yaml` and still starts without `.env`. All Compose variables are listed in [Configuration](configuration.md#compose-variables).
 
 ### Ports
 
@@ -104,7 +104,9 @@ docker run --rm -p 3000:3000 \
   pulse-api:local
 ```
 
-The image runs as the non-root `bun` user with `bun src/main.ts`. It owns `/data` (database at `PULSE_DB=/data/pulse.db`), exposes port 3000 and has a healthcheck on `GET /readyz`. It contains no checks or tokens file: mount a directory with `checks.json` and `tokens.json` inside. Do not mount the two files singly: a single-file bind mount keeps the old inode and does not see an atomic replace (editor save, `sed -i`), so hot reload misses the change.
+The image runs as the non-root `bun` user with `bun --no-env-file src/main.ts`. It owns `/data` (database at `PULSE_DB=/data/pulse.db`), exposes port 3000 and has a healthcheck on `GET /readyz`. It contains no checks or tokens file: mount a directory with `checks.json` and `tokens.json` inside. Do not mount the two files singly: a single-file bind mount keeps the old inode and does not see an atomic replace (editor save, `sed -i`), so hot reload misses the change.
+
+The image starts Bun with `--no-env-file`, so neither the API nor its healthcheck reads `.env` files, also not ones mounted into `/app`. Settings come from the container environment (`-e`, `docker run --env-file` read on the host, Compose `environment:`/`env_file:`) and the documented setting files (`PULSE_CHECKS_FILE`, `PULSE_TOKENS_FILE`). `bun start` from source still loads `.env` files as Bun does by default.
 
 ## Demo profile
 
