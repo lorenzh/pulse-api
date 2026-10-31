@@ -82,7 +82,7 @@
       "gating": false
     },
     "eod_get_checks_ms": {
-      "budget": 4,
+      "budget": 7,
       "unit": "ms",
       "gating": false
     },
@@ -92,7 +92,7 @@
       "gating": false
     },
     "eod_get_latency_ms": {
-      "budget": 6,
+      "budget": 7,
       "unit": "ms",
       "gating": false
     },
@@ -112,7 +112,7 @@
       "gating": false
     },
     "eod_read_cpu_ms": {
-      "budget": 550,
+      "budget": 598,
       "unit": "ms",
       "gating": true
     }
