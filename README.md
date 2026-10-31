@@ -29,7 +29,7 @@ The database is created with the current schema. A file from an older version is
 
 ### Docker Compose
 
-`compose.yaml` runs the whole stack: api, one probe, status and notify. It needs Docker Compose >= 2.23 and access to github.com.
+`compose.yaml` runs the whole stack: api, one probe, status, notify and console. It needs Docker Compose >= 2.23 and access to github.com. The probe, status, notify and console images are built from `main` of their repositories. The console is on <http://127.0.0.1:8082> (loopback only) and has nothing to manage yet.
 
 ```sh
 cp .env.example .env
@@ -39,6 +39,16 @@ docker compose up -d --build
 ```
 
 Open http://localhost:8080. Stop with `docker compose down`. The demo profile (`docker compose --profile demo up demo-status`) shows every status page state; it needs no `.env`.
+
+### Image
+
+Each release publishes a multi-arch image (linux/amd64, linux/arm64) with build provenance to `ghcr.io/lorenzh/pulse-api`:
+
+```sh
+docker pull ghcr.io/lorenzh/pulse-api:0.1.0
+```
+
+See [Releasing](docs/development.md#releasing) for the tags and how to verify an image.
 
 ## Heartbeat checks
 

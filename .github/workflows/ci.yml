@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
 
 permissions:
@@ -10,11 +11,11 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
   check:
-    uses: lorenzh/pulse-config/.github/workflows/check.yml@51e95b0eb463b27a196a33b428607bd92443e4f0
+    uses: lorenzh/pulse-config/.github/workflows/check.yml@dc69a126bebbe50d8a7339ea1325d51b2ea43d7d
 
   bench-selftest:
     runs-on: ubuntu-latest
@@ -30,7 +31,11 @@ jobs:
       - run: docker compose -f bench/compose.bench.yaml config --quiet
 
   docker:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
     steps:
@@ -44,6 +49,19 @@ jobs:
       - name: Status port override
         run: |
           PULSE_STATUS_PORT=8090 docker compose config | grep 'published: "8090"'
+      - name: Console port override
+        run: |
+          PULSE_CONSOLE_PORT=8092 docker compose config --format json | jq -e '.services.console.ports[0].published == "8092" and .services.console.ports[0].host_ip == "127.0.0.1" and .services.console.ports[0].target == 8082'
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [check, docker, bench-selftest]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    uses: lorenzh/pulse-config/.github/workflows/release.yml@dc69a126bebbe50d8a7339ea1325d51b2ea43d7d
 
   compose-e2e:
     runs-on: ubuntu-latest

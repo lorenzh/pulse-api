@@ -197,6 +197,7 @@ is_healthy() { # is_healthy <service>
 
 api_healthz_ok() { [[ "$(api /healthz)" == "ok" ]]; }
 api_readyz_ok() { [[ "$(api /readyz)" == "ok" ]]; }
+console_readyz_ok() { [[ "$(curl -fsS --max-time 5 "http://127.0.0.1:${console_port}/readyz")" == "ok" ]]; }
 
 api_metrics_ok() {
   local text
@@ -296,16 +297,17 @@ if [[ ! -f .env ]]; then
 fi
 api_port=$(env_value PULSE_API_PORT 3000)
 status_port=$(env_value PULSE_STATUS_PORT 8080)
+console_port=$(env_value PULSE_CONSOLE_PORT 8082)
 demo_status_port=$(env_value PULSE_DEMO_STATUS_PORT 8081)
 regular_services=$(COMPOSE_FILE=compose.yaml docker compose config --services | sort | paste -sd' ' -)
-[[ "$regular_services" == "api notify probe status" ]] ||
+[[ "$regular_services" == "api console notify probe status" ]] ||
   fail "the regular stack has the services: ${regular_services}"
 regular_demo_services=$(COMPOSE_FILE=compose.yaml docker compose --profile demo config --services | sort | paste -sd' ' -)
 # Hard-coded on purpose: a list derived from compose.yaml would accept any extra service.
-expected_demo_services="api demo-api demo-init demo-probe-a demo-probe-b demo-status demo-targets demo-tls notify probe status"
+expected_demo_services="api console demo-api demo-init demo-probe-a demo-probe-b demo-status demo-targets demo-tls notify probe status"
 [[ "$regular_demo_services" == "$expected_demo_services" ]] ||
   fail "the regular stack with the demo profile has the services: ${regular_demo_services} (expected: ${expected_demo_services})"
-echo "ok: the regular stack has exactly api, notify, probe and status, plus the seven demo services"
+echo "ok: the regular stack has exactly api, console, notify, probe and status, plus the seven demo services"
 # The api container runs as another user than the host: the directory must be open to it.
 mkdir -p "$rw_dir"
 chmod 777 "$rw_dir"
@@ -317,7 +319,7 @@ docker compose --profile demo down -v --remove-orphans
 
 step "Start the regular stack"
 docker compose up -d --build
-for service in api probe status notify; do
+for service in api probe status notify console; do
   wait_for "$T_UP" "$service is running" is_running "$service"
 done
 before=$(stack_snapshot)
@@ -329,10 +331,18 @@ done
 echo "ok: no restart or state change for ${STABLE_WINDOW}s"
 
 step "Health and metrics"
-for service in api probe status notify; do
+for service in api probe status notify console; do
   wait_for "$T_UP" "$service is healthy" is_healthy "$service"
 done
 wait_for "$T_UP" "GET /readyz on the api answers ok" api_readyz_ok
+wait_for "$T_UP" "GET /readyz on the console answers ok" console_readyz_ok
+console_headers=$(mktemp)
+console_page=$(curl -fsS --max-time 5 -D "$console_headers" "http://127.0.0.1:${console_port}/")
+console_frame=$(tr -d '\r' <"$console_headers" | grep -ix 'x-frame-options: DENY' || true)
+rm -f "$console_headers"
+grep -qF 'pulse Console' <<<"$console_page" || fail "GET / on the console does not contain 'pulse Console'"
+[[ -n "$console_frame" ]] || fail "GET / on the console has no x-frame-options: DENY header"
+echo "ok: GET / on the console holds 'pulse Console' and sends x-frame-options: DENY"
 wait_for "$T_UP" "GET /healthz on the api answers ok" api_healthz_ok
 wait_for "$T_UP" "GET /metrics on the api has the pulse_ series" api_metrics_ok
 
@@ -651,14 +661,14 @@ docker compose up -d
 wait_for "$T_UP" "api answers after up" api /checks
 wait_for "$T_PAGE" "incident ${incident_id} is still listed" has_incident "$incident_id"
 # The probe starts only after the api is healthy; a SIGTERM before its handlers exist would be ignored.
-for service in api probe status notify; do
+for service in api probe status notify console; do
   wait_for "$T_UP" "$service is healthy after up" is_healthy "$service"
 done
 
 step "Clean stop"
 # docker stop sends SIGTERM and kills after the timeout: exit 0 means the service stopped by itself.
-docker compose stop -t 10 api probe status notify
-for service in api probe status notify; do
+docker compose stop -t 10 api probe status notify console
+for service in api probe status notify console; do
   [[ "$(exit_code_of "$service")" == "0" ]] || fail "$service did not exit with code 0 on docker stop"
   echo "ok: $service exited with code 0"
 done
