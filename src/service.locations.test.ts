@@ -1,3 +1,4 @@
+import type { Database, Statement } from "bun:sqlite";
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -6,12 +7,7 @@ import { join } from "node:path";
 import { type Check, type Result, validateLocationsResponse } from "@lorenzh/pulse-contract";
 import { openDb } from "./db.ts";
 import { createMetrics } from "./metrics.ts";
-import {
-  createService,
-  HEARTBEAT_LOCATION,
-  MIN_LOCATION_SILENT_MS,
-  NEWEST_PER_LOCATION_SQL,
-} from "./service.ts";
+import { createService, HEARTBEAT_LOCATION, MIN_LOCATION_SILENT_MS } from "./service.ts";
 
 // eslint-disable-next-line sonarjs/no-clear-text-protocols -- local test fixture, never requested
 const CHECK: Check = { id: "c1", name: "C1", url: "http://x/", intervalMs: 10_000 };
@@ -151,74 +147,105 @@ test("metric: last result per location in seconds, evaluated at scrape", () => {
 const OLD_NEWEST_PER_LOCATION_SQL =
   "SELECT location, MAX(timestamp) AS t FROM results WHERE location != ? GROUP BY location";
 
-test("locations: the start query returns the rows of the old full scan", () => {
+const STATEMENT_RUNS = new Set(["all", "get", "run", "values", "iterate"]);
+
+/** A database that records the SQL of every statement run through it. */
+function recording(db: Database): { db: Database; ran: string[] } {
+  const ran: string[] = [];
+  const watch = (stmt: Statement, sql: string): Statement =>
+    new Proxy(stmt, {
+      get(target, key) {
+        const value: unknown = Reflect.get(target, key, target);
+        if (typeof value !== "function") return value;
+        return (...args: unknown[]): unknown => {
+          if (STATEMENT_RUNS.has(String(key))) ran.push(sql);
+          return Reflect.apply(value, target, args);
+        };
+      },
+    });
+  const wrapped = new Proxy(db, {
+    get(target, key) {
+      if (key === "prepare") return (sql: string): Statement => watch(target.prepare(sql), sql);
+      const value: unknown = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return { db: wrapped, ran };
+}
+
+/** A file database with several checks, an inactive one and a heartbeat check, then reopened. */
+function seededLocations(dir: string): Database {
+  const path = join(dir, "t.db");
+  const first = openDb(path);
+  const s1 = createService(first, { now: () => 1000 });
+  const hb: Check = { id: "hb", name: "HB", type: "heartbeat", period: 1000, grace: 0 };
+  const c2: Check = { ...CHECK, id: "c2" };
+  const gone: Check = { ...CHECK, id: "gone" };
+  s1.upsertChecks([CHECK, c2, gone, hb]);
+  s1.ingest(up(500, "east"));
+  s1.ingest(up(700, "east"));
+  s1.ingest(up(650, "west"));
+  s1.ingest(up(800, "east", "c2"));
+  s1.ingest(up(300, "west", "c2"));
+  s1.ingest(up(400, "north", "c2"));
+  // Only an inactive check reports from "south", and its "west" result is the newest there.
+  s1.ingest(up(200, "south", "gone"));
+  s1.ingest(up(900, "west", "gone"));
+  s1.ingest(up(950, HEARTBEAT_LOCATION, "hb"));
+  s1.ingest(up(960, "east", "hb"));
+  s1.upsertChecks([CHECK, c2, hb]);
+  first.close();
+  return openDb(path);
+}
+
+test("locations: after a restart they match the old full scan of results", () => {
   const dir = mkdtempSync(join(tmpdir(), "pulse-loc-"));
   try {
-    const path = join(dir, "t.db");
-    const first = openDb(path);
-    const s1 = createService(first, { now: () => 1000 });
-    const hb: Check = { id: "hb", name: "HB", type: "heartbeat", period: 1000, grace: 0 };
-    const c2: Check = { ...CHECK, id: "c2" };
-    const gone: Check = { ...CHECK, id: "gone" };
-    s1.upsertChecks([CHECK, c2, gone, hb]);
-    s1.ingest(up(500, "east"));
-    s1.ingest(up(700, "east"));
-    s1.ingest(up(650, "west"));
-    s1.ingest(up(800, "east", "c2"));
-    s1.ingest(up(300, "west", "c2"));
-    s1.ingest(up(400, "north", "c2"));
-    // Only an inactive check reports from "south", and its newest "west" result is the newest.
-    s1.ingest(up(200, "south", "gone"));
-    s1.ingest(up(900, "west", "gone"));
-    s1.ingest(up(950, HEARTBEAT_LOCATION, "hb"));
-    s1.ingest(up(960, "east", "hb"));
-    s1.upsertChecks([CHECK, c2, hb]);
-    first.close();
-
-    const db = openDb(path);
-    const old = db.prepare(OLD_NEWEST_PER_LOCATION_SQL).all(HEARTBEAT_LOCATION);
-    const loose = db.prepare(NEWEST_PER_LOCATION_SQL).all(HEARTBEAT_LOCATION);
-    const byName = (a: unknown, b: unknown): number =>
-      String((a as { location: string }).location) < String((b as { location: string }).location)
-        ? -1
-        : 1;
-    assert.deepEqual([...loose].sort(byName), [...old].sort(byName));
-    assert.equal(old.length, 4);
-    const s2 = createService(db, { now: () => 1000 });
-    assert.deepEqual(
-      s2.listLocations().map(({ name, lastResultAt }) => ({ name, lastResultAt })),
-      [
-        { name: "east", lastResultAt: 960 },
-        { name: "north", lastResultAt: 400 },
-        { name: "south", lastResultAt: 200 },
-        { name: "west", lastResultAt: 900 },
-      ],
-    );
+    const db = seededLocations(dir);
+    const old = db.prepare(OLD_NEWEST_PER_LOCATION_SQL).all(HEARTBEAT_LOCATION) as {
+      location: string;
+      t: number;
+    }[];
+    const expected = old
+      .map((r) => ({ name: r.location, lastResultAt: r.t }))
+      .sort((a, b) => (a.name < b.name ? -1 : 1));
+    const service = createService(db, { now: () => 1000 });
+    const got = service.listLocations().map(({ name, lastResultAt }) => ({ name, lastResultAt }));
+    assert.deepEqual(got, expected);
+    assert.deepEqual(got, [
+      { name: "east", lastResultAt: 960 },
+      { name: "north", lastResultAt: 400 },
+      { name: "south", lastResultAt: 200 },
+      { name: "west", lastResultAt: 900 },
+    ]);
     db.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("locations: the start query seeks the sample index and never scans or sorts results", () => {
-  const db = openDb(":memory:");
-  const plan = (sql: string): string[] =>
-    (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(HEARTBEAT_LOCATION) as { detail: string }[]).map(
-      (r) => r.detail,
-    );
-  const details = plan(NEWEST_PER_LOCATION_SQL);
-  const onResults = details.filter((d) => /\bresults\b/.test(d));
-  assert.ok(onResults.length > 0);
-  for (const d of onResults) {
-    assert.match(d, /^SEARCH results USING COVERING INDEX results_by_sample \(check_id=\?/);
+test("locations: no start query scans or sorts the results table", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pulse-loc-"));
+  try {
+    const db = seededLocations(dir);
+    const rec = recording(db);
+    createService(rec.db, { now: () => 1000 });
+    assert.ok(rec.ran.length > 0);
+    for (const sql of new Set(rec.ran)) {
+      const details = (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as { detail: string }[]).map(
+        (r) => r.detail,
+      );
+      details.forEach((d, i) => {
+        if (/\bresults\b/.test(d)) {
+          assert.match(d, /^SEARCH results USING COVERING INDEX results_by_sample \(check_id=\?/);
+        }
+        // A sort is fine only for rows that do not come straight from results.
+        if (d.startsWith("USE TEMP B-TREE"))
+          assert.doesNotMatch(details[i - 1] ?? "", /\bresults\b/);
+      });
+    }
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
-  // The only sort groups the CTE rows, one per (check, location), right after their scan.
-  const sorts = details.flatMap((d, i) => (d.startsWith("USE TEMP B-TREE") ? [i] : []));
-  for (const i of sorts) assert.equal(details[i - 1], "SCAN locs");
-  // The old query, for contrast: a full index scan of results and a sort of all its rows.
-  assert.deepEqual(plan(OLD_NEWEST_PER_LOCATION_SQL), [
-    "SCAN results USING COVERING INDEX results_by_sample",
-    "USE TEMP B-TREE FOR GROUP BY",
-  ]);
-  db.close();
 });

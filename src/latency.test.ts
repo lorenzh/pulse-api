@@ -8,12 +8,7 @@ import {
 } from "@lorenzh/pulse-contract";
 import { openDb } from "./db.ts";
 import { nearestRank } from "./latency.ts";
-import {
-  fillAllRollups,
-  LATENCY_ROLLUP_START_DELAY_MS,
-  type LatencyRollupDeps,
-  startLatencyRollup,
-} from "./latency-rollup.ts";
+import { fillAllRollups, type LatencyRollupDeps, startLatencyRollup } from "./latency-rollup.ts";
 import { cleanupResults } from "./retention.ts";
 import { createApiServer } from "./server.ts";
 import { createService, type ServiceOptions } from "./service.ts";
@@ -239,7 +234,6 @@ test("rollup runner: the first run waits for the start delay, then runs hourly",
   const { spy, calls } = spyService(service);
   const { deps, timers } = runnerDeps(spy);
   const runner = startLatencyRollup(deps);
-  assert.equal(LATENCY_ROLLUP_START_DELAY_MS, 5000);
   assert.deepEqual(
     timers.map((t) => t.ms),
     [5000],

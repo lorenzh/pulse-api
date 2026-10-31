@@ -7,9 +7,11 @@ import { join } from "node:path";
 import type { ChecksResponse } from "@lorenzh/pulse-contract";
 import { type LogLevel, StartupError } from "@lorenzh/pulse-kit";
 import { openDb } from "./db.ts";
-import { LATENCY_ROLLUP_START_DELAY_MS } from "./latency-rollup.ts";
 import { createManualIncidentStore } from "./manual-incidents.ts";
 import { type StartDeps, startApi } from "./start.ts";
+
+/** The default start delay of the latency rollup that the spec sets. */
+const ROLLUP_START_DELAY_MS = 5000;
 
 const TOKEN = "test-token-east-0123456789abcdef";
 const SECRET_URL = "https://user:hunter2@internal.example/path";
@@ -146,7 +148,7 @@ test("the latency rollup starts only after listen: none on a port in use, delaye
       { setTimeout: (_fn, ms) => failedTimers.push(ms) },
     );
     await assert.rejects(startApi(failed.base), StartupError);
-    assert.equal(failedTimers.includes(LATENCY_ROLLUP_START_DELAY_MS), false);
+    assert.equal(failedTimers.includes(ROLLUP_START_DELAY_MS), false);
   } finally {
     await first.close();
   }
@@ -162,7 +164,7 @@ test("the latency rollup starts only after listen: none on a port in use, delaye
   );
   const api = await startApi(base);
   try {
-    const rollup = timers.find((t) => t.ms === LATENCY_ROLLUP_START_DELAY_MS);
+    const rollup = timers.find((t) => t.ms === ROLLUP_START_DELAY_MS);
     assert.ok(rollup, "the rollup waits for the start delay");
     assert.ok(rollup.linesBefore.some((l) => l.includes('"msg":"listening"')));
     assert.equal(

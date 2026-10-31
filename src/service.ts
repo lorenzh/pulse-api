@@ -116,7 +116,7 @@ export const HEARTBEAT_LOCATION = "heartbeat";
  * one step per (check, location) pair. Every results row has a checks row (foreign key), so
  * starting from `checks` finds every location.
  */
-export const NEWEST_PER_LOCATION_SQL = `WITH RECURSIVE locs(c, l) AS (
+const NEWEST_PER_LOCATION_SQL = `WITH RECURSIVE locs(c, l) AS (
   SELECT id, (SELECT MIN(location) FROM results WHERE check_id = checks.id) FROM checks
   UNION ALL
   SELECT c, (SELECT MIN(location) FROM results WHERE check_id = locs.c AND location > locs.l)
