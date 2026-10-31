@@ -1,4 +1,5 @@
 // One run: a compose stack of the four services plus the bench target, driven by the fixed load.
+import { existsSync } from "node:fs";
 import { chmod, copyFile, mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
@@ -96,18 +97,23 @@ async function prepareRunDir(
   checksJson = checksFileJson(),
   prepareDb: (dbPath: string) => void = () => undefined,
 ): Promise<void> {
+  const dbPath = join(runDir, "api-data", "pulse.db");
   for (const dir of ["config", "api-data", "notify-data"]) {
     await mkdir(join(runDir, dir), { recursive: true });
   }
   await writeFile(join(runDir, "config", "checks.json"), checksJson);
   await writeFile(join(runDir, "config", "tokens.json"), tokensFileJson());
-  await copyFile(seedDb, join(runDir, "api-data", "pulse.db"));
-  prepareDb(join(runDir, "api-data", "pulse.db"));
+  await copyFile(seedDb, dbPath);
+  prepareDb(dbPath);
   // The services run as the unprivileged `bun` user of their images.
   for (const path of [runDir, join(runDir, "api-data"), join(runDir, "notify-data")]) {
     await chmod(path, 0o777);
   }
-  await chmod(join(runDir, "api-data", "pulse.db"), 0o666);
+  // A read-only open on the host (`countTodayRows`) leaves `-wal` and `-shm` files that it cannot
+  // delete. Owned by the host user with mode 0644, they make the database read-only for the api.
+  for (const path of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+    if (path === dbPath || existsSync(path)) await chmod(path, 0o666);
+  }
 }
 
 async function hostPort(compose: string[], service: ServiceName): Promise<number> {
@@ -292,7 +298,6 @@ export async function runEodStack(
   const compose = composeArgs(project, composeFile);
   const env = stackEnv(dirs, project, runDir);
   const container = containerName(project, "api");
-  const dbPath = join(runDir, "api-data", "pulse.db");
   const down = async (): Promise<void> => {
     const result = await runCommand(
       "docker",
@@ -305,10 +310,13 @@ export async function runEodStack(
     {
       seed: async (now) => {
         await rm(runDir, { recursive: true, force: true });
+        let todayRows = 0;
+        // Count before `prepareRunDir` sets the file modes for the api user.
         await prepareRunDir(runDir, dirs.seedDb, eodChecksFileJson(), (db) => {
           addTodayRows(db, checkIds(), EOD_TODAY_ROWS, now);
+          todayRows = countTodayRows(db, now);
         });
-        return countTodayRows(dbPath, now);
+        return todayRows;
       },
       measure: async () => {
         const target = {
