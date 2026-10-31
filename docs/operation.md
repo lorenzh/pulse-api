@@ -59,6 +59,8 @@ An hourly run logs `latency rollup: stored <N> days in <D> ms` only when it stor
 
 Do not open a database file of an older version with this version. Restore the backup to go back.
 
+A checks file whose heartbeat `secret` still starts with `replace-with-` (the example placeholder) stops the start with `checks[<i>].secret still has the example placeholder secret` and exit code 2. Replace the secret with `openssl rand -hex 32` and update the job that pings, or remove the check. An API that is already running rejects such a reload and keeps its config.
+
 ### Backup and restore
 
 The tested method is a file copy with the API stopped:
@@ -86,7 +88,7 @@ This command was not run for this page; it needs the `sqlite3` tool.
 
 ## Manual incidents
 
-Enable them with `PULSE_API_ADMIN_TOKENS_FILE` (see [Configuration](configuration.md#admin-tokensjson)); the `curl` examples are in [REST API](rest-api.md#write-routes). Counters: `pulse_api_manual_incidents_created_total` and `pulse_api_manual_incidents_resolved_total`, without labels. The start log says `manualIncidents` is `writable` or `off` and counts `adminTokens`. While it is `off`, the reads are empty even when the database holds incidents. The tables are created on start in an older database; nothing else changes. Rotate admin tokens like probe tokens: add the new one, restart, remove the old one, restart.
+Enable them with `PULSE_API_ADMIN_TOKENS_FILE` (see [Configuration](configuration.md#admin-tokensjson)); the `curl` examples are in [REST API](rest-api.md#write-routes). Counters: `pulse_api_manual_incidents_created_total` and `pulse_api_manual_incidents_resolved_total`, without labels. The start log says `manualIncidents` is `writable` or `off` and counts `adminTokens`. While it is `off`, the reads are empty even when the database holds incidents. The tables are created on start in an older database; nothing else changes. Rotate admin tokens like probe tokens: add the new one, restart, remove the old one, restart. Every write logs `manual incident write` (with the admin token name) or `manual incident write failed`, and every failed authentication logs `admin auth failed` (see [Logs](#logs)).
 
 Upgrade order: contract, then status and notify, then api. Status and notify treat a `404` from `/manual-incidents` of an older api as no incidents.
 
@@ -155,6 +157,7 @@ Secret handling:
 - Prefer the header form. The path form puts the secret in the URL, and reverse proxies, cron mail and shell history can log a URL. Redact `/heartbeat/*/` in proxy access logs.
 - The API has no access log and never logs the path of a request. Its metrics label the route `/heartbeat/:id`.
 - Use `curl -fsS` without `-v`.
+- Only a ping changes a heartbeat check: `POST /results` for it answers `403` `heartbeat checks accept only pings`.
 - To rotate a secret, edit `checks.json` (or `PUT /admin/checks/:id` with a new `secret`); the API reloads it. The last ping is kept in the database. The secret is not stored there.
 
 ## Logs
@@ -170,12 +173,15 @@ The API writes JSON lines: `{"time":"<ISO 8601>","level":"info","msg":"...", ...
 - `stopped` (info): The shutdown is done.
 - `startup failed` (error): An unexpected failure at start. The process exits with code 1.
 - `shutting down` (info): A signal arrived. Field: `signal`.
+- `admin auth failed` (warn): A request to `/admin/*` or a manual-incident write had no valid admin token (`401` or `403`). Fields: `route` (the route pattern, such as `/admin/checks/:id`), `status`, `token` (`missing` without a Bearer header, `probe` for a probe token, `unknown` otherwise) and `suppressed`. One line per route, status and kind per minute; `suppressed` counts the failures of that key dropped since its previous line. A dropped count shows only in the next line of the same key; with no later failure it is only in `pulse_api_admin_auth_failures_total`, which counts every failure.
+- `manual incident write` (info): A manual-incident write succeeded. Fields: `token` (the admin token name), `action` (`create`, `update`, `resolve`, `delete`) and `id`.
+- `manual incident write failed` (warn): A manual-incident write failed after authentication (`400`, `404`, `409`, `413`). Fields: `status`, `action` and, except for `create`, `id`.
 
 A log field named `time`, `level` or `msg` does not replace the base key.
 
 A configuration or startup error is not a JSON line: it is one line `pulse-api: <message>` on stderr with exit code 2. See [Exit codes](configuration.md#exit-codes).
 
-The log never prints token values.
+The log never prints token values, heartbeat secrets, header values or request bodies. Admin token **names** do appear.
 
 With Compose: `docker compose logs api`.
 

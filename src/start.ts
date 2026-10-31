@@ -10,6 +10,7 @@ import {
   readString,
   StartupError,
 } from "@lorenzh/pulse-kit";
+import { createAdminAuthFailures } from "./admin-auth-failures.ts";
 import { createAdminHandler } from "./admin-routes.ts";
 import { assertDistinctFromProbeTokens } from "./admin-tokens.ts";
 import { componentBudgets } from "./components.ts";
@@ -28,7 +29,7 @@ import { createMetrics } from "./metrics.ts";
 import { readRetentionDays, startRetention } from "./retention.ts";
 import { createApiServer } from "./server.ts";
 import { createService } from "./service.ts";
-import { matchesAnyToken, TokensError } from "./tokens.ts";
+import { authenticate, TokensError } from "./tokens.ts";
 
 export const SHUTDOWN_TIMEOUT_MS = 5000;
 export const DEFAULT_CHECKS_RELOAD_INTERVAL_MS = 5000;
@@ -243,18 +244,21 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     tempSuffix: deps.tempSuffix ?? (() => `${process.pid}-${randomBytes(6).toString("hex")}`),
     hasOpenIncidentFor: (id) => manualIncidents.hasOpenIncidentFor(id),
   });
+  const info = (message: string, fields: Record<string, string>): void =>
+    logger.info(message, fields);
+  const warn = (message: string, fields: Record<string, string>): void =>
+    logger.warn(message, fields);
+  // One recorder for /admin/* and the manual-incident writes: one rate limit, one counter.
+  const authFailures = createAdminAuthFailures({ now: deps.now, warn, metrics });
   const adminHandler = (list: ReturnType<typeof loadAdminTokens>) =>
     createAdminHandler({
       writer,
       metrics,
-      adminTokens: new Map(list.map((t) => [t.token, t.name])),
-      isProbeToken: (header) =>
-        matchesAnyToken(
-          tokens.map((t) => t.token),
-          header,
-        ),
-      info: (message, fields) => logger.info(message, fields),
-      warn: (message, fields) => logger.warn(message, fields),
+      adminTokens: list,
+      isProbeToken: (header) => authenticate(tokens, header) !== undefined,
+      info,
+      warn,
+      authFailures,
     });
 
   let isShuttingDown = false;
@@ -263,9 +267,10 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     heartbeatSecrets: () => holder.get().secrets,
     components: () => holder.get().components,
     manualIncidents,
-    ...(adminTokens === undefined
-      ? {}
-      : { adminTokens: adminTokens.map((t) => t.token), admin: adminHandler(adminTokens) }),
+    ...(adminTokens === undefined ? {} : { adminTokens, admin: adminHandler(adminTokens) }),
+    adminAuthFailures: authFailures,
+    info,
+    warn,
     now: deps.now,
     metrics,
     notReadyReason: () => (isShuttingDown ? "shutting down" : undefined),

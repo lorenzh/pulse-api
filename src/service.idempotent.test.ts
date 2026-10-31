@@ -104,9 +104,9 @@ test("ingest: two generated heartbeat samples in one millisecond are both kept",
   assert.equal(s.listResults("hb", 10).length, 2);
 });
 
-test("POST /results twice for a heartbeat check: one row, no second state change", async () => {
+test("POST /results twice with a down result: one row, no second state change", async () => {
   const service = createService(openDb(":memory:"));
-  service.upsertChecks([HB]);
+  service.upsertChecks([CHECK]);
   const server = createApiServer(service, {
     tokens: [{ location: "default", token: TOKEN }],
     now: () => 1000,
@@ -120,16 +120,17 @@ test("POST /results twice for a heartbeat check: one row, no second state change
       const res = await fetch(`${base}/results`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}` },
-        body: JSON.stringify({ ...down(500), checkId: "hb" }),
+        body: JSON.stringify(down(500)),
       });
       statuses.push(res.status);
     }
     assert.deepEqual(statuses, [204, 204]);
     assert.deepEqual(
-      service.listResults("hb", 10).map((r) => r.timestamp),
+      service.listResults("c1", 10).map((r) => r.timestamp),
       [500],
     );
-    assert.equal(service.listChecks()[0]?.consecutiveDown, 3);
+    // The repeat does not count as a second down.
+    assert.equal(service.listChecks()[0]?.consecutiveDown, 1);
   } finally {
     await new Promise<void>((r) => {
       server.close(() => r());

@@ -37,7 +37,7 @@ function setup(isAdminOn: boolean) {
     components: () => components,
     metrics,
     manualIncidents: store,
-    ...(isAdminOn ? { adminTokens: [ADMIN] } : {}),
+    ...(isAdminOn ? { adminTokens: [{ name: "ops", token: ADMIN }] } : {}),
   });
   return { server, metrics, db, store };
 }
@@ -334,7 +334,10 @@ test("unknown ids, bad ids, and wrong methods", async () => {
 
 test("server without a store answers an empty list and 404 for writes with tokens", async () => {
   const db = openDb(":memory:");
-  const server = createApiServer(createService(db, {}), { tokens: [], adminTokens: [ADMIN] });
+  const server = createApiServer(createService(db, {}), {
+    tokens: [],
+    adminTokens: [{ name: "ops", token: ADMIN }],
+  });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   try {

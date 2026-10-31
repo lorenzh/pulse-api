@@ -12,7 +12,7 @@ cp checks.example.json checks.json
 cp tokens.example.json tokens.json
 ```
 
-Edit `tokens.json` first. The API rejects the placeholder tokens of the example file. Create a token with `openssl rand -hex 32` (see [Locations and tokens](concepts.md#locations-and-tokens)). Then start the API:
+Edit `tokens.json` first. The API rejects the placeholder tokens of the example file. In `checks.json`, replace the placeholder `secret` of the `nightly-backup` heartbeat check, or remove that check: the API also rejects it. Create a token with `openssl rand -hex 32` (see [Locations and tokens](concepts.md#locations-and-tokens)). Then start the API:
 
 ```sh
 bun start

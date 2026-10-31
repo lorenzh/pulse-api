@@ -20,7 +20,7 @@ Requires Bun 1.4.0.
 
 ```sh
 bun install --frozen-lockfile
-cp checks.example.json checks.json
+cp checks.example.json checks.json   # replace the heartbeat secret of nightly-backup, or remove that check
 cp tokens.example.json tokens.json   # replace the placeholder tokens
 bun start
 ```

@@ -57,3 +57,29 @@ test("heartbeat config: secret is rejected on other types; duplicate ids stay re
     /"http", "tls", "tcp", "dns", "domain" or "heartbeat"/,
   );
 });
+
+test("heartbeat config: refuses the example placeholder secret without quoting it", () => {
+  const placeholder = "replace-with-a-random-secret";
+  const other = { id: "a", name: "A", url: "https://x.example/", intervalMs: 1000 };
+  const checks = [0, 1, 2, 3, 4, 5].map((i) => ({ ...other, id: `c${i}` }));
+  assert.throws(
+    () => parseConfig({ checks: [...checks, { ...hb, secret: placeholder }] }),
+    (err: unknown) =>
+      err instanceof ConfigError &&
+      err.message === "checks[6].secret still has the example placeholder secret" &&
+      !err.message.includes(placeholder),
+  );
+});
+
+test("heartbeat config: the placeholder rule is case-sensitive and only at the start", () => {
+  for (const secret of ["Replace-With-a-random-secret", "my-replace-with-secret-x"]) {
+    assert.equal(parseConfig({ checks: [{ ...hb, secret }] }).secrets.get("job"), secret);
+  }
+});
+
+test("heartbeat config: a 15-character secret gets the length message", () => {
+  assert.throws(() => parseConfig({ checks: [{ ...hb, secret: "x".repeat(15) }] }), {
+    name: "ConfigError",
+    message: "checks[0].secret is required: 16 to 128 characters from A-Z a-z 0-9 . _ ~ -",
+  });
+});
