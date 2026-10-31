@@ -55,7 +55,7 @@ latency rollup: backfill started (20 checks)
 latency rollup: backfill done, stored 1780 days in 2412 ms
 ```
 
-An hourly run logs `latency rollup: stored <N> days in <D> ms` only when it stored days. A failed run logs `latency rollup failed: <message>`. A shutdown waits for the batch in progress before it closes the database.
+An hourly run logs `latency rollup: stored <N> days in <D> ms` only when it stored days. A failed run logs `latency rollup failed: <message>` at `warn`; the other lines are `info`. A shutdown waits for the batch in progress before it closes the database.
 
 The uptime backfill fills `uptime_daily` the same way. It starts 5 s after the API listens, stores one closed day of one active check per batch, yields to waiting requests after each batch, and repeats hourly (that run stores yesterday after midnight, unless a read did it first). `/readyz` does not wait for it: a read finds the closed days still without a row, computes them from the results and stores them, so routes answer correctly and the same before, during and after the backfill. The first run logs two lines, also when it stores nothing:
 
@@ -64,7 +64,7 @@ uptime rollup: backfill started (20 checks)
 uptime rollup: backfill done, stored 0 days in 2 ms
 ```
 
-An hourly run logs `uptime rollup: stored <N> days in <D> ms` only when it stored days. A failed run logs `uptime rollup failed: <message>`. A shutdown waits for the batch in progress before it closes the database.
+An hourly run logs `uptime rollup: stored <N> days in <D> ms` only when it stored days. A failed run logs `uptime rollup failed: <message>` at `warn`; the other lines are `info`. A shutdown waits for the batch in progress before it closes the database.
 
 ### Upgrades
 
@@ -160,6 +160,8 @@ A valid file is applied in one step: checks are upserted, components, maintenanc
 
 An invalid or unreadable file is not applied. The API keeps the running configuration and logs one `warn` line, `config reload rejected: <path>: <message>` (the message never quotes a value), and counts `pulse_api_config_reload_total{result="invalid"}`. The same bad file is not logged again at every look; fix it or send `SIGHUP` to log it again. A start with an invalid file still fails.
 
+A valid file that cannot be applied (for example a database error) is not applied either. The API keeps the running configuration and revision, logs one `warn` line, `config reload failed: <path>: cannot apply the configuration: <error>`, and counts `pulse_api_config_reload_total{result="error"}`. `<error>` is only the error name and code (for example `Error SQLITE_BUSY`), never its message. The file is applied again at the next look, so a lasting failure logs one line per look.
+
 Checks that you remove from the file stay in the database with their results, but become inactive. The API does not delete checks. An inactive check is left out of `GET /checks` and `GET /uptime`, and `POST /results` for it answers `404 unknown check`. Its results and incidents stay readable. At the reload an open incident of a removed check is resolved (`resolvedAt` is the reload time, one log line per incident) and the check state is reset, so `notify` may send a "resolved" notification. If you add the check again, it becomes active with its history.
 
 **Writing through the API.** Set `PULSE_API_ADMIN_TOKENS_FILE`. Every write needs `If-Match` with the `ETag` of the last read:
@@ -205,7 +207,7 @@ The API writes JSON lines: `{"time":"<ISO 8601>","level":"info","msg":"...", ...
 
 - `listening` (info): The API is ready. Fields: `port`, `checks`, `maintenanceWindows`, `checksFile`, `db`, `retentionDays`, `probeTokens`, `locations`, `tokensFile`.
 - `retention: deleted <n> results` (info): A cleanup deleted rows (results and resolved manual incidents). Silent when it deletes none.
-- `retention failed: <message>` (info): A cleanup failed. The next run is still scheduled.
+- `retention failed: <message>` (warn): A cleanup failed. The next run is still scheduled.
 - `check "<id>" removed from the checks file: incident resolved` (info): One line per incident resolved at start.
 - `request failed` (error): An unexpected failure in a request (`500`). The field `error` holds the stack.
 - `shutdown bound reached: closing open connections` (warn): The shutdown took longer than 5 s.
@@ -232,7 +234,7 @@ A probe that could not reach the API keeps its results in a bounded buffer and r
 
 ## Health and metrics
 
-`GET /healthz` is liveness: `200 ok`, no database access, also while the API shuts down (it used to answer `503` then). `GET /readyz` is readiness: `200 ok` when `SELECT 1` works and the API is not shutting down, else `503` with a short text and no database error. The image `HEALTHCHECK` and every gate on the API use `/readyz`. `GET /metrics` returns Prometheus text (content type `text/plain; version=0.0.4; charset=utf-8`, with `# HELP` lines). A wrong method on these three paths (also `HEAD`) answers `405` with the JSON body `{"error":"method not allowed"}` and the header `Allow: GET`, like every other API route. None needs a token. See [GET /healthz](rest-api.md#get-healthz) and [GET /metrics](rest-api.md#get-metrics). `/metrics` lists check ids: keep it on a private network.
+`GET /healthz` is liveness: `200 ok`, no database access, also while the API shuts down (it used to answer `503` then). `GET /readyz` is readiness: `200 ok` when `SELECT 1` works and the API is not shutting down, else `503` with a short text and no database error. The image `HEALTHCHECK` and every gate on the API use `/readyz`. `GET /metrics` returns Prometheus text (content type `text/plain; version=0.0.4; charset=utf-8`, with `# HELP` lines). A wrong method on these three paths (also `HEAD`) answers `405` with the JSON body `{"error":"method not allowed"}` and the header `Allow: GET`. Every other API route also sends `Allow` with its methods on a `405`. None needs a token. See [GET /healthz](rest-api.md#get-healthz) and [GET /metrics](rest-api.md#get-metrics). `/metrics` lists check ids: keep it on a private network.
 
 ## Shutdown
 

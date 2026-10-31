@@ -286,3 +286,32 @@ test("cleanupResults: resolved manual incidents older than the window are delete
     0,
   );
 });
+
+test("scheduler: the failure line is warn, the deleted line is info", async () => {
+  const timers: { fn: () => Promise<void>; ms: number }[] = [];
+  const lines: [string, string][] = [];
+  let isFailing = true;
+  const service = {
+    deleteExpiredResults(): number {
+      if (isFailing) throw new Error("boom");
+      return 5;
+    },
+  };
+  const r = startRetention({
+    service,
+    now: () => NOW,
+    retentionDays: 90,
+    sleep: sleepFake([]),
+    setTimeout: (fn, ms) => timers.push({ fn, ms }),
+    clearTimeout: () => {},
+    log: (m, level) => lines.push([m, level]),
+  });
+  await r.done;
+  isFailing = false;
+  await timers[0]?.fn();
+  await r.stop();
+  assert.deepEqual(lines.slice(0, 2), [
+    ["retention failed: boom", "warn"],
+    ["retention: deleted 5 results", "info"],
+  ]);
+});

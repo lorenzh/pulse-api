@@ -31,7 +31,7 @@ export interface ReloaderDeps {
   fs: ReloadFs;
   /** Swap the configuration in; called only with a valid one. */
   onApply: (config: Config) => void;
-  /** Receives the `warn` line of a rejected reload. */
+  /** Receives the `warn` line of a rejected or failed reload. */
   log: (line: string) => void;
   metrics: Pick<Metrics, "recordConfigReload">;
 }
@@ -47,6 +47,17 @@ function stampKey(stamp: FileStamp): string {
 function errorCode(err: unknown): string {
   const code = err instanceof Error ? Reflect.get(err, "code") : undefined;
   return typeof code === "string" ? code : "unknown error";
+}
+
+const SAFE_NAME = /^[A-Za-z][A-Za-z0-9]{0,63}$/;
+const SAFE_CODE = /^[A-Z0-9_]{1,64}$/;
+
+/** Name and code of an apply error only: its message can quote values of the file. */
+function applyErrorText(err: unknown): string {
+  if (!(err instanceof Error)) return "unknown error";
+  const name = SAFE_NAME.test(err.name) ? err.name : "Error";
+  const code: unknown = Reflect.get(err, "code");
+  return typeof code === "string" && SAFE_CODE.test(code) ? `${name} ${code}` : name;
 }
 
 function utf8(bytes: Buffer): string {
@@ -97,7 +108,12 @@ export function createConfigReloader(deps: ReloaderDeps, initial: InitialConfig)
     try {
       deps.onApply(config);
     } catch (err) {
-      reject(`cannot apply the configuration (${err instanceof Error ? err.name : "error"})`);
+      // Leave the stamp unrecorded, so the next poll applies the same bytes again.
+      lastKey = undefined;
+      deps.metrics.recordConfigReload("error");
+      deps.log(
+        `config reload failed: ${path}: cannot apply the configuration: ${applyErrorText(err)}`,
+      );
       return;
     }
     revision = next;

@@ -10,7 +10,7 @@ export interface UptimeRollupDeps {
   /** The callback returns the run, so a fake clock can await it. */
   setTimeout: (fn: () => Promise<void>, ms: number) => unknown;
   clearTimeout: (handle: unknown) => void;
-  log: (message: string) => void;
+  log: (message: string, level: "info" | "warn") => void;
   /** Clock for the run duration in the log lines. */
   now: () => number;
   /** Time between runs; defaults to UPTIME_ROLLUP_INTERVAL_MS. Tests shorten it. */
@@ -68,12 +68,14 @@ export function startUptimeRollup(deps: UptimeRollupDeps): UptimeRollupRunner {
     if (isBackfill) {
       deps.log(
         `uptime rollup: backfill started (${deps.service.listUptimeCheckIds().length} checks)`,
+        "info",
       );
     }
     const { written } = await fillAllUptimeDays(deps, () => isStopped);
     const ms = Math.round(deps.now() - started);
-    if (isBackfill) deps.log(`uptime rollup: backfill done, stored ${written} days in ${ms} ms`);
-    else if (written > 0) deps.log(`uptime rollup: stored ${written} days in ${ms} ms`);
+    if (isBackfill)
+      deps.log(`uptime rollup: backfill done, stored ${written} days in ${ms} ms`, "info");
+    else if (written > 0) deps.log(`uptime rollup: stored ${written} days in ${ms} ms`, "info");
   };
   const run = (): Promise<void> => {
     if (isStopped) return Promise.resolve();
@@ -83,7 +85,10 @@ export function startUptimeRollup(deps: UptimeRollupDeps): UptimeRollupRunner {
       try {
         await runOnce(isBackfill);
       } catch (err) {
-        deps.log(`uptime rollup failed: ${err instanceof Error ? err.message : "unknown error"}`);
+        deps.log(
+          `uptime rollup failed: ${err instanceof Error ? err.message : "unknown error"}`,
+          "warn",
+        );
       }
       if (!isStopped) handle = deps.setTimeout(run, deps.intervalMs ?? UPTIME_ROLLUP_INTERVAL_MS);
     })();

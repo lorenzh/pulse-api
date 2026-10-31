@@ -615,7 +615,7 @@ test("review fix: a reload the database rejects keeps the running config and rev
   db().prepare(FAIL_UPSERT).run();
   writeExternal({ ...BASE_FILE, components: [{ id: "changed", name: "C", checkIds: ["web"] }] });
   b.poll();
-  assert.ok(b.lines.some((l) => l.line.includes("config reload rejected")));
+  assert.ok(b.lines.some((l) => l.line.includes("config reload failed")));
   assert.deepEqual(await (await b.call("GET", "/admin/config")).json(), before);
 });
 
