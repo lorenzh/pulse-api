@@ -6,7 +6,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isSettled, overLimit, seededLine, seedRowsOfMinute } from "../cold.ts";
+import { extraTodayRows, isSettled, overLimit, seededLine, seedRowsOfMinute } from "../cold.ts";
 import { runChecked } from "../measure.ts";
 
 // Density 1: one row per minute, the 1x row of the load.
@@ -42,6 +42,27 @@ assert.equal(
   seededLine(864_000, 10_000, 1, 1_700_000_000_000),
   "seeded 864000 results (check interval 10000 ms, density 1, now 1700000000000)",
 );
+
+// Extra rows of today: 2 checks x 2 locations need 3 rows each for 10 more rows; 06:00 UTC.
+const sixAm = 1_700_006_400_000 + 21_600_000;
+const extra = extraTodayRows(5, 15, 2, sixAm);
+assert.deepEqual(
+  extra.map((r) => [r.location, r.timestamp]),
+  [
+    ["sim1", 1_700_013_600_000],
+    ["sim1", 1_700_020_800_000],
+    ["sim1", 1_700_028_000_000],
+    ["sim2", 1_700_013_600_000],
+    ["sim2", 1_700_020_800_000],
+    ["sim2", 1_700_028_000_000],
+  ],
+);
+assert.deepEqual(extraTodayRows(15, 15, 2, sixAm), [], "no rows when the target is met");
+const many = extraTodayRows(0, 97 * 4, 2, sixAm);
+assert.equal(many.length, 194);
+assert.equal(many.filter((r) => r.status === "down").length, 2, "every 97th row is down");
+assert.equal(many[96]?.status, "down");
+assert.throws(() => extraTodayRows(0, 10, 1, 1_700_006_400_002), /do not fit/);
 
 // Settle: less than 20 ms over the window.
 assert.equal(isSettled(1000, 1019), true);

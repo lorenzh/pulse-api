@@ -1,8 +1,12 @@
 // Usage: bun bench/cold-read.ts --api <worktree> [--seed-with <worktree>] [--density 10] [--limit-ms 400]
+//   [--today-rows <n>]
 // Cold reads without Docker: seeds a temp database with this change's bench/seed.ts (schema of the
 // --seed-with worktree, default --api), runs `bun <api>/src/main.ts` as a child process, and runs
 // steps 1-3 of the cold-read phase (bench/cold.ts). Prints one JSON object; exits 1 when a cold
-// wall time is at or above the limit, 2 on an error.
+// wall time is at or above the limit, 2 on an error. `--today-rows` adds results between UTC
+// midnight and the seed's `now` at two more locations until today holds at least that many rows,
+// so a run at any hour can measure a late-day tally.
+import { Database } from "bun:sqlite";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -11,16 +15,18 @@ import { fileURLToPath } from "node:url";
 import {
   type ColdTarget,
   countTodayRows,
+  extraTodayRows,
   overLimit,
   processCpuMs,
   runColdReads,
   waitReady,
 } from "./cold.ts";
 import { checksFileJson, tokensFileJson } from "./fixtures.ts";
+import { checkIds } from "./load.ts";
 import { runChecked } from "./measure.ts";
 
 const BENCH_DIR = dirname(fileURLToPath(import.meta.url));
-const OPTIONS = ["api", "seed-with", "density", "limit-ms"];
+const OPTIONS = ["api", "seed-with", "density", "limit-ms", "today-rows"];
 /** The start delay of the latency and uptime rollup runners of the api. */
 const ROLLUP_DELAY_MS = 5000;
 
@@ -29,6 +35,7 @@ interface Args {
   seedWith: string;
   density: number;
   limitMs: number;
+  todayRows: number;
 }
 
 function parseArgs(argv: readonly string[]): Args {
@@ -46,9 +53,12 @@ function parseArgs(argv: readonly string[]): Args {
   if (api === undefined) throw new Error("--api <worktree> is required");
   const density = Number(values.get("density") ?? 10);
   const limitMs = Number(values.get("limit-ms") ?? 400);
+  const todayRows = Number(values.get("today-rows") ?? 0);
   if (!Number.isInteger(density) || density < 1) throw new Error("--density must be >= 1");
   if (!Number.isFinite(limitMs) || limitMs <= 0) throw new Error("--limit-ms must be > 0");
-  return { api: resolve(api), seedWith: resolve(values.get("seed-with") ?? api), density, limitMs };
+  if (!Number.isInteger(todayRows) || todayRows < 0) throw new Error("--today-rows must be >= 0");
+  const seedWith = resolve(values.get("seed-with") ?? api);
+  return { api: resolve(api), seedWith, density, limitMs, todayRows };
 }
 
 function freePort(): Promise<number> {
@@ -139,6 +149,31 @@ function localTarget(api: string, env: Record<string, string>, port: number) {
   return { target, stop, lines, starts };
 }
 
+/** Insert the extra rows of today (see `extraTodayRows`) into a seeded file; returns the count. */
+function addTodayRows(dbPath: string, target: number, now: number): number {
+  const ids = checkIds();
+  const rows = extraTodayRows(countTodayRows(dbPath, now), target, ids.length, now);
+  if (rows.length === 0) return 0;
+  const db = new Database(dbPath);
+  try {
+    const insert = db.prepare(
+      "INSERT INTO results (check_id, timestamp, status, status_code, latency_ms, reason, location, attempts) VALUES (?, ?, ?, ?, ?, NULL, ?, 1)",
+    );
+    db.transaction(() => {
+      for (const id of ids) {
+        for (const row of rows) {
+          const code = row.status === "up" ? 200 : 503;
+          insert.run(id, row.timestamp, row.status, code, row.latencyMs, row.location);
+        }
+      }
+    })();
+    db.run("PRAGMA wal_checkpoint(TRUNCATE)");
+    return rows.length * ids.length;
+  } finally {
+    db.close();
+  }
+}
+
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
   const dir = await mkdtemp(join(tmpdir(), "pulse-cold-read-"));
@@ -157,6 +192,8 @@ async function main(): Promise<number> {
       String(seedNow),
     ]);
     log(`${seeded.stdout.trim()} in ${Math.round(performance.now() - seedStarted)} ms`);
+    const added = addTodayRows(db, args.todayRows, seedNow);
+    if (added > 0) log(`added ${added} results of today at the extra locations`);
     const todayRows = countTodayRows(db, seedNow);
     const local = localTarget(
       args.api,
@@ -176,6 +213,8 @@ async function main(): Promise<number> {
         density: args.density,
         limit_ms: args.limitMs,
         seed_now_ms: seedNow,
+        today_rows_target: args.todayRows,
+        today_rows_added: added,
         today_rows: todayRows,
         ...result,
         starts: local.starts,

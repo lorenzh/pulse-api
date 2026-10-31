@@ -41,6 +41,45 @@ export function seedRowsOfMinute(k: number, n: number): SeedRow[] {
   return rows;
 }
 
+/** The probe locations of the extra rows of today; the seed itself writes only `default`. */
+export const EXTRA_TODAY_LOCATIONS = ["sim1", "sim2"] as const;
+
+export interface ExtraTodayRow {
+  location: string;
+  timestamp: number;
+  status: "up" | "down";
+  latencyMs: number;
+}
+
+/**
+ * The extra rows of one check that lift today's rows of a seed from `existing` to at least
+ * `target`, spread over `checks` checks and the two extra locations. Their timestamps lie evenly
+ * between the UTC midnight of `now` (excluded) and `now`; every 97th row is `down`.
+ */
+export function extraTodayRows(
+  existing: number,
+  target: number,
+  checks: number,
+  now: number,
+): ExtraTodayRow[] {
+  const series = checks * EXTRA_TODAY_LOCATIONS.length;
+  const perSeries = Math.ceil(Math.max(0, target - existing) / series);
+  const midnight = Math.floor(now / 86_400_000) * 86_400_000;
+  const span = now - midnight;
+  if (perSeries > span) throw new Error(`${perSeries} rows per series do not fit in ${span} ms`);
+  return EXTRA_TODAY_LOCATIONS.flatMap((location) =>
+    Array.from(
+      { length: perSeries },
+      (_, m): ExtraTodayRow => ({
+        location,
+        timestamp: midnight + Math.floor(((m + 1) * span) / perSeries),
+        status: m % 97 === 96 ? "down" : "up",
+        latencyMs: 5 + ((m * 7) % 300),
+      }),
+    ),
+  );
+}
+
 /** The last line of `bench/seed.ts`. */
 export function seededLine(rows: number, intervalMs: number, density: number, now: number): string {
   return `seeded ${rows} results (check interval ${intervalMs} ms, density ${density}, now ${now})`;
