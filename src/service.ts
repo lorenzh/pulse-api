@@ -109,6 +109,22 @@ export class UnknownCheckError extends Error {}
 /** The location of ping results and of the down result the evaluator writes. */
 export const HEARTBEAT_LOCATION = "heartbeat";
 
+/**
+ * The newest result timestamp per location, all locations but the one bound to `?`. Runs once at
+ * start. A plain `GROUP BY location` scans every result row and sorts them in a temp B-tree. This
+ * loose index scan instead seeks through `results_by_sample (check_id, location, timestamp)`:
+ * one step per (check, location) pair. Every results row has a checks row (foreign key), so
+ * starting from `checks` finds every location.
+ */
+export const NEWEST_PER_LOCATION_SQL = `WITH RECURSIVE locs(c, l) AS (
+  SELECT id, (SELECT MIN(location) FROM results WHERE check_id = checks.id) FROM checks
+  UNION ALL
+  SELECT c, (SELECT MIN(location) FROM results WHERE check_id = locs.c AND location > locs.l)
+  FROM locs WHERE l IS NOT NULL)
+SELECT l AS location,
+       MAX((SELECT MAX(timestamp) FROM results WHERE check_id = locs.c AND location = locs.l)) AS t
+FROM locs WHERE l IS NOT NULL AND l != ? GROUP BY l`;
+
 /** What the heartbeat evaluator needs to judge one active heartbeat check. */
 export interface HeartbeatInfo {
   id: string;
@@ -536,9 +552,7 @@ export function createService(
   const largestInterval = db.prepare(
     "SELECT MAX(interval_ms) AS m FROM checks WHERE active = 1 AND type != 'heartbeat'",
   );
-  const newestPerLocation = db.prepare(
-    "SELECT location, MAX(timestamp) AS t FROM results WHERE location != ? GROUP BY location",
-  );
+  const newestPerLocation = db.prepare(NEWEST_PER_LOCATION_SQL);
   for (const row of newestPerLocation.all(HEARTBEAT_LOCATION) as {
     location: string;
     t: number;
