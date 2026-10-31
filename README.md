@@ -40,6 +40,16 @@ docker compose up -d --build
 
 Open http://localhost:8080. Stop with `docker compose down`. The demo profile (`docker compose --profile demo up demo-status`) shows every status page state; it needs no `.env`.
 
+### Image
+
+Each release publishes a multi-arch image (linux/amd64, linux/arm64) with build provenance to `ghcr.io/lorenzh/pulse-api`:
+
+```sh
+docker pull ghcr.io/lorenzh/pulse-api:0.1.0
+```
+
+See [Releasing](docs/development.md#releasing) for the tags and how to verify an image.
+
 ## Heartbeat checks
 
 A check of type `heartbeat` is for cron jobs and workers. The job calls `POST|GET /heartbeat/<id>` with `Authorization: Bearer <secret>`; no ping within `period + grace` opens an incident, and the next ping resolves it. See [Configuration](docs/configuration.md#heartbeat-checks), [REST API](docs/rest-api.md#getpost-heartbeatidsecret) and [Operation](docs/operation.md#heartbeat-checks).
