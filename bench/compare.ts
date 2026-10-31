@@ -22,6 +22,13 @@ export const METRIC_KEYS = [
   "cold_get_uptime_ms",
   "cold_read_cpu_ms",
   "cold_concurrent_ms",
+  "eod_get_checks_ms",
+  "eod_get_uptime_ms",
+  "eod_get_latency_ms",
+  "eod_get_check_latency_ms",
+  "eod_get_components_ms",
+  "eod_get_components_uptime_ms",
+  "eod_read_cpu_ms",
 ] as const;
 export type MetricKey = (typeof METRIC_KEYS)[number];
 
@@ -53,6 +60,13 @@ export const EMITTED_METRICS: Readonly<Record<string, readonly MetricKey[]>> = {
     "cold_get_uptime_ms",
     "cold_read_cpu_ms",
     "cold_concurrent_ms",
+    "eod_get_checks_ms",
+    "eod_get_uptime_ms",
+    "eod_get_latency_ms",
+    "eod_get_check_latency_ms",
+    "eod_get_components_ms",
+    "eod_get_components_uptime_ms",
+    "eod_read_cpu_ms",
   ],
   probe: [
     "startup_cpu_ms",
