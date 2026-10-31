@@ -44,6 +44,9 @@ jobs:
       - name: Status port override
         run: |
           PULSE_STATUS_PORT=8090 docker compose config | grep 'published: "8090"'
+      - name: Console port override
+        run: |
+          PULSE_CONSOLE_PORT=8092 docker compose config --format json | jq -e '.services.console.ports[0].published == "8092" and .services.console.ports[0].host_ip == "127.0.0.1" and .services.console.ports[0].target == 8082'
 
   compose-e2e:
     runs-on: ubuntu-latest

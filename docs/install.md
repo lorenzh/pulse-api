@@ -30,7 +30,7 @@ The API only stores and serves data. Start a [pulse-probe](https://github.com/lo
 
 ## With Docker Compose
 
-`compose.yaml` runs the whole stack: api, one probe, status and notify. It needs Docker Compose 2.23 or newer and access to github.com. The probe, status and notify images are built from `main` of their repositories.
+`compose.yaml` runs the whole stack: api, one probe, status, notify and console. It needs Docker Compose 2.23 or newer and access to github.com. The probe, status, notify and console images are built from `main` of their repositories. The console is on <http://127.0.0.1:8082> (loopback only) and has nothing to manage yet.
 
 ```sh
 cp .env.example .env
