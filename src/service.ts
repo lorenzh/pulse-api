@@ -33,6 +33,14 @@ import {
 } from "./latency.ts";
 import { buildSlo, SLO_WINDOW_DAYS, windowAvailability } from "./slo.ts";
 import { applyResult, DOWNS_TO_OPEN, quorumStatus } from "./state.ts";
+import {
+  applyStored,
+  dropOlderDays,
+  emptyTodayState,
+  type StoredSample,
+  sortedFrom,
+  sortedView,
+} from "./today.ts";
 
 export const DEFAULT_LOCATION = "default";
 export const MAX_LOCATION_LENGTH = 64;
@@ -402,8 +410,12 @@ export function createService(
     const largest = (largestInterval.get() as { m: number | null } | undefined)?.m ?? 0;
     return Math.max(MIN_LOCATION_SILENT_MS, 3 * largest);
   };
-  /** Insert one result row; false when the (check, location, timestamp) sample is stored already. */
-  const storeSample = (result: Result, isLate: boolean, isGenerated: boolean): boolean => {
+  /** Insert one result row; undefined when the (check, location, timestamp) sample is stored already. */
+  const storeSample = (
+    result: Result,
+    isLate: boolean,
+    isGenerated: boolean,
+  ): StoredSample | undefined => {
     let at = result.timestamp;
     let changes = 0;
     do {
@@ -422,18 +434,34 @@ export function createService(
       // Generated samples are made here, never re-sent: two in one millisecond are both kept.
       at += 1;
     } while (changes === 0 && isGenerated);
-    if (changes === 0) return false;
+    if (changes === 0) return undefined;
     // `at` is one past the stored timestamp: a generated sample may have moved across midnight.
     const day = dayOf(at - 1);
     // A day without a row (today, a future day, or one not filled yet) is counted when it is filled.
     bumpUptimeDay.run(result.status === "down" ? 0 : 1, result.checkId, day);
     closedTallies.get(result.checkId)?.delete(day);
-    return true;
+    return {
+      checkId: result.checkId,
+      day,
+      isDown: result.status === "down",
+      latencyMs: result.latencyMs,
+    };
   };
   // Good and total results per closed UTC day of a check: a read-through cache over `uptime_daily`.
   // A result stored for a closed day updates its row and drops the entry, so the next read reloads it.
   type Tally = { good: number; total: number };
   const closedTallies = new Map<string, Map<number, Tally>>();
+  // Today's uptime tally and latencies per check, built by the first read of a process or a UTC
+  // day and then updated after each committed insert. Only `ingest` writes rows of today while the
+  // process runs: a future writer of `results` must update or drop these records.
+  const todayState = emptyTodayState();
+  let todayDay = Number.NEGATIVE_INFINITY;
+  /** At the first build of a new UTC day, the records of older days are dropped. */
+  const startDay = (day: number): void => {
+    if (day <= todayDay) return;
+    todayDay = day;
+    dropOlderDays(todayState, day);
+  };
   let cache = new Map<string, { at: number; windows: string; value: unknown }>();
   const invalidate = (): void => {
     cache = new Map();
@@ -528,6 +556,10 @@ export function createService(
       const row = latestOfLocation.get(checkId, l) as ResultRow | null;
       return row ? [row] : [];
     });
+  const rangeTally = db.prepare(
+    `SELECT SUM(status != 'down') AS good, COUNT(*) AS total
+     FROM results WHERE check_id = ? AND timestamp >= ? AND timestamp < ?`,
+  );
   const dailyUptime = db.prepare(
     `SELECT CAST(timestamp / ${DAY_MS} AS INTEGER) AS day,
             SUM(status != 'down') AS good, COUNT(*) AS total
@@ -818,7 +850,30 @@ export function createService(
     });
   }
 
-  /** One check's uptime days ending today: closed days from `uptime_daily`, today from the results. */
+  /** Good and total rows of a check in `[from, to)` (epoch ms). */
+  function tallyRange(id: string, from: number, to: number): Tally {
+    const row = rangeTally.get(id, from, to) as { good: number | null; total: number } | null;
+    return { good: Number(row?.good ?? 0), total: Number(row?.total ?? 0) };
+  }
+
+  /**
+   * Today's tally at `t`: the in-memory record of the whole day minus the rows stamped after `t`,
+   * a range of at most the accepted clock skew. Undefined when no row counts, like a day without rows.
+   */
+  function todayTally(id: string, day: number, t: number): Tally | undefined {
+    const end = (day + 1) * DAY_MS;
+    let record = todayState.uptime.get(id);
+    if (record === undefined || record.day !== day) {
+      startDay(day);
+      record = { day, ...tallyRange(id, day * DAY_MS, end) };
+      todayState.uptime.set(id, record);
+    }
+    const future = t + 1 < end ? tallyRange(id, t + 1, end) : { good: 0, total: 0 };
+    const total = record.total - future.total;
+    return total > 0 ? { good: record.good - future.good, total } : undefined;
+  }
+
+  /** One check's uptime days ending today: closed days from `uptime_daily`, today from memory. */
   function uptimeOf(id: string, windowDays = UPTIME_DAYS): CheckUptime {
     const t = now();
     const today = Math.floor(t / DAY_MS);
@@ -828,12 +883,12 @@ export function createService(
     let isComplete = true;
     for (let d = firstDay; d < today && isComplete; d++) isComplete = closed.has(d);
     if (!isComplete) loadClosedDays(id, firstDay, today, closed);
-    const fresh = tallyResults(id, today * DAY_MS, t);
+    const fresh = todayTally(id, today, t);
     let good = 0;
     let total = 0;
     const days: UptimeDay[] = [];
     for (let d = firstDay; d <= today; d++) {
-      const agg = d === today ? fresh.get(d) : closed.get(d);
+      const agg = d === today ? fresh : closed.get(d);
       good += agg?.good ?? 0;
       total += agg?.total ?? 0;
       days.push({
@@ -864,12 +919,36 @@ export function createService(
         .all() as unknown as Pick<CheckRow, "id">[]
     ).map((r) => r.id);
 
-  /** The figures of one UTC day, computed from the results. Down results carry no latency. */
-  function rollupOfDay(checkId: string, day: number): LatencyRollup {
+  /** The ascending latencies of one UTC day from the results. Down results carry no latency. */
+  function latenciesOfDay(checkId: string, day: number): number[] {
     const rows = dayLatencies.all(checkId, day * DAY_MS, (day + 1) * DAY_MS) as unknown as {
       latency_ms: number;
     }[];
-    return summarizeLatencies(rows.map((r) => r.latency_ms));
+    return rows.map((r) => r.latency_ms);
+  }
+
+  function* latencyValues(rows: Iterable<{ latency_ms: number }>): Generator<number> {
+    for (const row of rows) yield row.latency_ms;
+  }
+
+  /** The figures of one UTC day, computed from the results. */
+  function rollupOfDay(checkId: string, day: number): LatencyRollup {
+    return summarizeLatencies(latenciesOfDay(checkId, day));
+  }
+
+  /** Today's figures from the in-memory latencies, built from the results when missing or stale. */
+  function todayRollup(checkId: string, day: number): LatencyRollup {
+    let record = todayState.latency.get(checkId);
+    if (record === undefined || record.day !== day) {
+      startDay(day);
+      // Iterated, not `all()`: no array of row objects for a whole day of results.
+      const rows = dayLatencies.iterate(checkId, day * DAY_MS, (day + 1) * DAY_MS) as Iterable<{
+        latency_ms: number;
+      }>;
+      record = { day, values: sortedFrom(latencyValues(rows)) };
+      todayState.latency.set(checkId, record);
+    }
+    return summarizeLatencies(sortedView(record.values));
   }
 
   function storedRollupsOf(checkId: string, today: number): Map<number, LatencyRollup> {
@@ -903,7 +982,7 @@ export function createService(
     const today = dayOf(now());
     const rollups = fillRollups(checkId, today);
     // Today is never stored: it is still growing.
-    rollups.set(today, rollupOfDay(checkId, today));
+    rollups.set(today, todayRollup(checkId, today));
     return buildCheckLatency(checkId, today, rollups);
   }
 
@@ -944,7 +1023,7 @@ export function createService(
 
     ingest(result, isGenerated = false) {
       let incidentEvent: "opened" | "resolved" | undefined;
-      let isNew = true;
+      let stored: StoredSample | undefined;
       invalidate();
       transaction(() => {
         const row = getActiveCheck.get(result.checkId) as CheckRow | undefined;
@@ -960,10 +1039,8 @@ export function createService(
         const isLate =
           !isHeartbeat && newest !== null && newest !== undefined && result.timestamp < newest;
         // A repeat of a stored sample (a probe re-sending after a lost answer) changes nothing.
-        if (!storeSample(result, isLate, isGenerated)) {
-          isNew = false;
-          return;
-        }
+        stored = storeSample(result, isLate, isGenerated);
+        if (stored === undefined) return;
         // A late result is history only: it must not rewrite live state or incidents.
         if (isLate) return;
         // Older than the newest result of any location: history and quorum input only.
@@ -1015,10 +1092,13 @@ export function createService(
           result.checkId,
         );
       });
-      // Only after the commit: a rolled-back result must not mark its location reporting.
-      if (isNew) trackLocation(result.location, result.timestamp);
+      // Only after the commit: a rolled-back result must not mark its location reporting or count today.
+      if (stored !== undefined) {
+        trackLocation(result.location, result.timestamp);
+        applyStored(todayState, stored);
+      }
       if (incidentEvent !== undefined) onIncident(incidentEvent);
-      return isNew;
+      return stored !== undefined;
     },
 
     listLocations() {

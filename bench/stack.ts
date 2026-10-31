@@ -1,9 +1,16 @@
 // One run: a compose stack of the four services plus the bench target, driven by the fixed load.
-import { chmod, copyFile, mkdir, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { type ColdResult, composeTarget, countTodayRows, runColdReads } from "./cold.ts";
-import { checksFileJson, tokensFileJson } from "./fixtures.ts";
-import { IDLE_S, type OptionalRoute, runLoad } from "./load.ts";
+import {
+  addTodayRows,
+  type ColdResult,
+  composeTarget,
+  countTodayRows,
+  runColdReads,
+} from "./cold.ts";
+import { EOD_TODAY_ROWS, type EodResult, runEodPhase, runEodReads } from "./eod.ts";
+import { checksFileJson, eodChecksFileJson, tokensFileJson } from "./fixtures.ts";
+import { checkIds, IDLE_S, type OptionalRoute, runLoad } from "./load.ts";
 import { readContainerProcess, runChecked, runCommand } from "./measure.ts";
 
 export const SERVICES = ["api", "probe", "status", "notify"] as const;
@@ -83,13 +90,19 @@ export async function imageSizeMB(dirs: SideDirs, service: ServiceName): Promise
   return Number(stdout.trim()) / 1e6;
 }
 
-async function prepareRunDir(runDir: string, seedDb: string): Promise<void> {
+async function prepareRunDir(
+  runDir: string,
+  seedDb: string,
+  checksJson = checksFileJson(),
+  prepareDb: (dbPath: string) => void = () => undefined,
+): Promise<void> {
   for (const dir of ["config", "api-data", "notify-data"]) {
     await mkdir(join(runDir, dir), { recursive: true });
   }
-  await writeFile(join(runDir, "config", "checks.json"), checksFileJson());
+  await writeFile(join(runDir, "config", "checks.json"), checksJson);
   await writeFile(join(runDir, "config", "tokens.json"), tokensFileJson());
   await copyFile(seedDb, join(runDir, "api-data", "pulse.db"));
+  prepareDb(join(runDir, "api-data", "pulse.db"));
   // The services run as the unprivileged `bun` user of their images.
   for (const path of [runDir, join(runDir, "api-data"), join(runDir, "notify-data")]) {
     await chmod(path, 0o777);
@@ -262,6 +275,58 @@ export async function runColdStack(
     );
     if (down.code !== 0) log(`compose down failed: ${down.stderr.slice(-200)}`);
   }
+}
+
+/**
+ * The end-of-day phase: only the api, on a copy of the side's 1x seed that gets a full day of
+ * results of today, with the two components of the phase. Runs after the cold-read phase.
+ */
+export async function runEodStack(
+  dirs: SideDirs,
+  composeFile: string,
+  runDir: string,
+  log: (line: string) => void,
+  failureLogFile: string,
+): Promise<EodResult & { today_rows: number }> {
+  const project = `pulse-bench-${dirs.side}`;
+  const compose = composeArgs(project, composeFile);
+  const env = stackEnv(dirs, project, runDir);
+  const container = containerName(project, "api");
+  const dbPath = join(runDir, "api-data", "pulse.db");
+  const down = async (): Promise<void> => {
+    const result = await runCommand(
+      "docker",
+      [...compose, "down", "-v", "--remove-orphans", "-t", "5"],
+      { env },
+    );
+    if (result.code !== 0) log(`compose down failed: ${result.stderr.slice(-200)}`);
+  };
+  return runEodPhase(
+    {
+      seed: async (now) => {
+        await rm(runDir, { recursive: true, force: true });
+        await prepareRunDir(runDir, dirs.seedDb, eodChecksFileJson(), (db) => {
+          addTodayRows(db, checkIds(), EOD_TODAY_ROWS, now);
+        });
+        return countTodayRows(dbPath, now);
+      },
+      measure: async () => {
+        const target = {
+          ...composeTarget({ compose, env, container }),
+          rssMiB: async () => (await readContainerProcess(container)).rssMiB,
+        };
+        try {
+          return await runEodReads(target, log, dirs.missingRoutes);
+        } catch (err) {
+          await dumpStack(compose, env, failureLogFile, log);
+          throw err;
+        } finally {
+          await down();
+        }
+      },
+    },
+    log,
+  );
 }
 
 /** Save container states and logs of a failed run before the teardown removes them. */
