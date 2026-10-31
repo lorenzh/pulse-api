@@ -19,6 +19,7 @@ repository. Bun 1.4.0 (runtime, package manager, test runner), ESM, strict TypeS
 | Tests whose name matches                                      | `bun test --test-name-pattern "<text>"` |
 | Typecheck                                                     | `bun run typecheck`                     |
 | Lint and format check / apply fixes                           | `bun run lint` / `bun run format`       |
+| Hot backup of the database at `PULSE_DB`                      | `bun run backup <file>`                 |
 - A change is done when `bun run check` passes; the pre-commit hook runs Biome and ESLint. Never run `git commit --no-verify`, and never weaken `biome.json`, `tsconfig.json`, or CI to pass.
 
 ## Repository boundaries
