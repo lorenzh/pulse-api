@@ -38,7 +38,7 @@ export const SHUTDOWN_TIMEOUT_MS = 5000;
 export class ShutdownTimeoutError extends Error {
   override name = "ShutdownTimeoutError";
   constructor(timeoutMs: number) {
-    super(`shutdown did not drain within ${timeoutMs} ms`);
+    super(`shutdown did not finish within ${timeoutMs}ms`);
   }
 }
 export const DEFAULT_CHECKS_RELOAD_INTERVAL_MS = 5000;

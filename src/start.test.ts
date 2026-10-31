@@ -258,7 +258,11 @@ test("shutdown during an open connection hits the bound, warns, closes and rejec
   await new Promise((r) => setImmediate(r));
   const closing = api.close();
   release();
-  await assert.rejects(closing, ShutdownTimeoutError);
+  await assert.rejects(closing, (err: unknown) => {
+    assert.ok(err instanceof ShutdownTimeoutError);
+    assert.equal(err.message, "shutdown did not finish within 5000ms");
+    return true;
+  });
   assert.ok(lines.some((l) => l.level === "warn" && l.line.includes("shutdown bound")));
   assert.throws(() => db?.prepare("SELECT 1"));
   const again = api.close();
