@@ -1,5 +1,14 @@
 import { Database } from "bun:sqlite";
-import { linkSync, lstatSync, renameSync, rmSync, statSync } from "node:fs";
+import {
+  closeSync,
+  fstatSync,
+  linkSync,
+  lstatSync,
+  openSync,
+  renameSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { readString } from "@lorenzh/pulse-kit";
 
@@ -46,6 +55,39 @@ function assertIsKind(path: string, kind: "file" | "directory", what: string): v
     throw new BackupError(`${what} ${path} does not exist: ${messageOf(err)}`, 1, { cause: err });
   }
   if (!isKind) throw new BackupError(`${what} ${path} is not a ${kind}`, 1);
+}
+
+type FileId = { readonly dev: number; readonly ino: number };
+
+/**
+ * Exclusive create: fails with EEXIST on anything already at `temp`, also a dangling symlink, so
+ * the copy is never written through a planted link and never replaces a file of someone else.
+ */
+function createTemp(temp: string): FileId {
+  let fd: number;
+  try {
+    fd = openSync(temp, "wx", 0o600);
+  } catch (err) {
+    throw new BackupError(`cannot create temp file ${temp}: ${messageOf(err)}`, 1, { cause: err });
+  }
+  try {
+    const stat = fstatSync(fd);
+    return { dev: stat.dev, ino: stat.ino };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** SQLite opens `temp` by name again: refuse to publish if it was swapped in between. */
+function assertSameTemp(temp: string, id: FileId): void {
+  let isSame = false;
+  try {
+    const stat = lstatSync(temp);
+    isSame = stat.isFile() && stat.dev === id.dev && stat.ino === id.ino;
+  } catch (err) {
+    throw new BackupError(`cannot check temp file ${temp}: ${messageOf(err)}`, 1, { cause: err });
+  }
+  if (!isSame) throw new BackupError(`temp file ${temp} was replaced during the backup`, 1);
 }
 
 /** Read-only: never creates, migrates or writes the live file, and accepts any schema version. */
@@ -109,7 +151,7 @@ function describe(target: string): string {
 
 /**
  * Write a consistent copy of the database at `PULSE_DB` to the one path in `args` and return the
- * report line. Throws a BackupError; the temp file is removed on every path.
+ * report line. Throws a BackupError; the temp file that this run created is removed on every path.
  */
 export function runBackup(args: readonly string[], env: Env, pid: number): string {
   const target = args.length === 1 ? args[0] : undefined;
@@ -120,8 +162,12 @@ export function runBackup(args: readonly string[], env: Env, pid: number): strin
   assertIsKind(dir, "directory", "target directory");
   assertIsKind(source, "file", "source (PULSE_DB)");
   const temp = join(dir, `.${basename(target)}.tmp-${pid}`);
+  // Outside the try: a file that this run did not create is never removed.
+  const tempId = createTemp(temp);
   try {
+    // VACUUM INTO accepts an existing file when it is empty.
     copySnapshot(source, temp);
+    assertSameTemp(temp, tempId);
     publish(temp, target);
   } finally {
     rmSync(temp, { force: true });
