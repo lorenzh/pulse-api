@@ -87,6 +87,8 @@ export function createConfigReloader(deps: ReloaderDeps, initial: InitialConfig)
   const { path, fs } = deps;
   let revision = initial.revision;
   let lastKey = initial.stampKey;
+  // A failed apply must run again on the next poll, even for bytes that match the revision.
+  let isRetryPending = false;
 
   const reject = (message: string): void => {
     deps.metrics.recordConfigReload("invalid");
@@ -95,7 +97,7 @@ export function createConfigReloader(deps: ReloaderDeps, initial: InitialConfig)
 
   const apply = (bytes: Buffer, isForced: boolean): void => {
     const next = revisionOf(bytes);
-    if (next === revision && !isForced) return;
+    if (next === revision && !isForced && !isRetryPending) return;
     let config: Config;
     try {
       config = parseConfigText(path, utf8(bytes));
@@ -110,6 +112,7 @@ export function createConfigReloader(deps: ReloaderDeps, initial: InitialConfig)
     } catch (err) {
       // Leave the stamp unrecorded, so the next poll applies the same bytes again.
       lastKey = undefined;
+      isRetryPending = true;
       deps.metrics.recordConfigReload("error");
       deps.log(
         `config reload failed: ${path}: cannot apply the configuration: ${applyErrorText(err)}`,
@@ -117,6 +120,7 @@ export function createConfigReloader(deps: ReloaderDeps, initial: InitialConfig)
       return;
     }
     revision = next;
+    isRetryPending = false;
     deps.metrics.recordConfigReload("ok");
   };
 
@@ -153,6 +157,7 @@ export function createConfigReloader(deps: ReloaderDeps, initial: InitialConfig)
     adopt(bytes, config) {
       deps.onApply(config);
       revision = revisionOf(bytes);
+      isRetryPending = false;
       lastKey = currentKey();
     },
   };

@@ -37,6 +37,7 @@ const INVALID = Buffer.from(
 
 interface Harness {
   poll(): void;
+  reloadNow(): void;
   revision(): string;
   lines: string[];
   results: ConfigReloadResult[];
@@ -44,7 +45,15 @@ interface Harness {
   applies: () => number;
 }
 
-function setup(opts: { bytes?: Buffer; readError?: Error; failures?: unknown[] }): Harness {
+interface SetupOpts {
+  bytes?: Buffer;
+  readError?: Error;
+  failures?: unknown[];
+  revision?: string;
+  stampKey?: string;
+}
+
+function setup(opts: SetupOpts): Harness {
   const lines: string[] = [];
   const results: ConfigReloadResult[] = [];
   const failures = [...(opts.failures ?? [])];
@@ -70,12 +79,13 @@ function setup(opts: { bytes?: Buffer; readError?: Error; failures?: unknown[] }
     },
     {
       config: parseConfigText(PATH, VALID.toString("utf8")),
-      revision: INITIAL,
-      stampKey: "old",
+      revision: opts.revision ?? INITIAL,
+      stampKey: opts.stampKey ?? "old",
     },
   );
   return {
     poll: () => reloader.poll(),
+    reloadNow: () => reloader.reloadNow(),
     revision: () => reloader.revision(),
     lines,
     results,
@@ -102,6 +112,24 @@ test("a failed apply is logged at warn without the message, counted as error and
   const reads = h.reads();
   h.poll();
   assert.equal(h.reads(), reads);
+});
+
+test("a failed forced apply of unchanged bytes is retried on the next poll", () => {
+  const h = setup({
+    failures: [new Error("boom")],
+    revision: revisionOf(VALID),
+    stampKey: "2:10:1",
+  });
+  h.reloadNow();
+  assert.equal(h.applies(), 1);
+  assert.deepEqual(h.results, ["error"]);
+
+  h.poll();
+  assert.equal(h.applies(), 2);
+  assert.deepEqual(h.results, ["error", "ok"]);
+
+  h.poll();
+  assert.equal(h.applies(), 2);
 });
 
 test("an invalid file is rejected once per stamp", () => {
