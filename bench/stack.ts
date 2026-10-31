@@ -1,6 +1,7 @@
 // One run: a compose stack of the four services plus the bench target, driven by the fixed load.
 import { chmod, copyFile, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { type ColdResult, composeTarget, countTodayRows, runColdReads } from "./cold.ts";
 import { checksFileJson, tokensFileJson } from "./fixtures.ts";
 import { IDLE_S, type OptionalRoute, runLoad } from "./load.ts";
 import { readContainerProcess, runChecked, runCommand } from "./measure.ts";
@@ -24,6 +25,8 @@ export interface SideDirs {
   work: Record<string, string>;
   /** Seeded database of this side's api. */
   seedDb: string;
+  /** The 10x seed of the cold-read phase, made by this side's api. */
+  coldSeedDb: string;
   /** Measured routes this side's api lacks; always empty for side B. */
   missingRoutes: OptionalRoute[];
 }
@@ -224,6 +227,38 @@ export async function runStack(
       {
         env,
       },
+    );
+    if (down.code !== 0) log(`compose down failed: ${down.stderr.slice(-200)}`);
+  }
+}
+
+/**
+ * The cold-read phase: only the api, on a fresh copy of the side's 10x seed. Runs after the 1x
+ * stack run, which has torn its project down.
+ */
+export async function runColdStack(
+  dirs: SideDirs,
+  composeFile: string,
+  runDir: string,
+  log: (line: string) => void,
+  failureLogFile: string,
+): Promise<ColdResult> {
+  const project = `pulse-bench-${dirs.side}`;
+  const compose = composeArgs(project, composeFile);
+  const env = stackEnv(dirs, project, runDir);
+  await prepareRunDir(runDir, dirs.coldSeedDb);
+  log(`cold: seed has ${countTodayRows(dirs.coldSeedDb, Date.now())} rows of today (UTC)`);
+  try {
+    const target = composeTarget({ compose, env, container: containerName(project, "api") });
+    return await runColdReads(target, log);
+  } catch (err) {
+    await dumpStack(compose, env, failureLogFile, log);
+    throw err;
+  } finally {
+    const down = await runCommand(
+      "docker",
+      [...compose, "down", "-v", "--remove-orphans", "-t", "5"],
+      { env },
     );
     if (down.code !== 0) log(`compose down failed: ${down.stderr.slice(-200)}`);
   }

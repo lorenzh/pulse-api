@@ -85,6 +85,7 @@ The `401` check comes before body checks, so a caller without a token learns not
 Raw results are deleted after `PULSE_RETENTION_DAYS` days (default and minimum 90, the window of `GET /uptime`).
 
 - Resolved manual incidents are deleted with the same cutoff, by their resolution time.
+- The stored daily uptime tallies (`uptime_daily`) and latency rollups follow the same cutoff, by their day.
 - Retention counts whole UTC days including today. Results before the start of the UTC day `PULSE_RETENTION_DAYS - 1` days ago are deleted.
 - The newest result of each check and location is always kept.
 - Automatic incidents are never deleted.
@@ -95,6 +96,8 @@ The database file does not shrink after deletes. SQLite reuses the freed pages. 
 ## Uptime
 
 `GET /uptime` returns the uptime of the last 90 UTC calendar days per check. A day's uptime is `(up + degraded results) / all results * 100`, unrounded. `degraded` counts as up, all locations count, and maintenance is not subtracted. A day without results has `uptime: null`: it is not down.
+
+Closed days are stored once in the table `uptime_daily` (good and total results per check and UTC day). A late result for a closed day still counts: it updates the stored day in the same write. Today is computed from the results at every read (after the 5 s cache). The rows are filled by a background backfill after start and by reads that find a closed day without a row, so responses are the same before, during and after the backfill.
 
 ## Latency history and availability objective
 

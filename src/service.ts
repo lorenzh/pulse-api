@@ -186,6 +186,17 @@ export interface Service {
   fillLatencyRollupDay(checkId: string, day: number): boolean;
   /** Delete rollups of days before the UTC day of `cutoff`, and of checks that no longer exist. */
   deleteExpiredLatency(cutoff: number): number;
+  /** Ids of the active checks of every type, in `rowid` order, for the uptime backfill. */
+  listUptimeCheckIds(): string[];
+  /** The closed days in the 90-day uptime window of a check without a stored tally, ascending. */
+  missingUptimeDays(checkId: string): number[];
+  /**
+   * Compute and store the uptime tally of one closed day. False when the day has a row by now or
+   * is not closed yet: nothing is computed then.
+   */
+  fillUptimeDay(checkId: string, day: number): boolean;
+  /** Delete uptime tallies of days before the UTC day of `cutoff`, and of checks that no longer exist. */
+  deleteExpiredUptime(cutoff: number): number;
   /** True when the database answers a trivial query. */
   isDbReady(): boolean;
   /** Delete up to `limit` results older than `cutoff`, keeping the newest per check and location. Returns the count. */
@@ -411,11 +422,16 @@ export function createService(
       // Generated samples are made here, never re-sent: two in one millisecond are both kept.
       at += 1;
     } while (changes === 0 && isGenerated);
-    if (changes > 0) closedTallies.get(result.checkId)?.delete(dayOf(result.timestamp));
-    return changes > 0;
+    if (changes === 0) return false;
+    // `at` is one past the stored timestamp: a generated sample may have moved across midnight.
+    const day = dayOf(at - 1);
+    // A day without a row (today, a future day, or one not filled yet) is counted when it is filled.
+    bumpUptimeDay.run(result.status === "down" ? 0 : 1, result.checkId, day);
+    closedTallies.get(result.checkId)?.delete(day);
+    return true;
   };
-  // Good and total results per closed UTC day of a check. A result stored for a closed day drops
-  // that day's entry, so a late result is counted at the next read.
+  // Good and total results per closed UTC day of a check: a read-through cache over `uptime_daily`.
+  // A result stored for a closed day updates its row and drops the entry, so the next read reloads it.
   type Tally = { good: number; total: number };
   const closedTallies = new Map<string, Map<number, Tally>>();
   let cache = new Map<string, { at: number; windows: string; value: unknown }>();
@@ -517,6 +533,20 @@ export function createService(
             SUM(status != 'down') AS good, COUNT(*) AS total
      FROM results WHERE check_id = ? AND timestamp >= ? AND timestamp <= ?
      GROUP BY day`,
+  );
+  const storedUptime = db.prepare(
+    "SELECT day, good, total FROM uptime_daily WHERE check_id = ? AND day >= ? AND day < ?",
+  );
+  const insertUptimeDay = db.prepare(
+    "INSERT OR IGNORE INTO uptime_daily (check_id, day, good, total) VALUES (?, ?, ?, ?)",
+  );
+  const bumpUptimeDay = db.prepare(
+    "UPDATE uptime_daily SET good = good + ?, total = total + 1 WHERE check_id = ? AND day = ?",
+  );
+  const hasUptimeDay = db.prepare("SELECT 1 FROM uptime_daily WHERE check_id = ? AND day = ?");
+  const deleteOldUptime = db.prepare("DELETE FROM uptime_daily WHERE day < ?");
+  const deleteOrphanUptime = db.prepare(
+    "DELETE FROM uptime_daily WHERE check_id NOT IN (SELECT id FROM checks)",
   );
   const dayLatencies = db.prepare(
     `SELECT latency_ms FROM results
@@ -746,26 +776,59 @@ export function createService(
     return checks;
   }
 
-  /** One check's uptime days ending today, from the day-bucket query shared by every window. */
+  /** Tallies per day from the results in `[from, to]` (epoch ms, both inclusive). */
+  function tallyResults(id: string, from: number, to: number): Map<number, Tally> {
+    const tallies = new Map<number, Tally>();
+    for (const r of dailyUptime.all(id, from, to) as unknown as DayRow[]) {
+      tallies.set(Number(r.day), { good: Number(r.good), total: Number(r.total) });
+    }
+    return tallies;
+  }
+
+  /**
+   * Put the closed days `firstDay .. today - 1` of a check into `closed`: first from the stored
+   * rows, then the days still without a row from the results, stored in one transaction.
+   */
+  function loadClosedDays(
+    id: string,
+    firstDay: number,
+    today: number,
+    closed: Map<number, Tally>,
+  ): void {
+    const rows = storedUptime.all(id, firstDay, today) as unknown as DayRow[];
+    for (const r of rows) {
+      closed.set(Number(r.day), { good: Number(r.good), total: Number(r.total) });
+    }
+    let firstMissing = today;
+    for (let d = firstDay; d < today; d++) {
+      if (!closed.has(d)) {
+        firstMissing = d;
+        break;
+      }
+    }
+    if (firstMissing === today) return;
+    const computed = tallyResults(id, firstMissing * DAY_MS, today * DAY_MS - 1);
+    transaction(() => {
+      for (let d = firstMissing; d < today; d++) {
+        if (closed.has(d)) continue;
+        const tally = computed.get(d) ?? { good: 0, total: 0 };
+        insertUptimeDay.run(id, d, tally.good, tally.total);
+        closed.set(d, tally);
+      }
+    });
+  }
+
+  /** One check's uptime days ending today: closed days from `uptime_daily`, today from the results. */
   function uptimeOf(id: string, windowDays = UPTIME_DAYS): CheckUptime {
     const t = now();
     const today = Math.floor(t / DAY_MS);
     const firstDay = today - (windowDays - 1);
     const closed = closedTallies.get(id) ?? new Map<number, Tally>();
     closedTallies.set(id, closed);
-    // Closed days are counted once; only today and days not seen yet are read from the results.
-    let firstRead = today;
-    for (let d = firstDay; d < today; d++) {
-      if (!closed.has(d)) {
-        firstRead = d;
-        break;
-      }
-    }
-    const fresh = new Map<number, Tally>();
-    for (const r of dailyUptime.all(id, firstRead * DAY_MS, t) as unknown as DayRow[]) {
-      fresh.set(Number(r.day), { good: Number(r.good), total: Number(r.total) });
-    }
-    for (let d = firstRead; d < today; d++) closed.set(d, fresh.get(d) ?? { good: 0, total: 0 });
+    let isComplete = true;
+    for (let d = firstDay; d < today && isComplete; d++) isComplete = closed.has(d);
+    if (!isComplete) loadClosedDays(id, firstDay, today, closed);
+    const fresh = tallyResults(id, today * DAY_MS, t);
     let good = 0;
     let total = 0;
     const days: UptimeDay[] = [];
@@ -782,11 +845,16 @@ export function createService(
     return { checkId: id, days, uptime: total === 0 ? null : (good / total) * 100 };
   }
 
+  const activeCheckIds = (): string[] =>
+    (
+      db.prepare("SELECT id FROM checks WHERE active = 1 ORDER BY rowid").all() as unknown as Pick<
+        CheckRow,
+        "id"
+      >[]
+    ).map((r) => r.id);
+
   function computeUptime(): CheckUptime[] {
-    const ids = db
-      .prepare("SELECT id FROM checks WHERE active = 1 ORDER BY rowid")
-      .all() as unknown as Pick<CheckRow, "id">[];
-    return ids.map(({ id }) => uptimeOf(id));
+    return activeCheckIds().map((id) => uptimeOf(id));
   }
 
   const httpCheckIds = (): string[] =>
@@ -1055,6 +1123,31 @@ export function createService(
     deleteExpiredLatency(cutoff) {
       const old = Number(deleteOldRollups.run(dayOf(cutoff)).changes);
       return old + Number(deleteOrphanRollups.run().changes);
+    },
+
+    listUptimeCheckIds: activeCheckIds,
+
+    missingUptimeDays(checkId) {
+      const today = dayOf(now());
+      const firstDay = today - (UPTIME_DAYS - 1);
+      const rows = storedUptime.all(checkId, firstDay, today) as unknown as DayRow[];
+      const stored = new Set(rows.map((r) => Number(r.day)));
+      const missing: number[] = [];
+      for (let d = firstDay; d < today; d++) if (!stored.has(d)) missing.push(d);
+      return missing;
+    },
+
+    fillUptimeDay(checkId, day) {
+      // A read may have stored the day meanwhile; today is still growing and never stored.
+      if (day >= dayOf(now()) || hasUptimeDay.get(checkId, day) !== null) return false;
+      const tally = tallyResults(checkId, day * DAY_MS, (day + 1) * DAY_MS - 1).get(day);
+      const inserted = insertUptimeDay.run(checkId, day, tally?.good ?? 0, tally?.total ?? 0);
+      return Number(inserted.changes) > 0;
+    },
+
+    deleteExpiredUptime(cutoff) {
+      const old = Number(deleteOldUptime.run(dayOf(cutoff)).changes);
+      return old + Number(deleteOrphanUptime.run().changes);
     },
 
     deleteExpiredResults(cutoff, limit) {

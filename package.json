@@ -14,7 +14,7 @@
     "test": "bun test",
     "lint": "biome check . && pulse-eslint .",
     "format": "biome check --write .",
-    "bench:selftest": "bun bench/selftest/check-compare.ts && bun bench/selftest/check-budgets.ts && bun bench/selftest/check-refs.ts && bun bench/selftest/check-measure.ts && bun bench/selftest/check-load.ts && bun bench/selftest/check-missing-route.ts",
+    "bench:selftest": "bun bench/selftest/check-compare.ts && bun bench/selftest/check-budgets.ts && bun bench/selftest/check-refs.ts && bun bench/selftest/check-measure.ts && bun bench/selftest/check-load.ts && bun bench/selftest/check-missing-route.ts && bun bench/selftest/check-cold.ts",
     "prepare": "lefthook install || true",
     "check": "bun run lint && bun run typecheck && bun run test"
   },

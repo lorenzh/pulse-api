@@ -336,6 +336,8 @@ test("heartbeat e2e: the started api goes down without a ping and a ping resolve
         timers.push(fn);
         return timers.length;
       },
+      // The fired timers include the uptime backfill: its yields between batches must resolve.
+      sleep: (ms) => (ms === 0 ? Promise.resolve() : new Promise<void>(() => undefined)),
     },
   );
   const api = await startApi(base);

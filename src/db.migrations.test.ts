@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb, SchemaVersionError } from "./db.ts";
-import { SCHEMA_VERSION } from "./migrations.ts";
+import { MIGRATIONS, SCHEMA_VERSION } from "./migrations.ts";
 
 let dir: string;
 beforeEach(() => {
@@ -100,6 +100,41 @@ test("a version 0 file upgrades in place and keeps rows, indexes and foreign key
     ),
   ).toThrow();
   db.close();
+});
+
+test("migration 3: a version 2 file becomes version 3 with an empty uptime_daily, rows kept", () => {
+  const path = join(dir, "v2.db");
+  makeV0(path);
+  openDb(path, MIGRATIONS.slice(0, 2)).close();
+  const v2 = new Database(path);
+  expect(version(v2)).toBe(2);
+  const tables = (db: Database): unknown =>
+    db.query("SELECT name FROM sqlite_master WHERE name = 'uptime_daily'").all();
+  expect(tables(v2)).toEqual([]);
+  v2.close();
+  const db = openDb(path);
+  expect(version(db)).toBe(3);
+  expect(tables(db)).toEqual([{ name: "uptime_daily" }]);
+  expect(db.query("SELECT COUNT(*) AS n FROM uptime_daily").get()).toEqual({ n: 0 });
+  expect(db.query("SELECT COUNT(*) AS n FROM results").get()).toEqual({ n: 2 });
+  const pk = db.query("PRAGMA table_info(uptime_daily)").all() as { name: string; pk: number }[];
+  expect(pk.map((c) => [c.name, c.pk])).toEqual([
+    ["check_id", 1],
+    ["day", 2],
+    ["good", 0],
+    ["total", 0],
+  ]);
+  db.close();
+});
+
+test("migration 3: a version 4 file is refused", () => {
+  const path = join(dir, "v4.db");
+  const raw = new Database(path);
+  raw.run("PRAGMA user_version = 4");
+  raw.close();
+  expect(() => openDb(path)).toThrow(
+    "database schema version 4 is newer than this program supports (3); downgrades are not supported",
+  );
 });
 
 test("a fresh file has the same schema as an upgraded one, and reopening changes nothing", () => {

@@ -30,6 +30,7 @@ import { readRetentionDays, startRetention } from "./retention.ts";
 import { createApiServer } from "./server.ts";
 import { createService } from "./service.ts";
 import { authenticate, TokensError } from "./tokens.ts";
+import { startUptimeRollup } from "./uptime-rollup.ts";
 
 export const SHUTDOWN_TIMEOUT_MS = 5000;
 export const DEFAULT_CHECKS_RELOAD_INTERVAL_MS = 5000;
@@ -205,6 +206,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     log: (line) => logger.info(line),
     deleteManualIncidents: (cutoff) => manualIncidents.deleteResolvedBefore(cutoff),
     deleteLatencyRollups: (cutoff) => service.deleteExpiredLatency(cutoff),
+    deleteUptimeRollups: (cutoff) => service.deleteExpiredUptime(cutoff),
   });
 
   const heartbeat = startHeartbeatEvaluator({
@@ -320,14 +322,25 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     clearTimeout: deps.clearTimeout,
     log: (line) => logger.info(line),
   });
+  const uptimeRollup = startUptimeRollup({
+    service,
+    sleep: deps.sleep,
+    now: deps.now,
+    ...(deps.retentionIntervalMs === undefined ? {} : { intervalMs: deps.retentionIntervalMs }),
+    setTimeout: (fn, ms) => deps.setTimeout(() => void fn(), ms),
+    clearTimeout: deps.clearTimeout,
+    log: (line) => logger.info(line),
+  });
 
   const timeoutMs = deps.shutdownTimeoutMs ?? SHUTDOWN_TIMEOUT_MS;
   const shutdown = async (): Promise<void> => {
     isShuttingDown = true;
-    // Stop both timers first, so no run starts while the server drains.
-    const retentionEnded = Promise.all([retention.stop(), latencyRollup.stop()]).then(
-      () => undefined,
-    );
+    // Stop the timers first, so no run starts while the server drains.
+    const retentionEnded = Promise.all([
+      retention.stop(),
+      latencyRollup.stop(),
+      uptimeRollup.stop(),
+    ]).then(() => undefined);
     heartbeat.stop();
     polling.stop();
     removeSignal?.();

@@ -56,6 +56,18 @@ ALTER TABLE checks_new RENAME TO checks;
 DELETE FROM results WHERE id NOT IN (SELECT MIN(id) FROM results GROUP BY check_id, location, timestamp);
 CREATE UNIQUE INDEX results_by_sample ON results (check_id, location, timestamp);
 `,
+  // 3: the stored uptime tally of each closed UTC day. A step, not CREATE TABLE IF NOT EXISTS: an
+  // older release would store late results without updating these rows, so it must refuse the file.
+  // The rows are filled after the start, by the uptime backfill and by reads.
+  `
+CREATE TABLE uptime_daily (
+  check_id TEXT NOT NULL,
+  day INTEGER NOT NULL,
+  good INTEGER NOT NULL,
+  total INTEGER NOT NULL,
+  PRIMARY KEY (check_id, day)
+);
+`,
 ];
 
 /** The step that adds the unique sample index; `openDb` counts the duplicates it removes. */

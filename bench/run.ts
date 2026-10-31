@@ -3,6 +3,7 @@
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { COLD_DENSITY } from "./cold.ts";
 import {
   buildRows,
   EMITTED_METRICS,
@@ -22,7 +23,21 @@ import {
   repoUrl,
   resolveRefs,
 } from "./refs.ts";
-import { buildImages, imageSizeMB, runStack, SERVICES, type SideDirs } from "./stack.ts";
+import {
+  buildImages,
+  imageSizeMB,
+  runColdStack,
+  runStack,
+  SERVICES,
+  type SideDirs,
+} from "./stack.ts";
+
+const COLD_METRICS = [
+  "cold_get_checks_ms",
+  "cold_get_uptime_ms",
+  "cold_read_cpu_ms",
+  "cold_concurrent_ms",
+] as const;
 
 const BENCH_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(BENCH_DIR, "..");
@@ -115,11 +130,19 @@ async function prepareSide(side: Side, refs: Record<RepoName, string>): Promise<
   await runChecked("rm", ["-rf", dirname(seedDb)]);
   await mkdir(dirname(seedDb), { recursive: true });
   await runChecked("bun", [join(BENCH_DIR, "seed.ts"), apiDir, seedDb]);
+  const coldSeedDb = join(dirname(seedDb), "pulse-10x.db");
+  const seeded = await runChecked("bun", [
+    join(BENCH_DIR, "seed.ts"),
+    apiDir,
+    coldSeedDb,
+    String(COLD_DENSITY),
+  ]);
+  log(`cold-read seed (${side}): ${seeded.stdout.trim()}`);
   // Only A may predate a measured route; B must serve them all, so a 404 there fails the load.
   const missingRoutes =
     side === "a" ? await routesMissingAt(OPTIONAL_ROUTES, (c) => containsCommit(apiDir, c)) : [];
   if (missingRoutes.length > 0) log(`api A lacks ${missingRoutes.join(", ")}: not measured on A`);
-  const dirs: SideDirs = { side, work, seedDb, missingRoutes };
+  const dirs: SideDirs = { side, work, seedDb, coldSeedDb, missingRoutes };
   log(`build images (${side})`);
   await buildImages(dirs, COMPOSE_FILE, join(WORK_ROOT, "run", side));
   return dirs;
@@ -174,6 +197,10 @@ async function measureStack(
     else add(samples, "api", metric, value);
   }
   add(samples, "api", "rps", m.rps);
+  const coldDir = join(WORK_ROOT, "run-cold", dirs.side);
+  await runChecked("rm", ["-rf", coldDir]);
+  const cold = await runColdStack(dirs, COMPOSE_FILE, coldDir, log, failureLogFile);
+  for (const metric of COLD_METRICS) add(samples, "api", metric, cold[metric]);
 }
 
 async function main(): Promise<number> {

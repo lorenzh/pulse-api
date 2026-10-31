@@ -20,7 +20,7 @@ The database is one SQLite file, at `PULSE_DB` (default `./pulse.db`, `/data/pul
 
 ### Schema
 
-The schema is versioned with `PRAGMA user_version`. At start the API creates missing tables, then runs every numbered step (`src/migrations.ts`) above the file's version, all in one transaction. A failing step rolls everything back and the start fails. Version 1 rebuilds `checks` to hold tcp, dns and domain checks; `results` and `incidents` are not touched. Version 2 makes `results` unique on (`check_id`, `location`, `timestamp`): it deletes duplicate rows, keeping the first by row id, and adds the unique index. The start logs `migration 2: removed <n> duplicate results, kept the first of each` when it deleted any. On a large database this step takes seconds (about 1.8 s for 1 million results in a local measurement).
+The schema is versioned with `PRAGMA user_version`. At start the API creates missing tables, then runs every numbered step (`src/migrations.ts`) above the file's version, all in one transaction. A failing step rolls everything back and the start fails. Version 1 rebuilds `checks` to hold tcp, dns and domain checks; `results` and `incidents` are not touched. Version 2 makes `results` unique on (`check_id`, `location`, `timestamp`): it deletes duplicate rows, keeping the first by row id, and adds the unique index. The start logs `migration 2: removed <n> duplicate results, kept the first of each` when it deleted any. On a large database this step takes seconds (about 1.8 s for 1 million results in a local measurement). Version 3 adds the empty table `uptime_daily`; nothing is computed in the step. Like every step, it makes the start run the foreign key check over the whole file once, before the API listens. In local measurements `/readyz` answered after 156 ms on 864,000 results and after 762 ms on 8.64 million results, against about 105 ms for a start without a step. An older release refuses the file afterwards.
 
 - Upgrades are automatic. Back up the database file first.
 - A file whose `user_version` is higher than the program supports is refused at start with exit code 2 (`database schema version 2 is newer than this program supports (1); downgrades are not supported`). Downgrades are not supported: restore the backup.
@@ -31,6 +31,8 @@ A new check type (tcp, dns, domain) needs every probe location updated first. An
 
 The table `latency_daily` (daily p50 and p95 per check) is created with `CREATE TABLE IF NOT EXISTS` on every open, so a file from an older release gets it without a numbered step and `user_version` does not change. Back it up with the database file; it can be rebuilt from the results, so restoring a file without it is safe. The background backfill after the next start refills the closed days, and a read fills the days of the checks it returns.
 
+The table `uptime_daily` holds the good and total result counts per check and closed UTC day, the source of the closed days in `GET /uptime`, `GET /components/uptime` and `slo`. It can be rebuilt from the results. Deleting its rows with the API stopped is safe: the backfill and the reads fill them again from `results`. Do not delete rows while the API runs, because it keeps the loaded days in memory.
+
 #### Rolling out latency history and availability objectives
 
 Roll out in this order:
@@ -40,7 +42,7 @@ Roll out in this order:
 3. This API. `GET /probe/checks` is built from the stored check columns and never carries `availabilityTarget`, `slo` or any latency field, so an API upgrade does not break a probe that has not been updated. Setting `availabilityTarget` in the checks file is therefore safe before step 2, but the probes do not need the field to measure.
 4. The status page: its proxy must allow `/api/latency` before it can draw the chart.
 
-Timings measured on a database with 1 M results: the first `GET /checks` after start that builds `slo` values takes about 0.4 s. The backfill of the closed days computes for about 1.7 s in total, as background work after start, spread over many small batches. Later reads come from the cache.
+First reads after a restart take about as long as later reads, because the closed days come from `uptime_daily`. Local measurements with 20 checks (`bun bench/cold-read.ts`): with 864,000 results the first `GET /checks` after a restart took 9 ms and the first `GET /uptime` 5 ms; with 8.64 million results 34 ms and 29 ms, and both at once 64 ms. Before `uptime_daily` the same reads took about 210 ms each at 864,000 results and about 2.4 s each at 8.64 million (4.8 s both at once). Once per database, the first start after the upgrade still has that cost: the table is empty, so its first reads compute the closed days from the results and store them (about 1.2 s for `GET /checks` at 864,000 results and 2.5 s at 8.64 million). Today's part grows with the UTC hour, because today is still computed from the results at every read. The latency backfill of the closed days computes for about 1.7 s in total, as background work after start, spread over many small batches. Later reads come from the cache.
 
 The latency backfill starts 5 s after the API listens, so it is not part of the start. It computes one day of one check per batch and yields to waiting requests after each batch. Only closed days without a row are computed, so a restart on the same day computes nothing. After the first run it repeats hourly. The first run logs two lines, also when it stores nothing:
 
@@ -50,6 +52,15 @@ latency rollup: backfill done, stored 1780 days in 2412 ms
 ```
 
 An hourly run logs `latency rollup: stored <N> days in <D> ms` only when it stored days. A failed run logs `latency rollup failed: <message>`. A shutdown waits for the batch in progress before it closes the database.
+
+The uptime backfill fills `uptime_daily` the same way. It starts 5 s after the API listens, stores one closed day of one active check per batch, yields to waiting requests after each batch, and repeats hourly (that run stores yesterday after midnight, unless a read did it first). `/readyz` does not wait for it: a read finds the closed days still without a row, computes them from the results and stores them, so routes answer correctly and the same before, during and after the backfill. The first run logs two lines, also when it stores nothing:
+
+```text
+uptime rollup: backfill started (20 checks)
+uptime rollup: backfill done, stored 0 days in 2 ms
+```
+
+An hourly run logs `uptime rollup: stored <N> days in <D> ms` only when it stored days. A failed run logs `uptime rollup failed: <message>`. A shutdown waits for the batch in progress before it closes the database.
 
 ### Upgrades
 
@@ -74,7 +85,7 @@ To restore, stop the API, put the file back at `PULSE_DB` and start the API. Wit
 
 ## Retention and disk space
 
-Cleanup of old results runs at start and then hourly. See [Retention](concepts.md#retention) for the rules. Set the number of days with `PULSE_RETENTION_DAYS`. The latency rollups (`latency_daily`, one small row per HTTP check and day) are deleted with the same cutoff, which is never inside the 90-day window, and when their check is gone.
+Cleanup of old results runs at start and then hourly. See [Retention](concepts.md#retention) for the rules. Set the number of days with `PULSE_RETENTION_DAYS`. The latency rollups (`latency_daily`, one small row per HTTP check and day) are deleted with the same cutoff, which is never inside the 90-day window, and when their check is gone. The uptime tallies (`uptime_daily`, one small row per check and closed day) follow the same rules: the same cutoff, and deleted when their check is gone. A check removed from the checks file stays in the database, so its rows stay.
 
 Rows per check per day are `86400 / interval_s * locations`. A row takes roughly 100 bytes with its indexes in a measured database of minimal rows (129,600 rows, 60 s interval, about 13 MB). Allow about 250 bytes for rows with reasons. Example: 60 s interval, 1 location and 90 days give 129,600 rows, roughly 30 MB per check.
 
