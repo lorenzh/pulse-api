@@ -33,9 +33,9 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-function backupError(run: () => unknown): BackupError {
+async function backupError(run: () => Promise<unknown>): Promise<BackupError> {
   try {
-    run();
+    await run();
   } catch (err) {
     if (err instanceof BackupError) return err;
     throw err;
@@ -43,7 +43,7 @@ function backupError(run: () => unknown): BackupError {
   throw new Error("expected a BackupError");
 }
 
-test("backup refuses a dangling symlink at the temp name and writes nothing through it", () => {
+test("backup refuses a dangling symlink at the temp name and writes nothing through it", async () => {
   const shared = join(dir, "shared");
   const elsewhere = join(dir, "elsewhere");
   mkdirSync(shared);
@@ -56,7 +56,7 @@ test("backup refuses a dangling symlink at the temp name and writes nothing thro
   let err: BackupError | undefined;
   let line = "";
   try {
-    line = runBackup([target], { PULSE_DB: source }, PID);
+    line = await runBackup([target], { PULSE_DB: source }, PID);
   } catch (caught) {
     if (!(caught instanceof BackupError)) throw caught;
     err = caught;
@@ -69,12 +69,12 @@ test("backup refuses a dangling symlink at the temp name and writes nothing thro
   assert.match(err?.message ?? "", /^cannot create temp file .*\.b\.db\.tmp-4242: /);
 });
 
-test("backup keeps a file that already sits at the temp name", () => {
+test("backup keeps a file that already sits at the temp name", async () => {
   const planted = join(dir, `.c.db.tmp-${PID}`);
   writeFileSync(planted, "not mine");
   const target = join(dir, "c.db");
 
-  const err = backupError(() => runBackup([target], { PULSE_DB: source }, PID));
+  const err = await backupError(() => runBackup([target], { PULSE_DB: source }, PID));
   assert.equal(existsSync(planted), true);
   assert.equal(readFileSync(planted, "utf8"), "not mine");
   assert.equal(existsSync(target), false);
@@ -82,10 +82,10 @@ test("backup keeps a file that already sits at the temp name", () => {
   assert.match(err.message, /^cannot create temp file /);
 });
 
-test("backup publishes a regular owner-only file and removes the temp file it created", () => {
+test("backup publishes a regular owner-only file and removes the temp file it created", async () => {
   const target = join(dir, "d.db");
 
-  const line = runBackup([target], { PULSE_DB: source }, PID);
+  const line = await runBackup([target], { PULSE_DB: source }, PID);
   assert.match(line, /^backup .*d\.db: schema version \d+, checks 0, results 0, incidents 0$/);
   const stat = lstatSync(target);
   assert.equal(stat.isFile(), true);
@@ -113,7 +113,7 @@ function swappingRead(
   };
 }
 
-test("backup writes no data into a file swapped in at the temp name and keeps that file", () => {
+test("backup writes no data into a file swapped in at the temp name and keeps that file", async () => {
   const shared = join(dir, "shared");
   mkdirSync(shared);
   const loot = join(dir, "loot.db");
@@ -123,7 +123,7 @@ test("backup writes no data into a file swapped in at the temp name and keeps th
   const target = join(shared, "e.db");
 
   const read = swappingRead(temp, moved, () => linkSync(loot, temp));
-  const err = backupError(() => runBackup([target], { PULSE_DB: source }, PID, read));
+  const err = await backupError(() => runBackup([target], { PULSE_DB: source }, PID, { read }));
   assert.equal(err.exitCode, 1);
   assert.match(err.message, /^temp file .*\.e\.db\.tmp-4242 was replaced during the backup$/);
   assert.equal(readFileSync(loot, "utf8"), "");
@@ -133,7 +133,7 @@ test("backup writes no data into a file swapped in at the temp name and keeps th
   assert.equal(existsSync(target), false);
 });
 
-test("backup writes nothing outside the target directory through a symlink swapped in", () => {
+test("backup writes nothing outside the target directory through a symlink swapped in", async () => {
   const shared = join(dir, "shared");
   const elsewhere = join(dir, "elsewhere");
   mkdirSync(shared);
@@ -143,9 +143,96 @@ test("backup writes nothing outside the target directory through a symlink swapp
   const target = join(shared, "f.db");
 
   const read = swappingRead(temp, join(shared, ".moved"), () => symlinkSync(out, temp));
-  const err = backupError(() => runBackup([target], { PULSE_DB: source }, PID, read));
+  const err = await backupError(() => runBackup([target], { PULSE_DB: source }, PID, { read }));
   assert.equal(err.exitCode, 1);
   assert.equal(existsSync(out), false);
   assert.equal(readlinkSync(temp), out);
   assert.throws(() => lstatSync(target), { code: "ENOENT" });
+});
+
+const MIB = 1024 * 1024;
+
+/** A snapshot of 9 MiB, so the copy takes three writes of at most 4 MiB. */
+function bigRead(): Snapshot {
+  return {
+    image: new Uint8Array(9 * MIB).fill(7),
+    version: 2,
+    checks: 1,
+    results: 0,
+    incidents: 0,
+  };
+}
+
+function tempFiles(): string[] {
+  return readdirSync(dir).filter((f) => f.includes(".tmp-"));
+}
+
+test("backup stopped by a signal during the copy removes its temp file and publishes nothing", async () => {
+  const target = join(dir, "g.db");
+  const controller = new AbortController();
+  let pauses = 0;
+  const sizes: number[] = [];
+  // A fake pause: the signal arrives after the first write, like a Ctrl+C during a long copy.
+  const pause = (): Promise<void> => {
+    pauses += 1;
+    sizes.push(lstatSync(join(dir, `.g.db.tmp-${PID}`)).size);
+    if (pauses === 2) controller.abort();
+    return Promise.resolve();
+  };
+
+  const err = await backupError(() =>
+    runBackup([target], { PULSE_DB: source }, PID, {
+      read: bigRead,
+      pause,
+      signal: controller.signal,
+    }),
+  );
+  assert.equal(err.exitCode, 1);
+  assert.match(err.message, /^interrupted; no backup written and the temp file is removed$/);
+  assert.deepEqual(sizes, [0, 4 * MIB]);
+  assert.deepEqual(tempFiles(), []);
+  assert.equal(existsSync(target), false);
+});
+
+test("backup stopped by a signal during the read writes no byte", async () => {
+  const target = join(dir, "h.db");
+  const controller = new AbortController();
+  const read = (): Snapshot => {
+    controller.abort();
+    return bigRead();
+  };
+  const sizes: number[] = [];
+  const pause = (): Promise<void> => {
+    sizes.push(lstatSync(join(dir, `.h.db.tmp-${PID}`)).size);
+    return Promise.resolve();
+  };
+
+  const err = await backupError(() =>
+    runBackup([target], { PULSE_DB: source }, PID, { read, pause, signal: controller.signal }),
+  );
+  assert.equal(err.exitCode, 1);
+  assert.match(err.message, /^interrupted; /);
+  assert.deepEqual(sizes, [0]);
+  assert.deepEqual(tempFiles(), []);
+  assert.equal(existsSync(target), false);
+});
+
+test("backup that is not stopped writes a large copy in chunks and publishes it", async () => {
+  const target = join(dir, "i.db");
+  let pauses = 0;
+  const pause = (): Promise<void> => {
+    pauses += 1;
+    return Promise.resolve();
+  };
+
+  const line = await runBackup([target], { PULSE_DB: source }, PID, {
+    read: bigRead,
+    pause,
+    signal: new AbortController().signal,
+  });
+  assert.match(line, /^backup .*i\.db: schema version 2, checks 1, results 0, incidents 0$/);
+  // One pause after the read and one after each of the three writes.
+  assert.equal(pauses, 4);
+  assert.equal(lstatSync(target).size, 9 * MIB);
+  assert.deepEqual(tempFiles(), []);
 });

@@ -100,13 +100,43 @@ function assertSameTemp(temp: string, id: FileId): void {
   }
 }
 
+/** Bytes per write; between two writes the command yields, so a signal can stop it. */
+const CHUNK_BYTES = 4 * 1024 * 1024;
+
+/** Side effects of a run. `main` wires a real pause and a signal that SIGINT or SIGTERM aborts. */
+export type BackupDeps = {
+  readonly read?: (source: string) => Snapshot;
+  /** Yields to the event loop, so signal handlers run during a long copy. */
+  readonly pause?: () => Promise<void>;
+  readonly signal?: AbortSignal;
+};
+
+/** Checked after each pause: an interrupted run removes its temp file instead of leaving a copy. */
+function assertNotAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted === true) {
+    throw new BackupError("interrupted; no backup written and the temp file is removed", 1);
+  }
+}
+
 /** Through the fd of the exclusive create, never by name: a swapped name gets no data. */
-function writeImage(temp: string, fd: number, image: Uint8Array): void {
-  try {
-    let offset = 0;
-    while (offset < image.length) {
-      offset += writeSync(fd, image, offset, image.length - offset);
+async function writeImage(
+  temp: string,
+  fd: number,
+  image: Uint8Array,
+  pause: () => Promise<void>,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  let offset = 0;
+  while (offset < image.length) {
+    try {
+      offset += writeSync(fd, image, offset, Math.min(CHUNK_BYTES, image.length - offset));
+    } catch (err) {
+      throw new BackupError(`cannot write temp file ${temp}: ${messageOf(err)}`, 1, { cause: err });
     }
+    await pause();
+    assertNotAborted(signal);
+  }
+  try {
     fsyncSync(fd);
   } catch (err) {
     throw new BackupError(`cannot write temp file ${temp}: ${messageOf(err)}`, 1, { cause: err });
@@ -199,21 +229,30 @@ function removeOwnTemp(temp: string, id: FileId): void {
 function closeTemp(temp: Temp, isPublished: boolean): void {
   try {
     if (!isPublished) ftruncateSync(temp.fd, 0);
-  } finally {
+  } catch {
+    // Deliberate: the run's own error is the outcome; the temp name is still removed below.
+  }
+  try {
     closeSync(temp.fd);
+  } catch {
+    // Deliberate: as above, a failed close must not hide the outcome or skip the removal.
   }
 }
 
+const noPause = (): Promise<void> => Promise.resolve();
+
 /**
  * Write a consistent copy of the database at `PULSE_DB` to the one path in `args` and return the
- * report line. Throws a BackupError; the temp file that this run created is removed on every path.
+ * report line. Throws a BackupError; the temp file that this run created is removed on every error
+ * and on an abort of `deps.signal`. Only SIGKILL or a crash can leave it behind.
  */
-export function runBackup(
+export async function runBackup(
   args: readonly string[],
   env: Env,
   pid: number,
-  read: (source: string) => Snapshot = readSnapshot,
-): string {
+  deps: BackupDeps = {},
+): Promise<string> {
+  const { read = readSnapshot, pause = noPause, signal } = deps;
   const target = args.length === 1 ? args[0] : undefined;
   if (target === undefined || target === "") throw new BackupError(BACKUP_USAGE, 2);
   const source = readString(env, "PULSE_DB") ?? "./pulse.db";
@@ -221,13 +260,17 @@ export function runBackup(
   const dir = dirname(target);
   assertIsKind(dir, "directory", "target directory");
   assertIsKind(source, "file", "source (PULSE_DB)");
+  assertNotAborted(signal);
   const tempPath = join(dir, `.${basename(target)}.tmp-${pid}`);
   // Outside the try: a file that this run did not create is never removed.
   const temp = createTemp(tempPath);
   let isPublished = false;
   try {
     const snapshot = read(source);
-    writeImage(tempPath, temp.fd, snapshot.image);
+    // The read is synchronous: a signal during it is handled here, before any byte is written.
+    await pause();
+    assertNotAborted(signal);
+    await writeImage(tempPath, temp.fd, snapshot.image, pause, signal);
     assertSameTemp(tempPath, temp);
     publish(tempPath, target);
     isPublished = true;

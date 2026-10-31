@@ -26,3 +26,13 @@ test("operation: the database runs in WAL mode and has a backup command", () => 
   assert.match(doc, /bun run backup/);
   assert.match(doc, /pulse\.db-wal/);
 });
+
+test("operation: the backup docs name the temp file that only SIGKILL or a crash leaves", () => {
+  const doc = read("docs/operation.md");
+  assert.doesNotMatch(doc, /so a failed run leaves no partial file/);
+  assert.match(
+    doc,
+    /A run ended by `SIGKILL`, a crash or a power loss can leave `\.<name>\.tmp-<pid>` behind/,
+  );
+  assert.match(doc, /interrupted; no backup written and the temp file is removed/);
+});
