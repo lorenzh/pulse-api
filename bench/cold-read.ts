@@ -6,16 +6,15 @@
 // wall time is at or above the limit, 2 on an error. `--today-rows` adds results between UTC
 // midnight and the seed's `now` at two more locations until today holds at least that many rows,
 // so a run at any hour can measure a late-day tally.
-import { Database } from "bun:sqlite";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  addTodayRows,
   type ColdTarget,
   countTodayRows,
-  extraTodayRows,
   overLimit,
   processCpuMs,
   runColdReads,
@@ -149,31 +148,6 @@ function localTarget(api: string, env: Record<string, string>, port: number) {
   return { target, stop, lines, starts };
 }
 
-/** Insert the extra rows of today (see `extraTodayRows`) into a seeded file; returns the count. */
-function addTodayRows(dbPath: string, target: number, now: number): number {
-  const ids = checkIds();
-  const rows = extraTodayRows(countTodayRows(dbPath, now), target, ids.length, now);
-  if (rows.length === 0) return 0;
-  const db = new Database(dbPath);
-  try {
-    const insert = db.prepare(
-      "INSERT INTO results (check_id, timestamp, status, status_code, latency_ms, reason, location, attempts) VALUES (?, ?, ?, ?, ?, NULL, ?, 1)",
-    );
-    db.transaction(() => {
-      for (const id of ids) {
-        for (const row of rows) {
-          const code = row.status === "up" ? 200 : 503;
-          insert.run(id, row.timestamp, row.status, code, row.latencyMs, row.location);
-        }
-      }
-    })();
-    db.run("PRAGMA wal_checkpoint(TRUNCATE)");
-    return rows.length * ids.length;
-  } finally {
-    db.close();
-  }
-}
-
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
   const dir = await mkdtemp(join(tmpdir(), "pulse-cold-read-"));
@@ -192,7 +166,7 @@ async function main(): Promise<number> {
       String(seedNow),
     ]);
     log(`${seeded.stdout.trim()} in ${Math.round(performance.now() - seedStarted)} ms`);
-    const added = addTodayRows(db, args.todayRows, seedNow);
+    const added = addTodayRows(db, checkIds(), args.todayRows, seedNow);
     if (added > 0) log(`added ${added} results of today at the extra locations`);
     const todayRows = countTodayRows(db, seedNow);
     const local = localTarget(

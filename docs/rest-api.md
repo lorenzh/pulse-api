@@ -198,7 +198,7 @@ Returns one `ComponentUptime` (`componentId`, `days`, `uptime`) per component, i
 
 ## Read cache
 
-`GET /checks`, `GET /uptime`, `GET /latency` and `GET /checks/:id/latency` answers are reused for up to 5 s. Every ingest (`POST /results`, a heartbeat ping or expiry), a checks file load and every retention delete clears the cache, so a result is visible right after it is accepted. The TTL only bounds changes made by the clock; a maintenance window that opens or closes also ends a cached answer.
+`GET /checks`, `GET /uptime`, `GET /latency` and `GET /checks/:id/latency` answers are reused for up to 5 s. Every ingest (`POST /results`, a heartbeat ping or expiry), a checks file load and every retention delete clears the cache, so a result is visible right after it is accepted. Recomputing after an ingest does not re-read today's results: today's uptime and latency are kept in memory and updated with each stored result. The TTL only bounds changes made by the clock; a maintenance window that opens or closes also ends a cached answer.
 
 ## GET /incidents
 
