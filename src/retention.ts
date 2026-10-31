@@ -66,7 +66,7 @@ export interface RetentionDeps extends CleanupDeps {
   /** The callback returns the run, so a fake clock can await it. */
   setTimeout: (fn: () => Promise<void>, ms: number) => unknown;
   clearTimeout: (handle: unknown) => void;
-  log: (message: string) => void;
+  log: (message: string, level: "info" | "warn") => void;
   /** Time between runs; defaults to RETENTION_INTERVAL_MS. Tests shorten it. */
   intervalMs?: number;
 }
@@ -95,9 +95,12 @@ export function startRetention(deps: RetentionDeps): Retention {
           ...deps,
           isAborted: () => isAborted,
         });
-        if (deleted > 0) deps.log(`retention: deleted ${deleted} results`);
+        if (deleted > 0) deps.log(`retention: deleted ${deleted} results`, "info");
       } catch (err) {
-        deps.log(`retention failed: ${err instanceof Error ? err.message : "unknown error"}`);
+        deps.log(
+          `retention failed: ${err instanceof Error ? err.message : "unknown error"}`,
+          "warn",
+        );
       }
       if (!isStopped) {
         handle = deps.setTimeout(run, deps.intervalMs ?? RETENTION_INTERVAL_MS);

@@ -557,3 +557,42 @@ test("a clean shutdown closes the database: the WAL is checkpointed and -wal and
   assert.equal(existsSync(`${path}-wal`), false);
   assert.equal(existsSync(`${path}-shm`), false);
 });
+
+test("a failed retention run logs at warn, so PULSE_LOG_LEVEL=warn still prints it", async () => {
+  let db: Database | undefined;
+  const timers: { fn: () => void; ms: number }[] = [];
+  const { base, lines } = deps(
+    { PULSE_DB: join(dir, "retention-warn.db"), PULSE_LOG_LEVEL: "warn" },
+    {
+      retentionIntervalMs: 10,
+      setTimeout: (fn, ms) => {
+        timers.push({ fn, ms });
+        return timers.length;
+      },
+      // sleep(0) is the pause between retention batches; the shutdown bound never fires.
+      sleep: (ms) => (ms === 0 ? Promise.resolve() : new Promise<void>(() => undefined)),
+      openDb: (path) => {
+        db = openDb(path);
+        return db;
+      },
+    },
+  );
+  const api = await startApi(base);
+  assert.ok(db);
+  const insert = db.prepare(
+    "INSERT INTO results (check_id, timestamp, status, latency_ms, location) VALUES ('c1', ?, 'up', 1, 'eu')",
+  );
+  insert.run(NOW - 200 * 86_400_000);
+  insert.run(NOW);
+  db.run(
+    "CREATE TRIGGER fail_delete BEFORE DELETE ON results BEGIN SELECT RAISE(FAIL, 'boom'); END",
+  );
+  const next = timers.find((t) => t.ms === 10);
+  assert.ok(next, "the first run scheduled the second");
+  next.fn();
+  for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
+  await api.close();
+  const failed = lines.filter((l) => l.line.includes("retention failed: boom"));
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0]?.level, "warn");
+});

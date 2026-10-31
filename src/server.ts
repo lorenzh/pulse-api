@@ -36,13 +36,13 @@ import { authenticate, findByToken, type ProbeToken } from "./tokens.ts";
 
 const MAX_BODY = 1_000_000;
 const MAX_PING_BODY = 1024;
-export const MAX_FUTURE_SKEW_MS = 60_000;
-export const MAX_RESULT_AGE_MS = 7 * 86_400_000;
-export const MAX_REASON_LENGTH = 1000;
-export const MAX_ATTEMPTS = 100;
-export const MAX_LATENCY_MS = 86_400_000;
+const MAX_FUTURE_SKEW_MS = 60_000;
+const MAX_RESULT_AGE_MS = 7 * 86_400_000;
+const MAX_REASON_LENGTH = 1000;
+const MAX_ATTEMPTS = 100;
+const MAX_LATENCY_MS = 86_400_000;
 /** Covers every expiry up to year 9999 (the X.509 and RDAP maximum), even from a clock at the epoch. */
-export const MAX_CERT_DAYS = 3_000_000;
+const MAX_CERT_DAYS = 3_000_000;
 export const DEFAULT_LIMIT = 100;
 export const MAX_LIMIT = 1000;
 export const DEFAULT_INCIDENT_LIMIT = 1000;
@@ -146,6 +146,9 @@ export function validateResult(
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
     return "body must be a JSON object";
   }
+  // An accessor would run untrusted code on each read; JSON.parse never makes one.
+  if (Object.values(Object.getOwnPropertyDescriptors(body)).some((d) => !("value" in d)))
+    return "body must not have accessor properties";
   const b = body as Record<string, unknown>;
   if (typeof b.checkId !== "string" || b.checkId === "")
     return "checkId must be a non-empty string";
@@ -266,7 +269,9 @@ async function servePing(
   match: RegExpExecArray,
 ): Promise<void> {
   const method = req.method ?? "GET";
-  if (method !== "GET" && method !== "POST") throw new HttpError(405, "method not allowed");
+  if (method !== "GET" && method !== "POST") {
+    throw new HttpError(405, "method not allowed", { Allow: "GET, POST" });
+  }
   let id: string | undefined;
   try {
     id = decodeURIComponent(match[1] ?? "");
@@ -523,7 +528,22 @@ function decodeCheckId(encoded: string | undefined): string {
   }
 }
 
-// eslint-disable-next-line sonarjs/cognitive-complexity -- splitting this validator/handler would be a behaviour-risking refactor
+const PLAIN_READS: ReadonlySet<string> = new Set([
+  "/checks",
+  "/probe/checks",
+  "/uptime",
+  "/latency",
+  "/components",
+  "/components/uptime",
+  "/incidents",
+  "/locations",
+  "/maintenance",
+]);
+
+function isReadPath(path: string): boolean {
+  return PLAIN_READS.has(path) || RESULTS_PATH.test(path) || LATENCY_PATH.test(path);
+}
+
 async function handle(
   ops: Ops,
   tokens: readonly ProbeToken[],
@@ -531,7 +551,6 @@ async function handle(
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
-  const { service } = ops;
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname;
   const method = req.method ?? "GET";
@@ -545,150 +564,130 @@ async function handle(
   }
   const manual = MANUAL_PATH.exec(path);
   if (manual) return serveManualIncidents(ops, req, res, url, manual);
-  const known =
-    path === "/results" ||
-    path === "/checks" ||
-    path === "/probe/checks" ||
-    path === "/uptime" ||
-    path === "/latency" ||
-    path === "/components" ||
-    path === "/components/uptime" ||
-    path === "/incidents" ||
-    path === "/locations" ||
-    path === "/maintenance" ||
-    RESULTS_PATH.test(path) ||
-    LATENCY_PATH.test(path);
-  if (!known) throw new HttpError(404, "not found");
-
   if (path === "/results") {
-    if (method !== "POST") throw new HttpError(405, "method not allowed");
-    const tokenLocation = authenticate(tokens, req.headers.authorization);
-    if (tokenLocation === undefined) {
-      throw new HttpError(401, "unauthorized", { "www-authenticate": "Bearer" });
-    }
-    let parsed: unknown;
-    try {
-      parsed = await readJsonBody(req, { maxBytes: MAX_BODY });
-    } catch (err) {
-      throw bodyFailure(err);
-    }
-    // One lookup per request: validation fetches the check, the type guard reuses it.
-    let check: Check | undefined;
-    const result = validateResult(parsed, now(), (id) => {
-      check = service.findActiveCheck(id);
-      return check;
-    });
-    if (typeof result === "string") throw new HttpError(400, result);
-    // Only its ping secret changes a heartbeat check. Checked after auth and validation, so an
-    // unauthenticated caller learns nothing about check types.
-    if (check?.type === "heartbeat") throw new HttpError(403, "heartbeat checks accept only pings");
-    // validateResult maps an omitted or blank location to the default: the token decides then.
-    const sent = (parsed as { location?: unknown }).location;
-    if (typeof sent === "string" && sent.trim() !== "" && result.location !== tokenLocation) {
-      throw new HttpError(403, "location does not match token");
-    }
-    result.location = tokenLocation;
-    let isNew: boolean;
-    try {
-      isNew = service.ingest(result);
-    } catch (err) {
-      if (err instanceof UnknownCheckError)
-        throw new HttpError(404, `unknown check "${result.checkId}"`);
-      throw err;
-    }
-    // A repeat is answered like the first post but is not counted again.
-    if (isNew) ops.metrics.recordResult(result.checkId, result.location, result.latencyMs);
-    res.writeHead(204).end();
-    return;
+    if (method !== "POST") throw new HttpError(405, "method not allowed", { Allow: "POST" });
+    return postResult(ops, tokens, now, req, res);
   }
+  if (!isReadPath(path)) throw new HttpError(404, "not found");
+  if (method !== "GET") throw new HttpError(405, "method not allowed", { Allow: "GET" });
+  serveRead(ops, tokens, req, res, url);
+}
 
-  if (method !== "GET") throw new HttpError(405, "method not allowed");
+async function postResult(
+  ops: Ops,
+  tokens: readonly ProbeToken[],
+  now: () => number,
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  const { service } = ops;
+  const tokenLocation = authenticate(tokens, req.headers.authorization);
+  if (tokenLocation === undefined) {
+    throw new HttpError(401, "unauthorized", { "www-authenticate": "Bearer" });
+  }
+  let parsed: unknown;
+  try {
+    parsed = await readJsonBody(req, { maxBytes: MAX_BODY });
+  } catch (err) {
+    throw bodyFailure(err);
+  }
+  // One lookup per request: validation fetches the check, the type guard reuses it.
+  let check: Check | undefined;
+  const result = validateResult(parsed, now(), (id) => {
+    check = service.findActiveCheck(id);
+    return check;
+  });
+  if (typeof result === "string") throw new HttpError(400, result);
+  // Only its ping secret changes a heartbeat check. Checked after auth and validation, so an
+  // unauthenticated caller learns nothing about check types.
+  if (check?.type === "heartbeat") throw new HttpError(403, "heartbeat checks accept only pings");
+  // validateResult maps an omitted or blank location to the default: the token decides then.
+  const sent = (parsed as { location?: unknown }).location;
+  if (typeof sent === "string" && sent.trim() !== "" && result.location !== tokenLocation) {
+    throw new HttpError(403, "location does not match token");
+  }
+  result.location = tokenLocation;
+  let isNew: boolean;
+  try {
+    isNew = service.ingest(result);
+  } catch (err) {
+    if (err instanceof UnknownCheckError)
+      throw new HttpError(404, `unknown check "${result.checkId}"`);
+    throw err;
+  }
+  // A repeat is answered like the first post but is not counted again.
+  if (isNew) ops.metrics.recordResult(result.checkId, result.location, result.latencyMs);
+  res.writeHead(204).end();
+}
 
+/** The body of a read that takes no query and no path parameter, or undefined for another path. */
+function plainRead(ops: Ops, path: string): unknown {
+  const { service } = ops;
+  switch (path) {
+    case "/checks":
+      return service.listChecks();
+    case "/locations":
+      return service.listLocations();
+    case "/uptime":
+      return service.getUptime();
+    case "/latency":
+      return service.getLatency();
+    case "/components":
+      return componentsWithState(
+        ops.components(),
+        service.listCheckStates(),
+        service.getUptime(),
+        service.listIncidents("open"),
+        service.getSloDays,
+      );
+    case "/components/uptime":
+      return componentsUptime(ops.components(), service.getUptime());
+    default:
+      return undefined;
+  }
+}
+
+function serveRead(
+  ops: Ops,
+  tokens: readonly ProbeToken[],
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+): void {
+  const path = url.pathname;
   if (path === "/probe/checks") {
     // Carries headers and bodies exactly as written, so it needs a probe token.
     if (authenticate(tokens, req.headers.authorization) === undefined) {
       throw new HttpError(401, "unauthorized", { "www-authenticate": "Bearer" });
     }
-    sendJson(res, 200, service.listProbeChecks());
+    sendJson(res, 200, ops.service.listProbeChecks());
     return;
   }
-
-  if (path === "/checks") {
-    sendJson(res, 200, service.listChecks());
+  const plain = plainRead(ops, path);
+  if (plain !== undefined) {
+    sendJson(res, 200, plain);
     return;
   }
+  sendJson(res, 200, queryRead(ops.service, url));
+}
 
-  if (path === "/locations") {
-    sendJson(res, 200, service.listLocations());
-    return;
-  }
-
-  if (path === "/uptime") {
-    sendJson(res, 200, service.getUptime());
-    return;
-  }
-
-  if (path === "/latency") {
-    sendJson(res, 200, service.getLatency());
-    return;
-  }
-
-  const latencyMatch = LATENCY_PATH.exec(path);
-  if (latencyMatch) {
-    const latency = service.getCheckLatency(decodeCheckId(latencyMatch[1]));
-    if (latency === undefined) throw new HttpError(404, "unknown check");
-    sendJson(res, 200, latency);
-    return;
-  }
-
-  if (path === "/components") {
-    const openIncidents = service.listIncidents("open");
-    sendJson(
-      res,
-      200,
-      componentsWithState(
-        ops.components(),
-        service.listCheckStates(),
-        service.getUptime(),
-        openIncidents,
-        service.getSloDays,
-      ),
-    );
-    return;
-  }
-
-  if (path === "/components/uptime") {
-    sendJson(res, 200, componentsUptime(ops.components(), service.getUptime()));
-    return;
-  }
-
-  if (path === "/incidents") {
-    const status = url.searchParams.get("status");
-    if (status !== null && status !== "open" && status !== "resolved") {
-      throw new HttpError(400, 'status must be "open" or "resolved"');
-    }
-    const limit = parseCount(url.searchParams.get("limit"), "limit", 1);
-    const since = parseCount(url.searchParams.get("since"), "since", 0);
-    sendJson(
-      res,
-      200,
-      service.listIncidents(status ?? undefined, {
-        limit: Math.min(limit ?? DEFAULT_INCIDENT_LIMIT, MAX_INCIDENT_LIMIT),
-        ...(since === undefined ? {} : { since }),
-      }),
-    );
-    return;
-  }
-
+/** The reads that take a query or a check id in the path. */
+function queryRead(service: Service, url: URL): unknown {
+  const path = url.pathname;
+  if (path === "/incidents") return listIncidentsFor(service, url);
   if (path === "/maintenance") {
     const checkId = url.searchParams.get("checkId") ?? undefined;
     if (checkId !== undefined && !service.hasCheck(checkId)) {
       throw new HttpError(404, `unknown check "${checkId}"`);
     }
-    sendJson(res, 200, service.listMaintenance(checkId));
-    return;
+    return service.listMaintenance(checkId);
   }
-
+  const latencyMatch = LATENCY_PATH.exec(path);
+  if (latencyMatch) {
+    const latency = service.getCheckLatency(decodeCheckId(latencyMatch[1]));
+    if (latency === undefined) throw new HttpError(404, "unknown check");
+    return latency;
+  }
   const id = decodeCheckId(RESULTS_PATH.exec(path)?.[1]);
   const limit = Math.min(
     parseCount(url.searchParams.get("limit"), "limit", 1) ?? DEFAULT_LIMIT,
@@ -696,7 +695,20 @@ async function handle(
   );
   const before = parseCount(url.searchParams.get("before"), "before", 0);
   if (!service.hasCheck(id)) throw new HttpError(404, `unknown check "${id}"`);
-  sendJson(res, 200, service.listResults(id, limit, before));
+  return service.listResults(id, limit, before);
+}
+
+function listIncidentsFor(service: Service, url: URL): unknown {
+  const status = url.searchParams.get("status");
+  if (status !== null && status !== "open" && status !== "resolved") {
+    throw new HttpError(400, 'status must be "open" or "resolved"');
+  }
+  const limit = parseCount(url.searchParams.get("limit"), "limit", 1);
+  const since = parseCount(url.searchParams.get("since"), "since", 0);
+  return service.listIncidents(status ?? undefined, {
+    limit: Math.min(limit ?? DEFAULT_INCIDENT_LIMIT, MAX_INCIDENT_LIMIT),
+    ...(since === undefined ? {} : { since }),
+  });
 }
 
 export type ApiServerOptions = {

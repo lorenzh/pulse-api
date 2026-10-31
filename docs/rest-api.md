@@ -25,7 +25,7 @@ The API serves JSON over HTTP. The types come from [pulse-contract](https://gith
 General rules:
 
 - Errors have the body `{"error": "<message>"}` (`ErrorResponse`).
-- An unknown path gives `404` with `not found`. Another method on a known path gives `405` with `method not allowed` and, on `/healthz`, `/readyz` and `/metrics`, the header `Allow: GET`.
+- An unknown path gives `404` with `not found`. Another method on a known path gives `405` with `method not allowed` and the header `Allow` with the allowed methods (for example `Allow: GET`).
 - A request body over 1,000,000 bytes gives `413` with `request body too large`.
 - An unexpected failure gives `500` with `internal error`. The cause is written to stderr.
 - Timestamps are epoch milliseconds.

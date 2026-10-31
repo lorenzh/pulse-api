@@ -10,7 +10,7 @@ export interface LatencyRollupDeps {
   /** The callback returns the run, so a fake clock can await it. */
   setTimeout: (fn: () => Promise<void>, ms: number) => unknown;
   clearTimeout: (handle: unknown) => void;
-  log: (message: string) => void;
+  log: (message: string, level: "info" | "warn") => void;
   /** Clock for the run duration in the log lines. */
   now: () => number;
   /** Time between runs; defaults to LATENCY_ROLLUP_INTERVAL_MS. Tests shorten it. */
@@ -67,12 +67,14 @@ export function startLatencyRollup(deps: LatencyRollupDeps): LatencyRollupRunner
     if (isBackfill) {
       deps.log(
         `latency rollup: backfill started (${deps.service.listLatencyCheckIds().length} checks)`,
+        "info",
       );
     }
     const { written } = await fillAllRollups(deps, () => isStopped);
     const ms = Math.round(deps.now() - started);
-    if (isBackfill) deps.log(`latency rollup: backfill done, stored ${written} days in ${ms} ms`);
-    else if (written > 0) deps.log(`latency rollup: stored ${written} days in ${ms} ms`);
+    if (isBackfill)
+      deps.log(`latency rollup: backfill done, stored ${written} days in ${ms} ms`, "info");
+    else if (written > 0) deps.log(`latency rollup: stored ${written} days in ${ms} ms`, "info");
   };
   const run = (): Promise<void> => {
     if (isStopped) return Promise.resolve();
@@ -82,7 +84,10 @@ export function startLatencyRollup(deps: LatencyRollupDeps): LatencyRollupRunner
       try {
         await runOnce(isBackfill);
       } catch (err) {
-        deps.log(`latency rollup failed: ${err instanceof Error ? err.message : "unknown error"}`);
+        deps.log(
+          `latency rollup failed: ${err instanceof Error ? err.message : "unknown error"}`,
+          "warn",
+        );
       }
       if (!isStopped) handle = deps.setTimeout(run, deps.intervalMs ?? LATENCY_ROLLUP_INTERVAL_MS);
     })();

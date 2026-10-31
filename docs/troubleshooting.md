@@ -112,7 +112,7 @@ The body is invalid. The message names the field. `body is not valid JSON` comes
 
 ## 405 and 413
 
-- `method not allowed`: use `POST` on `/results` and `GET` on every other path.
+- `method not allowed`: the `Allow` header names the methods of the path. `POST` on `/results`, `GET` and `POST` on `/heartbeat/<id>`, `POST` on `/admin/<section>`, `PUT` and `DELETE` on `/admin/<section>/<id>`, and `GET` on the reads.
 - `request body too large`: bodies over 1,000,000 bytes are refused.
 
 ## No incident opens although a check is down

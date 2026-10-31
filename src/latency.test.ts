@@ -578,3 +578,24 @@ test("http: the route label of the metric is a template", async () => {
     await api.close();
   }
 });
+
+test("rollup logs: the failure line is warn, the start line is info", async () => {
+  const { service } = setup();
+  const lines: [string, string][] = [];
+  const failing: RollupService = {
+    listLatencyCheckIds: () => service.listLatencyCheckIds(),
+    missingLatencyDays: () => {
+      throw new Error("boom");
+    },
+    fillLatencyRollupDay: () => true,
+  };
+  const { deps, timers } = runnerDeps(failing, {
+    log: (m, level) => lines.push([m, level]),
+  });
+  startLatencyRollup(deps);
+  await fire(timers, 0);
+  assert.deepEqual(lines, [
+    ["latency rollup: backfill started (2 checks)", "info"],
+    ["latency rollup failed: boom", "warn"],
+  ]);
+});
