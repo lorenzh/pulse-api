@@ -31,6 +31,7 @@ import {
   type Service,
   UnknownCheckError,
 } from "./service.ts";
+import { tokenPathOf, tokenRouteOf } from "./token-routes.ts";
 import { canUse } from "./token-scopes.ts";
 import type { TokenStore } from "./token-store.ts";
 import { bearerSecret } from "./tokens.ts";
@@ -211,6 +212,8 @@ function routeOf(rawUrl: string | undefined): string {
   if (RESULTS_PATH.test(path)) return "/checks/:id/results";
   if (LATENCY_PATH.test(path)) return "/checks/:id/latency";
   if (HEARTBEAT_PATH.test(path)) return "/heartbeat/:id";
+  const token = tokenPathOf(path);
+  if (token !== null) return tokenRouteOf(token);
   const admin = ADMIN_ROUTE.exec(path);
   if (admin?.[1] !== undefined)
     return admin[2] === undefined ? `/admin/${admin[1]}` : `/admin/${admin[1]}/:id`;

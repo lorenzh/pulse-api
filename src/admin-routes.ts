@@ -10,14 +10,16 @@ import { type AdminAuthFailures, adminAccess } from "./admin-auth-failures.ts";
 import type { ConfigEdit, ConfigKind, ConfigWriter, WriteFailure } from "./config-write.ts";
 import { ConfigWriteError } from "./config-write.ts";
 import type { ConfigWriteAction, ConfigWriteResult, Metrics } from "./metrics.ts";
+import { handleTokenRoute, type TokenPath, tokenPathOf, tokenRouteOf } from "./token-routes.ts";
 import type { Permission } from "./token-scopes.ts";
-import type { TokenStore } from "./token-store.ts";
+import type { AuthenticatedToken, TokenStore } from "./token-store.ts";
 
 export interface AdminRoutesDeps {
   writer: ConfigWriter;
   metrics: Pick<Metrics, "recordConfigWrite">;
-  /** Authenticates the Bearer credential; the token name is what the write log line carries. */
-  tokens: Pick<TokenStore, "authenticate">;
+  /** Authenticates the Bearer credential and serves `/admin/tokens*`. */
+  tokens: TokenStore;
+  now: () => number;
   info: (message: string, fields: Record<string, string>) => void;
   warn: (message: string, fields: Record<string, string>) => void;
   /** Logs and counts a failed authentication; shared with the manual-incident routes. */
@@ -138,9 +140,13 @@ interface Target {
 export function createAdminHandler(
   deps: AdminRoutesDeps,
 ): (req: IncomingMessage, res: ServerResponse) => Promise<boolean> {
-  const authorize = (req: IncomingMessage, route: string, permission: Permission): string => {
+  const authorize = (
+    req: IncomingMessage,
+    route: string,
+    permission: Permission,
+  ): AuthenticatedToken => {
     const access = adminAccess(deps.tokens, req.headers.authorization, permission);
-    if (access.kind === "ok") return access.token.name;
+    if (access.kind === "ok") return access.token;
     deps.authFailures.record(route, access.status, access.token);
     if (access.status === 403) throw new RouteError(403, "forbidden");
     throw new RouteError(401, "unauthorized", { "www-authenticate": "Bearer" });
@@ -211,8 +217,30 @@ export function createAdminHandler(
     sendError(res, status, message, headers);
   };
 
+  const tokenRoute = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+    path: TokenPath,
+  ): Promise<void> => {
+    res.setHeader("cache-control", "no-store");
+    let caller: AuthenticatedToken;
+    try {
+      caller = authorize(req, tokenRouteOf(path), "token-admin");
+    } catch (err) {
+      fail(res, err, undefined, undefined);
+      return;
+    }
+    const tokenDeps = { store: deps.tokens, now: deps.now, info: deps.info };
+    await handleTokenRoute(tokenDeps, req, res, path, caller);
+  };
+
   return async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
+    const tokenPath = tokenPathOf(url.pathname);
+    if (tokenPath !== null) {
+      await tokenRoute(req, res, tokenPath);
+      return true;
+    }
     const match = ADMIN_PATH.exec(url.pathname);
     if (match === null) return false;
     const section = match[1] ?? "";
@@ -220,7 +248,7 @@ export function createAdminHandler(
     let target: Target | undefined;
     let action: ConfigWriteAction | undefined;
     try {
-      const tokenName = authorize(req, ...routeAccess(section, match[2]));
+      const tokenName = authorize(req, ...routeAccess(section, match[2])).name;
       if (section === "config") {
         if (match[2] !== undefined) throw new RouteError(404, "not found");
         if (method !== "GET") throw new RouteError(405, "method not allowed", { Allow: "GET" });

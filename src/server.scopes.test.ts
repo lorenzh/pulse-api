@@ -7,13 +7,11 @@ import { join } from "node:path";
 import type { TokenScope } from "@lorenzh/pulse-contract";
 import { openDb } from "./db.ts";
 import { type RunningApi, type StartDeps, startApi } from "./start.ts";
-import { openTokenStore } from "./token-import.ts";
 
 const NOW = Date.parse("2030-01-10T12:00:00Z");
 const PROBE = "probe-scopes-0123456789abcdef";
 const ADMIN = "admin-scopes-0123456789abcdef";
 const UNKNOWN = "unknown-scopes-0123456789abcdef";
-const ACTOR = { tokenId: null, name: "test" };
 
 let dir = "";
 let checksFile = "";
@@ -52,23 +50,23 @@ beforeAll(async () => {
     `${JSON.stringify({ checks: [{ id: "x", name: "X", url: "https://x.invalid/", intervalMs: 1000 }] }, null, 2)}\n`,
   );
   writeFileSync(tokensFile, JSON.stringify({ tokens: [{ location: "eu", token: PROBE }] }));
-  const dbPath = join(dir, "pulse.db");
-  const db = openDb(dbPath);
-  const store = openTokenStore(
-    { db, now: () => NOW },
-    { probe: [{ location: "eu", token: PROBE }], admin: [{ name: "ops", token: ADMIN }] },
+  const adminFile = join(dir, "admin-tokens.json");
+  writeFileSync(adminFile, JSON.stringify({ tokens: [{ name: "ops", token: ADMIN }] }));
+  api = await startApi(
+    deps(join(dir, "pulse.db"), {
+      PULSE_TOKENS_FILE: tokensFile,
+      PULSE_API_ADMIN_TOKENS_FILE: adminFile,
+    }),
   );
-  for (const [name, scopes] of Object.entries(SCOPED)) {
-    const made = store.create(
-      { name, scopes, location: null, expiresAt: null, source: "api" },
-      ACTOR,
-    );
-    secrets.set(name, made.secret);
-    if (name === "revoked") store.revoke(made.token.id, ACTOR);
-  }
-  db.close();
-  api = await startApi(deps(dbPath, { PULSE_TOKENS_FILE: tokensFile }));
   base = `http://127.0.0.1:${api.port}`;
+  // Before the token routes exist these answer 404; only the tests that use them fail then.
+  for (const [name, scopes] of Object.entries(SCOPED)) {
+    const made = await call("POST", "/admin/tokens", ADMIN, { body: { name, scopes } });
+    if (made.status !== 201) continue;
+    const { token, secret } = JSON.parse(made.text) as { token: { id: string }; secret: string };
+    secrets.set(name, secret);
+    if (name === "revoked") await call("POST", `/admin/tokens/${token.id}/revoke`, ADMIN);
+  }
 });
 afterAll(async () => {
   await api.close();
@@ -117,9 +115,14 @@ function auditCount(): number {
 test("a token without admin cannot write checks", async () => {
   const view = await call("GET", "/admin/config", ADMIN);
   assert.equal(view.status, 200);
+  const created = await call("POST", "/admin/tokens", ADMIN, {
+    body: { name: "no-admin", scopes: ["read", "checks"] },
+  });
+  assert.equal(created.status, 201);
+  const { secret } = JSON.parse(created.text) as { secret: string };
   const before = readFileSync(checksFile);
   const audits = auditCount();
-  const r = await call("POST", "/admin/checks", secretOf("read,checks"), {
+  const r = await call("POST", "/admin/checks", secret, {
     body: NEW_CHECK,
     ifMatch: view.etag ?? "",
   });
@@ -148,6 +151,10 @@ test("the D1 matrix on the existing routes", async () => {
     ["legacy-admin", "GET", "/probe/checks", 403],
     ["revoked", "GET", "/admin/config", 401],
     ["unknown", "GET", "/admin/config", 401],
+    ["probe", "GET", "/admin/tokens", 403],
+    ["read,checks", "GET", "/admin/tokens", 403],
+    ["admin", "GET", "/admin/tokens", 200],
+    ["revoked", "GET", "/admin/tokens", 401],
   ];
   for (const [name, method, path, status, body] of rows) {
     const r = await call(method, path, secretOf(name), {
@@ -174,6 +181,8 @@ test("admin not bootstrapped answers 404 before 401", async () => {
     const host = `http://127.0.0.1:${probeOnly.port}`;
     assert.equal((await call("GET", "/admin/config", UNKNOWN, { host })).status, 404);
     assert.equal((await call("POST", "/manual-incidents", PROBE, { host })).status, 404);
+    assert.equal((await call("GET", "/admin/tokens", UNKNOWN, { host })).status, 404);
+    assert.equal((await call("POST", "/admin/tokens", PROBE, { host })).status, 404);
   } finally {
     await probeOnly.close();
   }

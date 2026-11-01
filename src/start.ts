@@ -320,6 +320,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     writer,
     metrics,
     tokens: tokenStore,
+    now: deps.now,
     info,
     warn,
     authFailures,
