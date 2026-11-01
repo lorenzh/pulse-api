@@ -12,7 +12,6 @@ import { createConfigHolder } from "./config-holder.ts";
 import { type ConfigWriter, createConfigWriter, type WriteFs } from "./config-write.ts";
 import { openDb } from "./db.ts";
 
-const DIR = "/d";
 const PATH = "/d/checks.json";
 const ACTOR = { tokenId: "tok_1", name: "ops" };
 const FILE_A = `${JSON.stringify({ checks: [{ id: "a", name: "A", url: "https://a.example/", intervalMs: 60000 }] }, null, 2)}\n`;
