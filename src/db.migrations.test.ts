@@ -112,7 +112,7 @@ test("migration 3: a version 2 file becomes version 3 with an empty uptime_daily
     db.query("SELECT name FROM sqlite_master WHERE name = 'uptime_daily'").all();
   expect(tables(v2)).toEqual([]);
   v2.close();
-  const db = openDb(path);
+  const db = openDb(path, MIGRATIONS.slice(0, 3));
   expect(version(db)).toBe(3);
   expect(tables(db)).toEqual([{ name: "uptime_daily" }]);
   expect(db.query("SELECT COUNT(*) AS n FROM uptime_daily").get()).toEqual({ n: 0 });
@@ -127,13 +127,48 @@ test("migration 3: a version 2 file becomes version 3 with an empty uptime_daily
   db.close();
 });
 
-test("migration 3: a version 4 file is refused", () => {
-  const path = join(dir, "v4.db");
+test("migration 4: a version 3 file becomes version 4 with the token and audit tables", () => {
+  const path = join(dir, "v3.db");
+  makeV0(path);
+  openDb(path, MIGRATIONS.slice(0, 3)).close();
+  const names = (db: Database): string[] =>
+    (
+      db
+        .query(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('api_tokens', 'token_secrets', 'token_bootstrap', 'audit_log', 'audit_pending') ORDER BY name",
+        )
+        .all() as { name: string }[]
+    ).map((r) => r.name);
+  const v3 = new Database(path);
+  expect(version(v3)).toBe(3);
+  expect(names(v3)).toEqual([]);
+  v3.close();
+  const db = openDb(path);
+  expect(version(db)).toBe(4);
+  expect(names(db)).toEqual([
+    "api_tokens",
+    "audit_log",
+    "audit_pending",
+    "token_bootstrap",
+    "token_secrets",
+  ]);
+  expect(db.query("SELECT COUNT(*) AS n FROM results").get()).toEqual({ n: 2 });
+  expect(db.query("SELECT name FROM sqlite_master WHERE name = 'audit_log_by_at'").get()).toEqual({
+    name: "audit_log_by_at",
+  });
+  expect(() =>
+    db.run("INSERT INTO token_bootstrap (kind, imported_at, count) VALUES ('other', 1, 1)"),
+  ).toThrow();
+  db.close();
+});
+
+test("migration 4: a version 5 file is refused", () => {
+  const path = join(dir, "v5.db");
   const raw = new Database(path);
-  raw.run("PRAGMA user_version = 4");
+  raw.run("PRAGMA user_version = 5");
   raw.close();
   expect(() => openDb(path)).toThrow(
-    "database schema version 4 is newer than this program supports (3); downgrades are not supported",
+    "database schema version 5 is newer than this program supports (4); downgrades are not supported",
   );
 });
 

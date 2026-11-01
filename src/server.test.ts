@@ -5,6 +5,7 @@ import type { ChecksResponse, IncidentsResponse, Result } from "@lorenzh/pulse-c
 import { openDb } from "./db.ts";
 import { createApiServer, validateResult } from "./server.ts";
 import { createService } from "./service.ts";
+import { openTokenStore } from "./token-import.ts";
 
 const TOKEN = "test-token-east-0123456789abcdef";
 const AUTH = { authorization: `Bearer ${TOKEN}` };
@@ -18,7 +19,10 @@ async function start() {
     { id: "c2", name: "C2", url: "http://y/", intervalMs: 1000, timeoutMs: 200 },
   ]);
   const server = createApiServer(service, {
-    tokens: [{ location: "default", token: TOKEN }],
+    tokenStore: openTokenStore(
+      { db: openDb(":memory:"), now: () => 0 },
+      { probe: [{ location: "default", token: TOKEN }], admin: undefined },
+    ),
     now: () => 1000,
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -245,7 +249,10 @@ test("server: POST /results reads only the posted check, not every check's resul
     listChecks: () => assert.fail("POST /results must not load every check with its results"),
   };
   const server = createApiServer(service, {
-    tokens: [{ location: "default", token: TOKEN }],
+    tokenStore: openTokenStore(
+      { db: openDb(":memory:"), now: () => 0 },
+      { probe: [{ location: "default", token: TOKEN }], admin: undefined },
+    ),
     now: () => 1000,
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));

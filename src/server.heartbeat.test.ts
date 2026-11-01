@@ -6,6 +6,7 @@ import { openDb } from "./db.ts";
 import { createMetrics } from "./metrics.ts";
 import { createApiServer } from "./server.ts";
 import { createService } from "./service.ts";
+import { openTokenStore } from "./token-import.ts";
 
 const SECRET = "hb-secret-0123456789abcdef";
 const TOKEN = "probe-token-0123456789abcdef";
@@ -20,7 +21,10 @@ service.upsertChecks([
 ]);
 service.upsertChecks([{ id: "job", name: "Job", type: "heartbeat", period: 60000, grace: 0 }]);
 const server = createApiServer(service, {
-  tokens: [{ location: "east", token: TOKEN }],
+  tokenStore: openTokenStore(
+    { db: openDb(":memory:"), now: () => 0 },
+    { probe: [{ location: "east", token: TOKEN }], admin: undefined },
+  ),
   heartbeatSecrets: () =>
     new Map([
       ["job", SECRET],
@@ -183,7 +187,10 @@ async function freshApi(): Promise<{
     { id: "c1", name: "C1", url: "http://x/", intervalMs: 60000 },
   ]);
   const srv = createApiServer(s, {
-    tokens: [{ location: "default", token: TOKEN }],
+    tokenStore: openTokenStore(
+      { db: openDb(":memory:"), now: () => 0 },
+      { probe: [{ location: "default", token: TOKEN }], admin: undefined },
+    ),
     heartbeatSecrets: () => new Map([["hb", SECRET]]),
     metrics: m,
     now: () => NOW,

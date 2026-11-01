@@ -2,7 +2,7 @@
 
 ## Start and restart
 
-The API reads `checks.json`, the tokens file and its environment at start. It reloads `checks.json` while it runs (see [Changing checks](#changing-checks)). Restart it after a change to the tokens files or the environment.
+The API reads `checks.json` and its environment at start, and the token files only until their one-time import (see [Token import](configuration.md#token-import)). It reloads `checks.json` while it runs (see [Changing checks](#changing-checks)). Restart it after a change to the environment. Tokens are managed over HTTP and need no restart.
 
 After a change to the checks file, restart only the API. Probes reload their checks from the API on their own, within their reload interval (`PULSE_CHECKS_RELOAD_MS`, see the probe docs).
 
@@ -22,11 +22,13 @@ The database is one SQLite file, at `PULSE_DB` (default `./pulse.db`, `/data/pul
 
 While the API runs, `pulse.db-wal` and `pulse.db-shm` sit next to `pulse.db`. The process user creates them in the same directory, so that directory must be writable (`/data` in the image is). SQLite's default auto-checkpoint (1000 pages, on commit) moves the WAL into the file. A clean shutdown checkpoints and removes both files. An older file in rollback-journal mode is switched to WAL at start; an older API version can open a WAL file.
 
-If the file system does not support WAL (no shared memory, such as some network mounts), the start goes on in the old journal mode and logs one line `journal mode stays <mode>: WAL is not available for this file`. `synchronous` then stays `FULL`.
+If the file system does not support WAL (no shared memory, such as some network mounts), the start goes on in the old journal mode and logs one line `journal mode stays <mode>: WAL is not available for this file`. `synchronous` then stays `FULL`. In both modes the durable audit statements of a config write run at `synchronous = EXTRA`, which also syncs the directory after a commit in this fallback (see [Audit durability](#audit-durability)).
 
 ### Schema
 
 The schema is versioned with `PRAGMA user_version`. At start the API creates missing tables, then runs every numbered step (`src/migrations.ts`) above the file's version, all in one transaction. A failing step rolls everything back and the start fails. Version 1 rebuilds `checks` to hold tcp, dns and domain checks; `results` and `incidents` are not touched. Version 2 makes `results` unique on (`check_id`, `location`, `timestamp`): it deletes duplicate rows, keeping the first by row id, and adds the unique index. The start logs `migration 2: removed <n> duplicate results, kept the first of each` when it deleted any. On a large database this step takes seconds (about 1.8 s for 1 million results in a local measurement). Version 3 adds the empty table `uptime_daily`; nothing is computed in the step. Like every step, it makes the start run the foreign key check over the whole file once, before the API listens. In local measurements `/readyz` answered after 156 ms on 864,000 results and after 762 ms on 8.64 million results, against about 105 ms for a start without a step. An older release refuses the file afterwards.
+
+Version 4 adds the token and audit tables `api_tokens`, `token_secrets`, `token_bootstrap`, `audit_log` and `audit_pending`. The tokens of the token files are imported at the first start (see [Token import](configuration.md#token-import)). An older release refuses a version-4 file: back up before the upgrade, and restore that backup to go back.
 
 - Upgrades are automatic. Back up the database file first (see [Backup and restore](#backup-and-restore)).
 - A file whose `user_version` is higher than the program supports is refused at start with exit code 2 (`database schema version 2 is newer than this program supports (1); downgrades are not supported`). Downgrades are not supported: restore the backup (see [Backup and restore](#backup-and-restore)).
@@ -70,7 +72,7 @@ An hourly run logs `uptime rollup: stored <N> days in <D> ms` only when it store
 
 ### Upgrades
 
-1. Back up the database file (see [Backup and restore](#backup-and-restore)).
+1. Back up the database file with `bun run backup` (see [Backup and restore](#backup-and-restore)). It is the only way back to an older release.
 2. Stop the API and start the new version with the same `PULSE_DB`.
 3. Look at the start log line to see that it came up (see [Logs](#logs)).
 
@@ -138,27 +140,45 @@ This command was not run for this page; it needs the `sqlite3` tool.
 
 ## Manual incidents
 
-Enable them with `PULSE_API_ADMIN_TOKENS_FILE` (see [Configuration](configuration.md#admin-tokensjson)); the `curl` examples are in [REST API](rest-api.md#write-routes). Counters: `pulse_api_manual_incidents_created_total` and `pulse_api_manual_incidents_resolved_total`, without labels. The start log says `manualIncidents` is `writable` or `off` and counts `adminTokens`. While it is `off`, the reads are empty even when the database holds incidents. The tables are created on start in an older database; nothing else changes. Rotate admin tokens like probe tokens: add the new one, restart, remove the old one, restart. Every write logs `manual incident write` (with the admin token name) or `manual incident write failed`, and every failed authentication logs `admin auth failed` (see [Logs](#logs)).
+Enable them with the first import of `PULSE_API_ADMIN_TOKENS_FILE` (see [Configuration](configuration.md#token-import)); the `curl` examples are in [REST API](rest-api.md#write-routes). Counters: `pulse_api_manual_incidents_created_total` and `pulse_api_manual_incidents_resolved_total`, without labels. The start log says `manualIncidents` is `writable` or `off` and counts `adminTokens`. While it is `off`, the reads are empty even when the database holds incidents. The tables are created on start in an older database; nothing else changes. Rotate admin tokens over HTTP (see [Token rotation](#token-rotation)). Every write logs `manual incident write` (with the admin token name) or `manual incident write failed`, and every failed authentication logs `admin auth failed` (see [Logs](#logs)).
 
 Upgrade order: contract, then status and notify, then api. Status and notify treat a `404` from `/manual-incidents` of an older api as no incidents.
 
 ## Token rotation
 
-Tokens are read at start. Restart the API to rotate. A location may have several tokens, so rotation needs no gap:
+Tokens are managed over HTTP with a token that has `admin` (see [Tokens](rest-api.md#tokens)); no restart of the API is needed. To rotate a probe token:
 
-1. Add the new token to the tokens file, next to the old one.
-2. Restart the API.
-3. Give the probe the new token (in pulse-deploy: `secrets/probe-token`) and restart the probe.
-4. Remove the old token from the tokens file.
-5. Restart the API.
+1. `POST /admin/tokens/<id>/rotate`. The answer holds the new `secret`. The old secret stays valid for 10 minutes (`previousValidUntil`).
+2. Within those 10 minutes, give the probe the new secret as `PULSE_PROBE_TOKEN` (in pulse-deploy: `secrets/probe-token`) and restart the probe. The probe reads its token only at start.
+3. After the overlap only the new secret works. To end it at once, revoke the token and create a new one instead.
 
-To turn tokens on for an existing setup, give the probes their tokens first (an old API ignores the header), then enable tokens on the API. Otherwise ingestion stops.
+A new location gets its own token: `POST /admin/tokens` with `{"name":"probe eu","scopes":["probe"],"location":"eu"}`. Changing a probe's location means a new token for the new location; the probe's `PULSE_LOCATION` and the token's `location` must be equal, or every result gets `403`.
+
+Imported tokens keep the secret from the old file, with that secret's own strength. Rotate them once after the upgrade, so every secret in use is a generated 256-bit one.
+
+**Lockout.** Revoking the last active admin token is refused, but expiry can still leave no admin. There is no recovery command: restore a [backup](#backup-and-restore) taken while an admin token was active. Keep at least one admin token without `expiresAt`.
+
+## Audit log
+
+Every admin write adds one entry; read them with `GET /admin/audit` or `GET /admin/audit/export` (see [Audit log](rest-api.md#audit-log)). The table only grows: retention never deletes entries, and there is no delete route. An entry is about 150 bytes, so even 1000 writes a day add only about 55 MB a year.
+
+### Audit durability
+
+A config write stores its entry as pending, durably, before it renames the checks file, and confirms it after the rename is on disk. A pending entry left by a crash or a failed step is resolved at the next config write or start: if the write's temp file is gone, the rename happened and the entry is kept; if the temp file is still there, the write did not happen, and the entry and the file are dropped. So, for a process crash or a power loss at any point:
+
+- an acknowledged config write always has an entry;
+- a write whose rename is on disk after the restart gets its entry, at the latest at the next write or start;
+- a write whose rename is not on disk never gets an entry.
+
+This holds on a local file system where `fsync` of a file and its directory persists what it reports and `rename` is atomic (ext4, xfs, btrfs), in WAL mode and in the rollback-journal fallback: the durable statements run at `synchronous = EXTRA`. It does not hold on a disk or network file system that acknowledges `fsync` without persisting.
+
+A leftover `<checks>.<suffix>.tmp` file next to the checks file without a pending entry (after a crash, or when its removal failed) is never read and does not change the audit. Delete it while the API is stopped.
+
+Manual-incident and token writes commit with their entry in one transaction.
 
 ## Admin tokens and header secrets
 
 An admin token can point any check that references `{ "env": NAME }` at any URL. The probe sends the secret there if it binds `NAME` to that host in `PULSE_PROBE_HEADER_HOSTS`. So an admin token is as sensitive as every header secret it can address, and the probe's `PULSE_PROBE_HEADER_HOSTS` is the limit. Bind each secret only to the hosts that need it.
-
-Changing a probe's location means changing both `PULSE_LOCATION` of the probe and the `location` of its token. They must be equal, or every result gets `403`.
 
 ## Changing checks
 
@@ -177,7 +197,7 @@ An invalid or unreadable file is not applied. The API keeps the running configur
 
 Checks that you remove from the file stay in the database with their results, but become inactive. The API does not delete checks. An inactive check is left out of `GET /checks` and `GET /uptime`, and `POST /results` for it answers `404 unknown check`. Its results and incidents stay readable. At the reload an open incident of a removed check is resolved (`resolvedAt` is the reload time, one log line per incident) and the check state is reset, so `notify` may send a "resolved" notification. If you add the check again, it becomes active with its history.
 
-**Writing through the API.** Set `PULSE_API_ADMIN_TOKENS_FILE`. Every write needs `If-Match` with the `ETag` of the last read:
+**Writing through the API.** Use a token with `admin` and `checks` (the first one comes from the import of `PULSE_API_ADMIN_TOKENS_FILE`). Every write needs `If-Match` with the `ETag` of the last read:
 
 ```sh
 API=http://127.0.0.1:3000
@@ -218,7 +238,7 @@ Secret handling:
 
 The API writes JSON lines: `{"time":"<ISO 8601>","level":"info","msg":"...", ...fields}`. `info` and `debug` go to stdout, `warn` and `error` to stderr. `PULSE_LOG_LEVEL` (`debug`, `info`, `warn`, `error`; default `info`) sets the lowest level that is written. There is no log file.
 
-- `listening` (info): The API is ready. Fields: `port`, `checks`, `maintenanceWindows`, `checksFile`, `db`, `retentionDays`, `probeTokens`, `locations`, `tokensFile`.
+- `listening` (info): The API is ready. Fields: `port`, `checks`, `maintenanceWindows`, `checksFile`, `db`, `retentionDays`, `probeTokens` and `locations` (active probe tokens in the database), `adminTokens` (active admin-side tokens), `tokensFile`, `tokenStore` (`database`).
 - `retention: deleted <n> results` (info): A cleanup deleted rows (results and resolved manual incidents). Silent when it deletes none.
 - `retention failed: <message>` (info): A cleanup failed. The next run is still scheduled.
 - `check "<id>" removed from the checks file: incident resolved` (info): One line per incident resolved at start.
@@ -227,15 +247,18 @@ The API writes JSON lines: `{"time":"<ISO 8601>","level":"info","msg":"...", ...
 - `stopped` (info): The shutdown is done.
 - `startup failed` (error): An unexpected failure at start. The process exits with code 1.
 - `shutting down` (info): A signal arrived. Field: `signal`.
-- `admin auth failed` (warn): A request to `/admin/*` or a manual-incident write had no valid admin token (`401` or `403`). Fields: `route` (the route pattern, such as `/admin/checks/:id`), `status`, `token` (`missing` without a Bearer header, `probe` for a probe token, `unknown` otherwise) and `suppressed`. One line per route, status and kind per minute; `suppressed` counts the failures of that key dropped since its previous line. A dropped count shows only in the next line of the same key; with no later failure it is only in `pulse_api_admin_auth_failures_total`, which counts every failure.
+- `admin auth failed` (warn): A request to `/admin/*` or a manual-incident write had no valid admin token (`401` or `403`). Fields: `route` (the route pattern, such as `/admin/checks/:id`), `status`, `token` (`missing` without a Bearer header, `unknown` for an unknown token, `inactive` for an expired, revoked or rotated-out one, `probe` for a probe token, `scope` for a token without the needed scope) and `suppressed`. One line per route, status and kind per minute; `suppressed` counts the failures of that key dropped since its previous line. A dropped count shows only in the next line of the same key; with no later failure it is only in `pulse_api_admin_auth_failures_total`, which counts every failure.
 - `manual incident write` (info): A manual-incident write succeeded. Fields: `token` (the admin token name), `action` (`create`, `update`, `resolve`, `delete`) and `id`.
+- `token write` (info): A token was created, rotated or revoked. Fields: `token` (the caller's name), `action` and `id` (the target token id). Never the secret or the target's name.
+- `<setting> ignored: tokens are stored in the database` (info): A token file setting is set after its import.
+- `audit pending entry kept (<code>)`, `audit pending entry unresolved (<code>)`, `config temp file not removed (<code>)` (warn): A step of the [audit durability](#audit-durability) protocol failed. Only the error code, never a path.
 - `manual incident write failed` (warn): A manual-incident write failed after authentication (`400`, `404`, `409`, `413`). Fields: `status`, `action` and, except for `create`, `id`.
 
 A log field named `time`, `level` or `msg` does not replace the base key.
 
 A configuration or startup error is not a JSON line: it is one line `pulse-api: <message>` on stderr with exit code 2. See [Exit codes](configuration.md#exit-codes).
 
-The log never prints token values, heartbeat secrets, header values or request bodies. Admin token **names** do appear.
+The log never prints token values, heartbeat secrets, header values or request bodies. Token **names** and ids do appear; secrets and digests never do.
 
 With Compose: `docker compose logs api`.
 

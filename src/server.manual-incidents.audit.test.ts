@@ -3,11 +3,13 @@ import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import type { ManualIncident } from "@lorenzh/pulse-contract";
 import { createAdminAuthFailures } from "./admin-auth-failures.ts";
+import type { AuditRecord } from "./audit-log.ts";
 import { openDb } from "./db.ts";
 import { createManualIncidentStore } from "./manual-incidents.ts";
 import { createMetrics } from "./metrics.ts";
 import { createApiServer } from "./server.ts";
 import { createService } from "./service.ts";
+import { openTokenStore } from "./token-import.ts";
 
 const ADMIN = "admin-sentinel-0123456789abcdef";
 const PROBE = "probe-sentinel-0123456789abcdef";
@@ -18,6 +20,8 @@ const MESSAGE = "message-sentinel";
 type Line = { level: "info" | "warn"; message: string; fields: Record<string, string> };
 const lines: Line[] = [];
 let clock = Date.parse("2030-01-10T12:00:00Z");
+const audited: AuditRecord[] = [];
+let isAuditDown = false;
 
 function setup(isAdminOn: boolean) {
   const db = openDb(":memory:");
@@ -25,17 +29,27 @@ function setup(isAdminOn: boolean) {
   const store = createManualIncidentStore(db, {
     now: () => clock,
     componentIds: () => new Set(["web"]),
+    recordAudit: (entry) => {
+      if (isAuditDown) throw new Error("audit log down");
+      audited.push(entry);
+    },
   });
   const warn = (message: string, fields: Record<string, string>) =>
     lines.push({ level: "warn", message, fields });
   return {
     metrics,
     server: createApiServer(createService(db, { now: () => clock }), {
-      tokens: [{ location: "default", token: PROBE }],
+      tokenStore: openTokenStore(
+        { db, now: () => clock },
+        {
+          probe: [{ location: "default", token: PROBE }],
+          admin: isAdminOn ? [{ name: "ops", token: ADMIN }] : undefined,
+        },
+      ),
+      isAdminEnabled: isAdminOn,
       now: () => clock,
       metrics,
       manualIncidents: store,
-      ...(isAdminOn ? { adminTokens: [{ name: "ops", token: ADMIN }] } : {}),
       // A new clock value per failure keeps every line out of the rate limit.
       adminAuthFailures: createAdminAuthFailures({ now: () => clock, warn, metrics }),
       info: (message, fields) => lines.push({ level: "info", message, fields }),
@@ -62,6 +76,8 @@ afterAll(async () => {
 });
 beforeEach(() => {
   lines.length = 0;
+  audited.length = 0;
+  isAuditDown = false;
   clock += 10 * 60_000;
 });
 
@@ -142,22 +158,27 @@ test("a 405 is decided before auth and logs nothing", async () => {
   assert.deepEqual(lines, []);
 });
 
-test("failed authentication answers 401 and logs the token kind, never the token", async () => {
-  const cases: [string | null, string][] = [
-    [null, "missing"],
-    [PROBE, "probe"],
-    [UNKNOWN, "unknown"],
+test("failed authentication answers 401 or 403 and logs the token kind, never the token", async () => {
+  const cases: [string | null, string, number][] = [
+    [null, "missing", 401],
+    [PROBE, "probe", 403],
+    [UNKNOWN, "unknown", 401],
   ];
-  for (const [token, kind] of cases) {
+  for (const [token, kind, status] of cases) {
     lines.length = 0;
     clock += 10 * 60_000;
     const r = await call("POST", "/manual-incidents", NEW, token);
-    assert.equal(r.status, 401);
+    assert.equal(r.status, status);
     assert.deepEqual(lines, [
       {
         level: "warn",
         message: "admin auth failed",
-        fields: { route: "/manual-incidents", status: "401", token: kind, suppressed: "0" },
+        fields: {
+          route: "/manual-incidents",
+          status: String(status),
+          token: kind,
+          suppressed: "0",
+        },
       },
     ]);
   }
@@ -167,7 +188,7 @@ test("failed authentication answers 401 and logs the token kind, never the token
   assertNoSecrets();
   assert.match(
     on.metrics.render(),
-    /pulse_api_admin_auth_failures_total\{route="\/manual-incidents",status="401"\} 3\n/,
+    /pulse_api_admin_auth_failures_total\{route="\/manual-incidents",status="401"\} 2\n/,
   );
 });
 
@@ -176,4 +197,43 @@ test("with the feature off a write answers 404 and logs nothing", async () => {
   assert.equal(r.status, 404);
   assert.deepEqual(lines, []);
   assert.doesNotMatch(off.metrics.render(), /pulse_api_admin_auth_failures_total\{/);
+});
+
+test("each successful manual-incident write adds one audit entry", async () => {
+  const created = await call("POST", "/manual-incidents", NEW);
+  assert.equal(created.status, 201);
+  const id = String((created.json as ManualIncident).id);
+  const update = { status: "identified", message: MESSAGE };
+  assert.equal((await call("POST", `/manual-incidents/${id}/updates`, update)).status, 201);
+  assert.equal((await call("POST", `/manual-incidents/${id}/resolve`)).status, 200);
+  assert.equal((await call("DELETE", `/manual-incidents/${id}`)).status, 204);
+  assert.deepEqual(
+    audited.map((e) => [e.action, e.target.kind, e.target.id, e.actor.name, e.revision]),
+    ["create", "update", "resolve", "delete"].map((a) => [
+      `manual-incident.${a}`,
+      "manual-incident",
+      id,
+      "ops",
+      null,
+    ]),
+  );
+  assert.ok(audited.every((e) => e.actor.tokenId?.startsWith("tok_")));
+  const text = JSON.stringify(audited);
+  assert.ok(!text.includes(TITLE) && !text.includes(MESSAGE) && !text.includes(ADMIN));
+});
+
+test("a failing audit insert rolls the manual-incident write back and answers 500", async () => {
+  const before = await call("GET", "/manual-incidents?status=all", undefined, null);
+  isAuditDown = true;
+  const created = await call("POST", "/manual-incidents", NEW);
+  assert.equal(created.status, 500);
+  assert.deepEqual(await call("GET", "/manual-incidents?status=all", undefined, null), before);
+  isAuditDown = false;
+  const kept = await call("POST", "/manual-incidents", NEW);
+  const id = String((kept.json as ManualIncident).id);
+  isAuditDown = true;
+  assert.equal((await call("POST", `/manual-incidents/${id}/resolve`)).status, 500);
+  assert.equal((await call("DELETE", `/manual-incidents/${id}`)).status, 500);
+  const after = await call("GET", `/manual-incidents/${id}`, undefined, null);
+  assert.equal((after.json as ManualIncident).status, "investigating");
 });

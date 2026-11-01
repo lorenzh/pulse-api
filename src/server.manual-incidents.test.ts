@@ -15,6 +15,7 @@ import { createManualIncidentStore } from "./manual-incidents.ts";
 import { createMetrics } from "./metrics.ts";
 import { createApiServer } from "./server.ts";
 import { createService } from "./service.ts";
+import { openTokenStore } from "./token-import.ts";
 
 const ADMIN = "admin-token-0123456789abcdef";
 const PROBE = "probe-token-0123456789abcdef";
@@ -32,12 +33,18 @@ function setup(isAdminOn: boolean) {
     onEvent: (e) => metrics.recordManualIncident(e),
   });
   const server = createApiServer(service, {
-    tokens: [{ location: "eu", token: PROBE }],
+    tokenStore: openTokenStore(
+      { db, now: () => clock },
+      {
+        probe: [{ location: "eu", token: PROBE }],
+        admin: isAdminOn ? [{ name: "ops", token: ADMIN }] : undefined,
+      },
+    ),
+    isAdminEnabled: isAdminOn,
     now: () => clock,
     components: () => components,
     metrics,
     manualIncidents: store,
-    ...(isAdminOn ? { adminTokens: [{ name: "ops", token: ADMIN }] } : {}),
   });
   return { server, metrics, db, store };
 }
@@ -187,8 +194,12 @@ test("resolve with a message, and resolve errors", async () => {
   await call("DELETE", `/manual-incidents/${i.id}`);
 });
 
-test("writes need an admin token: none, probe and wrong tokens are refused", async () => {
-  for (const token of [null, PROBE, "wrong-token-0123456789abcdef"]) {
+test("writes need an admin token: none and wrong tokens are 401, a probe token 403", async () => {
+  const r = await call("POST", "/manual-incidents", NEW, PROBE);
+  assert.equal(r.status, 403);
+  assert.equal(errorOf(r.json), "forbidden");
+  assert.equal((await call("DELETE", "/manual-incidents/1", undefined, PROBE)).status, 403);
+  for (const token of [null, "wrong-token-0123456789abcdef"]) {
     const r = await call("POST", "/manual-incidents", NEW, token);
     assert.equal(r.status, 401);
     assert.equal(errorOf(r.json), "unauthorized");
@@ -198,9 +209,9 @@ test("writes need an admin token: none, probe and wrong tokens are refused", asy
   assert.deepEqual((await call("GET", "/manual-incidents", undefined, null)).json, []);
 });
 
-test("an admin token does not authenticate probe routes", async () => {
+test("an admin token is forbidden on probe routes", async () => {
   const r = await call("POST", "/results", { checkId: "x" }, ADMIN);
-  assert.equal(r.status, 401);
+  assert.equal(r.status, 403);
 });
 
 test("input is rejected: unknown component, long text, control characters, bad status", async () => {
@@ -335,8 +346,11 @@ test("unknown ids, bad ids, and wrong methods", async () => {
 test("server without a store answers an empty list and 404 for writes with tokens", async () => {
   const db = openDb(":memory:");
   const server = createApiServer(createService(db, {}), {
-    tokens: [],
-    adminTokens: [{ name: "ops", token: ADMIN }],
+    tokenStore: openTokenStore(
+      { db, now: () => clock },
+      { probe: [{ location: "eu", token: PROBE }], admin: [{ name: "ops", token: ADMIN }] },
+    ),
+    isAdminEnabled: true,
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;

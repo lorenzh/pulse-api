@@ -6,20 +6,30 @@ import {
   isAdminRevision,
 } from "@lorenzh/pulse-contract";
 import { BodyError, readBody, readJsonBody, sendJson } from "@lorenzh/pulse-kit";
-import { type AdminAuthFailures, tokenKindOf } from "./admin-auth-failures.ts";
-import type { AdminToken } from "./admin-tokens.ts";
+import { type AdminAuthFailures, adminAccess } from "./admin-auth-failures.ts";
+import type { AuditLog } from "./audit-log.ts";
+import {
+  type AuditPath,
+  AuditQueryError,
+  auditPathOf,
+  auditRouteOf,
+  serveAudit,
+} from "./audit-routes.ts";
 import type { ConfigEdit, ConfigKind, ConfigWriter, WriteFailure } from "./config-write.ts";
 import { ConfigWriteError } from "./config-write.ts";
 import type { ConfigWriteAction, ConfigWriteResult, Metrics } from "./metrics.ts";
-import { findByToken } from "./tokens.ts";
+import { handleTokenRoute, type TokenPath, tokenPathOf, tokenRouteOf } from "./token-routes.ts";
+import type { Permission } from "./token-scopes.ts";
+import type { AuthenticatedToken, TokenStore } from "./token-store.ts";
 
 export interface AdminRoutesDeps {
   writer: ConfigWriter;
   metrics: Pick<Metrics, "recordConfigWrite">;
-  /** Admin tokens; the name is what the log line carries. */
-  adminTokens: readonly AdminToken[];
-  /** True for a valid probe token: it gets 403 instead of 401. */
-  isProbeToken: (authorization: string | undefined) => boolean;
+  /** Authenticates the Bearer credential and serves `/admin/tokens*`. */
+  tokens: TokenStore;
+  /** Serves `/admin/audit` and `/admin/audit/export`. */
+  audit: AuditLog;
+  now: () => number;
   info: (message: string, fields: Record<string, string>) => void;
   warn: (message: string, fields: Record<string, string>) => void;
   /** Logs and counts a failed authentication; shared with the manual-incident routes. */
@@ -85,6 +95,11 @@ function ifMatchOf(header: string | undefined): string | undefined {
   return value;
 }
 
+/** Read a body that the route ignores, only to enforce the size limit on every method. */
+async function discardBody(req: IncomingMessage): Promise<void> {
+  await readBodyJson(req, true);
+}
+
 /** The JSON body; a DELETE body is read only to enforce the size limit, then dropped. */
 async function readBodyJson(req: IncomingMessage, isDelete: boolean): Promise<unknown> {
   try {
@@ -140,16 +155,15 @@ interface Target {
 export function createAdminHandler(
   deps: AdminRoutesDeps,
 ): (req: IncomingMessage, res: ServerResponse) => Promise<boolean> {
-  const authorize = (req: IncomingMessage, route: string): string => {
-    const header = req.headers.authorization;
-    const admin = findByToken(deps.adminTokens, header);
-    if (admin !== undefined) return admin.name;
-    const kind = tokenKindOf(header, deps.isProbeToken);
-    if (kind === "probe") {
-      deps.authFailures.record(route, 403, kind);
-      throw new RouteError(403, "forbidden");
-    }
-    deps.authFailures.record(route, 401, kind);
+  const authorize = (
+    req: IncomingMessage,
+    route: string,
+    permission: Permission,
+  ): AuthenticatedToken => {
+    const access = adminAccess(deps.tokens, req.headers.authorization, permission);
+    if (access.kind === "ok") return access.token;
+    deps.authFailures.record(route, access.status, access.token);
+    if (access.status === 403) throw new RouteError(403, "forbidden");
     throw new RouteError(401, "unauthorized", { "www-authenticate": "Bearer" });
   };
 
@@ -158,7 +172,7 @@ export function createAdminHandler(
     res: ServerResponse,
     target: Target,
     action: ConfigWriteAction,
-    tokenName: string,
+    caller: AuthenticatedToken,
   ): Promise<void> => {
     const { kind, ref } = target;
     const body = await readBodyJson(req, action === "delete");
@@ -173,11 +187,14 @@ export function createAdminHandler(
       throw err instanceof ConfigWriteError ? err : new RouteError(503, "checks file not writable");
     }
     const edit = editOf(kind, action, ref, body);
-    const outcome = await deps.writer.apply(edit, ifMatch);
+    const outcome = await deps.writer.apply(edit, ifMatch, {
+      tokenId: caller.id,
+      name: caller.name,
+    });
     deps.metrics.recordConfigWrite(kind, action, "ok");
     const created = kind === "maintenance" ? (outcome.index ?? 0) : bodyId(body);
     const id = String((action === "create" ? created : ref) ?? "");
-    deps.info("config write", { token: tokenName, kind, action, id });
+    deps.info("config write", { token: caller.name, kind, action, id });
     const headers = etag(outcome.revision);
     if (action === "delete") {
       res.writeHead(204, headers).end();
@@ -218,8 +235,66 @@ export function createAdminHandler(
     sendError(res, status, message, headers);
   };
 
+  const tokenRoute = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+    path: TokenPath,
+  ): Promise<void> => {
+    res.setHeader("cache-control", "no-store");
+    let caller: AuthenticatedToken;
+    try {
+      caller = authorize(req, tokenRouteOf(path), "token-admin");
+    } catch (err) {
+      fail(res, err, undefined, undefined);
+      return;
+    }
+    const tokenDeps = { store: deps.tokens, now: deps.now, info: deps.info };
+    await handleTokenRoute(tokenDeps, req, res, path, caller);
+  };
+
+  const auditRoute = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+    url: URL,
+    path: AuditPath,
+  ): Promise<void> => {
+    res.setHeader("cache-control", "no-store");
+    try {
+      authorize(req, auditRouteOf(path), "audit-read");
+      if (req.method !== "GET") throw new RouteError(405, "method not allowed", { Allow: "GET" });
+      await discardBody(req);
+      await serveAudit(deps.audit, res, path, url.searchParams);
+    } catch (err) {
+      if (res.headersSent) throw err;
+      fail(
+        res,
+        err instanceof AuditQueryError ? new RouteError(400, err.message) : err,
+        undefined,
+        undefined,
+      );
+    }
+  };
+
+  /** Serve the audit and token routes; false for any other path. */
+  const otherRoute = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+    url: URL,
+  ): Promise<boolean> => {
+    const auditPath = auditPathOf(url.pathname);
+    if (auditPath !== null) {
+      await auditRoute(req, res, url, auditPath);
+      return true;
+    }
+    const tokenPath = tokenPathOf(url.pathname);
+    if (tokenPath === null) return false;
+    await tokenRoute(req, res, tokenPath);
+    return true;
+  };
+
   return async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
+    if (await otherRoute(req, res, url)) return true;
     const match = ADMIN_PATH.exec(url.pathname);
     if (match === null) return false;
     const section = match[1] ?? "";
@@ -227,11 +302,11 @@ export function createAdminHandler(
     let target: Target | undefined;
     let action: ConfigWriteAction | undefined;
     try {
-      // The route pattern, as in the request metric: never the raw path.
-      const tokenName = authorize(req, `/admin/${section}${match[2] === undefined ? "" : "/:id"}`);
+      const caller = authorize(req, ...routeAccess(section, match[2]));
       if (section === "config") {
         if (match[2] !== undefined) throw new RouteError(404, "not found");
         if (method !== "GET") throw new RouteError(405, "method not allowed", { Allow: "GET" });
+        await discardBody(req);
         const view = deps.writer.view();
         sendJson(res, 200, view, etag(view.revision));
         return true;
@@ -250,13 +325,19 @@ export function createAdminHandler(
           Allow: target.ref === undefined ? "POST" : "PUT, DELETE",
         });
       }
-      await write(req, res, target, action, tokenName);
+      await write(req, res, target, action, caller);
     } catch (err) {
       if (res.headersSent) throw err;
       fail(res, err, target, action);
     }
     return true;
   };
+}
+
+/** The route pattern of the request metric (never the raw path), and the permission it needs. */
+function routeAccess(section: string, id: string | undefined): [string, Permission] {
+  const route = `/admin/${section}${id === undefined ? "" : "/:id"}`;
+  return [route, section === "config" ? "config-read" : "config-write"];
 }
 
 function editOf(

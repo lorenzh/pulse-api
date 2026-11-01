@@ -31,7 +31,6 @@ beforeAll(async () => {
     });
   }
   server = createApiServer(service, {
-    tokens: [],
     now: () => 100_000,
     metrics: createMetrics({ listLocations: () => service.listLocations() }),
   });

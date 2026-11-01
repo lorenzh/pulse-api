@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { firstIssue, type Issue, pathName } from "./issue-path.ts";
-import { type ProbeToken, TokensError, tokenSchema } from "./tokens.ts";
+import { sha256Hex } from "./token-digest.ts";
+import { TokensError, tokenSchema } from "./tokens.ts";
 
 export type AdminToken = { name: string; token: string };
 
@@ -47,14 +48,23 @@ export function parseAdminTokens(data: unknown): AdminToken[] {
   });
 }
 
-/** Refuse an admin token that is also a probe token: a probe must never write incidents. */
-export function assertDistinctFromProbeTokens(
+/**
+ * Refuse an admin token whose digest is already in use: a probe must never write incidents, and
+ * one credential must never name two tokens. `probeDigests` are the stored and co-imported probe
+ * credentials, `storedDigests` every stored credential. Messages never contain a token.
+ */
+export function assertDistinctDigests(
   admin: readonly AdminToken[],
-  probe: readonly ProbeToken[],
+  probeDigests: ReadonlySet<string>,
+  storedDigests: ReadonlySet<string>,
 ): void {
-  const probeTokens = new Set(probe.map((p) => p.token));
-  const index = admin.findIndex((a) => probeTokens.has(a.token));
-  if (index >= 0) {
-    throw new TokensError(`admin tokens[${index}] is also a probe token: use a separate token`);
-  }
+  admin.forEach((entry, index) => {
+    const hex = sha256Hex(entry.token);
+    if (probeDigests.has(hex)) {
+      throw new TokensError(`admin tokens[${index}] is also a probe token: use a separate token`);
+    }
+    if (storedDigests.has(hex)) {
+      throw new TokensError(`admin tokens[${index}] repeats a stored token`);
+    }
+  });
 }

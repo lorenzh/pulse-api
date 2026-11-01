@@ -8,6 +8,8 @@ import {
   validateManualIncidentInput,
   validateManualIncidentUpdateInput,
 } from "@lorenzh/pulse-contract";
+import type { AuditRecord } from "./audit-log.ts";
+import type { Actor } from "./token-store.ts";
 
 export const RECENT_RESOLVED_MS = 14 * 86_400_000;
 export const RECENT_RESOLVED_LIMIT = 50;
@@ -32,11 +34,12 @@ export interface ManualIncidentStore {
   /** Open ones first (newest created first), then up to 50 resolved within 14 days, newest first. */
   list(filter: ManualIncidentFilter): ManualIncident[];
   get(id: number): ManualIncident | undefined;
-  create(body: unknown): ManualIncident;
-  addUpdate(id: number, body: unknown): ManualIncident;
+  /** Each write with an `actor` records its audit entry in the write's transaction. */
+  create(body: unknown, actor?: Actor): ManualIncident;
+  addUpdate(id: number, body: unknown, actor?: Actor): ManualIncident;
   /** `body` may be undefined or an object with an optional `message`. */
-  resolve(id: number, body: unknown): ManualIncident;
-  remove(id: number): void;
+  resolve(id: number, body: unknown, actor?: Actor): ManualIncident;
+  remove(id: number, actor?: Actor): void;
   /** True when an unresolved incident names the component. */
   hasOpenIncidentFor(componentId: string): boolean;
   /** Delete incidents resolved before `cutoff` (epoch ms). Returns how many. */
@@ -49,7 +52,15 @@ export interface ManualIncidentDeps {
   componentIds: () => ReadonlySet<string>;
   /** Called once per created incident and once per resolution. */
   onEvent?: (event: "created" | "resolved") => void;
+  /** Inserts one audit entry; it runs inside the write's transaction, so a throw rolls it back. */
+  recordAudit?: (entry: AuditRecord) => void;
 }
+
+type ManualAuditAction =
+  | "manual-incident.create"
+  | "manual-incident.update"
+  | "manual-incident.resolve"
+  | "manual-incident.delete";
 
 type IncidentRow = {
   id: number;
@@ -84,7 +95,7 @@ function resolveMessage(body: unknown): string {
 /** Store of manual incidents. Times come from `now`; update numbers are the row index. */
 export function createManualIncidentStore(
   db: Database,
-  { now, componentIds, onEvent }: ManualIncidentDeps,
+  { now, componentIds, onEvent, recordAudit }: ManualIncidentDeps,
 ): ManualIncidentStore {
   const insertIncident = db.prepare(
     `INSERT INTO manual_incidents (title, impact, component_ids_json, status, created_at, resolved_at)
@@ -146,8 +157,30 @@ export function createManualIncidentStore(
     }
   };
 
+  const audit = (
+    at: number,
+    actor: Actor | undefined,
+    action: ManualAuditAction,
+    id: number,
+  ): void => {
+    if (actor === undefined || recordAudit === undefined) return;
+    recordAudit({
+      at,
+      actor,
+      action,
+      target: { kind: "manual-incident", id: String(id) },
+      revision: null,
+    });
+  };
+
   /** Append an update inside a transaction; sets the status and `resolvedAt`. */
-  const append = (id: number, status: ManualIncidentStatus, message: string): ManualIncident =>
+  const append = (
+    id: number,
+    status: ManualIncidentStatus,
+    message: string,
+    actor: Actor | undefined,
+    action: ManualAuditAction,
+  ): ManualIncident =>
     inTransaction(() => {
       const row = rowOf(id);
       if (row.status === "resolved") {
@@ -163,6 +196,7 @@ export function createManualIncidentStore(
       const at = Math.max(now(), updates.at(-1)?.at ?? 0);
       insertUpdate.run(id, updates.length, at, status, message);
       setStatus.run(status, status === "resolved" ? at : null, id);
+      audit(at, actor, action, id);
       return toIncident(rowOf(id));
     });
 
@@ -189,7 +223,7 @@ export function createManualIncidentStore(
       return row ? toIncident(row) : undefined;
     },
 
-    create(body) {
+    create(body, actor) {
       const parsed = validateManualIncidentInput(body);
       if (!parsed.ok) throw new ManualIncidentInputError(parsed.error);
       const input = parsed.value;
@@ -212,25 +246,31 @@ export function createManualIncidentStore(
           ).lastInsertRowid,
         );
         insertUpdate.run(id, 0, at, status, input.message);
+        audit(at, actor, "manual-incident.create", id);
         return toIncident(rowOf(id));
       });
       onEvent?.("created");
       return incident;
     },
 
-    addUpdate(id, body) {
+    addUpdate(id, body, actor) {
       const parsed = validateManualIncidentUpdateInput(body);
       if (!parsed.ok) throw new ManualIncidentInputError(parsed.error);
-      return notifyResolved(append(id, parsed.value.status, parsed.value.message));
+      const { status, message } = parsed.value;
+      return notifyResolved(append(id, status, message, actor, "manual-incident.update"));
     },
 
-    resolve(id, body) {
-      return notifyResolved(append(id, "resolved", resolveMessage(body)));
+    resolve(id, body, actor) {
+      const message = resolveMessage(body);
+      return notifyResolved(append(id, "resolved", message, actor, "manual-incident.resolve"));
     },
 
-    remove(id) {
-      rowOf(id);
-      deleteOne.run(id);
+    remove(id, actor) {
+      inTransaction(() => {
+        rowOf(id);
+        deleteOne.run(id);
+        audit(now(), actor, "manual-incident.delete", id);
+      });
     },
 
     hasOpenIncidentFor(componentId) {
