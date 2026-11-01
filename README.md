@@ -29,16 +29,7 @@ The database is created with the current schema. A file from an older version is
 
 ### Docker Compose
 
-`compose.yaml` runs the whole stack: api, one probe, status, notify and console. It needs Docker Compose >= 2.23 and access to github.com. The probe, status, notify and console images are built from `main` of their repositories. The console is on <http://127.0.0.1:8082> (loopback only) and has nothing to manage yet.
-
-```sh
-cp .env.example .env
-# Put a random token into .env. The placeholder in .env.example is rejected at start.
-sed -i.bak "s/^PULSE_PROBE_TOKEN=.*/PULSE_PROBE_TOKEN=$(openssl rand -hex 32)/" .env && rm .env.bak
-docker compose up -d --build
-```
-
-Open http://localhost:8080. Stop with `docker compose down`. The demo profile (`docker compose --profile demo up demo-status`) shows every status page state; it needs no `.env`.
+The Compose setups of the whole stack live in [pulse-deploy](https://github.com/lorenzh/pulse-deploy). Its [`full`](https://github.com/lorenzh/pulse-deploy/blob/main/full/README.md) setup runs api, probe, status, notify and console; its [`demo`](https://github.com/lorenzh/pulse-deploy/blob/main/demo/README.md) setup shows every status page state.
 
 ### Image
 

@@ -13,8 +13,6 @@ tsconfig*.json
 *.db
 checks.json
 tokens.json
-compose
-compose.yaml
 Dockerfile
 .dockerignore
 **/*.spec.ts

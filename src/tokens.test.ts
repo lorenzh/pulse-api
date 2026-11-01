@@ -96,34 +96,39 @@ test("parseTokens: rejects example tokens and whitespace without printing the to
   }
 });
 
-test("docs and .env.example only show tokens that the API accepts", () => {
-  const files = [
-    ".env.example",
-    ...readdirSync("docs")
-      .filter((f) => f.endsWith(".md"))
-      .map((f) => `docs/${f}`),
-  ];
+test("docs only show tokens that the API accepts", () => {
+  const files = readdirSync("docs")
+    .filter((f) => f.endsWith(".md"))
+    .map((f) => `docs/${f}`);
   const patterns = [
     /example-token-[\w-]+/g,
     /Bearer ([A-Za-z0-9_-]{16,})/g,
     /PULSE_PROBE_TOKEN=([^\s"']+)/g,
   ];
-  let checked = 0;
+  const isPlaceholder = (token: string): boolean => /^(replace-with-|\$|<)/.test(token);
+  // Self-check: the patterns must still find a literal token, so the scan cannot match nothing.
+  const sample = "Authorization: Bearer 0123456789abcdef0123 and PULSE_PROBE_TOKEN=replace-with-x";
+  const found = patterns.flatMap((pattern) =>
+    [...sample.matchAll(pattern)].map((m) => m[1] ?? m[0]),
+  );
+  assert.deepEqual(found, ["0123456789abcdef0123", "replace-with-x"]);
+  assert.deepEqual(
+    found.filter((token) => !isPlaceholder(token)),
+    ["0123456789abcdef0123"],
+  );
   for (const file of files) {
     const text = readFileSync(file, "utf8");
     for (const pattern of patterns) {
       for (const m of text.matchAll(pattern)) {
         const token = m[1] ?? m[0];
         // Placeholders and shell variables are not literal tokens.
-        if (/^(replace-with-|\$|<)/.test(token)) continue;
+        if (isPlaceholder(token)) continue;
         // Every literal token shown must work, so a copied example starts the API.
         assert.doesNotThrow(
           () => parseTokens({ tokens: [{ location: "x", token }] }),
           `${file} shows a token the API rejects`,
         );
-        checked++;
       }
     }
   }
-  assert.ok(checked > 0);
 });

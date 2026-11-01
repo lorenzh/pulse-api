@@ -6,15 +6,15 @@ Each entry quotes a message from the code.
 
 ### `token must be a string of at least 16 characters`
 
-Full text: `pulse-api: tokens[0] (location "<name>") token must be a string of at least 16 characters`. The token is too short or empty. With Compose, `.env` is missing, so `PULSE_PROBE_TOKEN` is empty. Copy `.env.example` to `.env` and set a token with `openssl rand -hex 32`.
+Full text: `pulse-api: tokens[0] (location "<name>") token must be a string of at least 16 characters`. The token is too short or empty. With a [pulse-deploy](https://github.com/lorenzh/pulse-deploy) setup, `secrets/probe-token` is missing or empty. Write a token into it, for example with `openssl rand -hex 32`.
 
 ### `still has the example placeholder token`
 
-A token starts with `replace-with-`. You copied `tokens.example.json` or `.env.example` without editing it. Replace every token, for example with `openssl rand -hex 32`.
+A token starts with `replace-with-`. You copied `tokens.example.json` without editing it. Replace every token, for example with `openssl rand -hex 32`.
 
 ### `uses a public example token: generate your own`
 
-The token is one of the example tokens from earlier versions of the docs and `.env.example`. They are public. Replace the token in `.env` or the tokens file, and in the probe.
+The token is one of the example tokens from earlier versions of the docs. They are public. Replace the token in the tokens file (in pulse-deploy: `secrets/probe-token`), and in the probe.
 
 ### `token must not contain whitespace`
 
@@ -88,7 +88,7 @@ The body is invalid. The message names the field. `body is not valid JSON` comes
 
 ## 401 on POST /results
 
-`{"error":"unauthorized"}` with `WWW-Authenticate: Bearer`. The `Authorization` header is missing, is not `Bearer <token>`, or the token is not in the tokens file. Check that the probe's `PULSE_PROBE_TOKEN` is in the tokens file, and that the API was restarted after you added it.
+`{"error":"unauthorized"}` with `WWW-Authenticate: Bearer`. The `Authorization` header is missing, is not `Bearer <token>`, or the token is not in the tokens file. Check that the probe's token (in pulse-deploy: `secrets/probe-token`) is in the tokens file, and that the API was restarted after you added it.
 
 ## 403 on POST /results
 
