@@ -183,3 +183,34 @@ export function openDb(
   }
   return db;
 }
+
+export class DurableCommitError extends Error {
+  override name = "DurableCommitError";
+}
+
+/** `PRAGMA synchronous = EXTRA`: also durable across a power loss in rollback-journal mode. */
+const EXTRA = 3;
+
+function readSynchronous(db: Database): number {
+  const row = db.query("PRAGMA synchronous").get() as { synchronous: number } | null;
+  return row?.synchronous ?? 0;
+}
+
+/**
+ * Run `fn` (one statement in autocommit) with `synchronous` raised to EXTRA, so its commit is on
+ * disk when it returns, in WAL mode and in the `delete` fallback. FULL is not durable across a
+ * power loss in rollback mode. SQLite ignores a `synchronous` change inside a transaction, so a
+ * call there throws. The level read before is restored, also when `fn` throws.
+ */
+export function withDurableCommit<T>(db: Database, fn: () => T): T {
+  if (db.inTransaction) {
+    throw new DurableCommitError("withDurableCommit must run outside a transaction");
+  }
+  const before = readSynchronous(db);
+  if (before < EXTRA) db.run(`PRAGMA synchronous = ${EXTRA}`);
+  try {
+    return fn();
+  } finally {
+    if (before < EXTRA) db.run(`PRAGMA synchronous = ${before}`);
+  }
+}

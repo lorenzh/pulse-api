@@ -68,6 +68,56 @@ CREATE TABLE uptime_daily (
   PRIMARY KEY (check_id, day)
 );
 `,
+  // 4: hashed, scoped tokens and the audit log. Only digests of secrets are stored. An audit_log id
+  // is assigned in the transaction that commits the entry, so id order is commit order.
+  // audit_pending holds the intent of a config write between its temp file and its confirmation.
+  `
+CREATE TABLE api_tokens (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  scopes_json TEXT NOT NULL,
+  location TEXT,
+  source TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  last_used_at INTEGER,
+  expires_at INTEGER,
+  revoked_at INTEGER,
+  rotated_at INTEGER
+);
+CREATE TABLE token_secrets (
+  secret_sha256 TEXT PRIMARY KEY,
+  token_id TEXT NOT NULL REFERENCES api_tokens(id),
+  created_at INTEGER NOT NULL,
+  retires_at INTEGER
+);
+CREATE TABLE token_bootstrap (
+  kind TEXT PRIMARY KEY CHECK (kind IN ('probe','admin')),
+  imported_at INTEGER NOT NULL,
+  count INTEGER NOT NULL
+);
+CREATE TABLE audit_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at INTEGER NOT NULL,
+  actor_token_id TEXT,
+  actor_name TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target_kind TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  revision TEXT
+);
+CREATE INDEX audit_log_by_at ON audit_log (at, id);
+CREATE TABLE audit_pending (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at INTEGER NOT NULL,
+  actor_token_id TEXT,
+  actor_name TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target_kind TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  revision TEXT NOT NULL,
+  temp_path TEXT NOT NULL
+);
+`,
 ];
 
 /** The step that adds the unique sample index; `openDb` counts the duplicates it removes. */
