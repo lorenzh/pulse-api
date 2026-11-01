@@ -12,9 +12,12 @@ import {
   validateAuditPage,
   validateTokenSecretResponse,
 } from "@lorenzh/pulse-contract";
-import { createAuditLog } from "./audit-log.ts";
 import { openDb } from "./db.ts";
 import { type RunningApi, type StartDeps, startApi } from "./start.ts";
+
+// Loaded lazily, so the HTTP tests of this file also run (and fail on their own assertions) on
+// a base without the module.
+const auditLogModule = () => import("./audit-log.ts");
 
 const T = 1_800_000_000_000;
 const PROBE = "probe-audit-0123456789abcdef";
@@ -234,7 +237,7 @@ test("an audit walk never skips an entry committed later", async () => {
   // The export walk: started at largest id 5, batches of 2, entries added between batches.
   const db = openDb(":memory:");
   try {
-    const log = createAuditLog(db);
+    const log = (await auditLogModule()).createAuditLog(db);
     const record = (n: number): AuditEntry =>
       log.record({
         at: T + n,
@@ -293,7 +296,7 @@ test("audit paging, parameter checks and the export", async () => {
   // The bootstrap gave 2 entries; 248 more make 250.
   const db = openDb(dbPath);
   try {
-    const log = createAuditLog(db);
+    const log = (await auditLogModule()).createAuditLog(db);
     for (let n = 3; n <= 250; n++) {
       log.record({
         at: T + n,
