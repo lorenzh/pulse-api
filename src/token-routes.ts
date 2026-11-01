@@ -155,6 +155,7 @@ async function dispatch(
   const actor: Actor = { tokenId: caller.id, name: caller.name };
   if (path.id === undefined) {
     if (method === "GET") {
+      await readText(req);
       const body: TokensResponse = { tokens: deps.store.list() };
       sendJson(res, 200, body);
       return;
@@ -166,6 +167,7 @@ async function dispatch(
   }
   if (path.action === undefined) {
     if (method !== "GET") throw new TokenRouteError(405, "method not allowed", { Allow: "GET" });
+    await readText(req);
     sendJson(res, 200, mustGet(deps.store, path.id));
     return;
   }

@@ -6,6 +6,7 @@ import {
   AUDIT_MAX_LIMIT,
   AUDIT_TARGET_KINDS,
   type AuditAction,
+  type AuditEntry,
   type AuditTargetKind,
 } from "@lorenzh/pulse-contract";
 import { sendJson } from "@lorenzh/pulse-kit";
@@ -100,22 +101,50 @@ function auditExportFilterOf(params: URLSearchParams): AuditFilter {
   return filterOf(single(params, FILTER_KEYS));
 }
 
+/** The part of a response that the export writes to. */
+export interface ExportSink {
+  write(chunk: string): boolean;
+  end(): unknown;
+  once(event: "drain" | "close", listener: () => void): unknown;
+  readonly destroyed: boolean;
+}
+
+function drained(sink: ExportSink): Promise<void> {
+  return new Promise((resolve) => {
+    sink.once("drain", resolve);
+    sink.once("close", resolve);
+  });
+}
+
+/**
+ * Write each batch as NDJSON. When `write` reports a full buffer, wait for `drain`
+ * before reading the next batch, so memory stays bounded by one batch.
+ */
+export async function writeAuditExport(
+  batches: Iterable<readonly AuditEntry[]>,
+  sink: ExportSink,
+): Promise<void> {
+  for (const batch of batches) {
+    const isFull = !sink.write(batch.map((entry) => `${JSON.stringify(entry)}\n`).join(""));
+    if (isFull) await drained(sink);
+    // A closed client stops the walk before the next batch is read.
+    if (sink.destroyed) return;
+  }
+  sink.end();
+}
+
 /** Answer an authorized audit request. The caller has set `cache-control: no-store`. */
-export function serveAudit(
+export async function serveAudit(
   log: AuditLog,
   res: ServerResponse,
   path: AuditPath,
   params: URLSearchParams,
-): void {
+): Promise<void> {
   if (path === "query") {
     sendJson(res, 200, log.query(auditPageQueryOf(params)));
     return;
   }
   const filter = auditExportFilterOf(params);
   res.writeHead(200, { "content-type": `${AUDIT_EXPORT_CONTENT_TYPE}; charset=utf-8` });
-  // Each batch is written as it is read, so memory stays bounded by one batch.
-  for (const batch of log.batches(filter)) {
-    res.write(batch.map((entry) => `${JSON.stringify(entry)}\n`).join(""));
-  }
-  res.end();
+  await writeAuditExport(log.batches(filter), res);
 }

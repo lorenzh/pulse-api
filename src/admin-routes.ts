@@ -247,17 +247,17 @@ export function createAdminHandler(
     await handleTokenRoute(tokenDeps, req, res, path, caller);
   };
 
-  const auditRoute = (
+  const auditRoute = async (
     req: IncomingMessage,
     res: ServerResponse,
     url: URL,
     path: AuditPath,
-  ): void => {
+  ): Promise<void> => {
     res.setHeader("cache-control", "no-store");
     try {
       authorize(req, auditRouteOf(path), "audit-read");
       if (req.method !== "GET") throw new RouteError(405, "method not allowed", { Allow: "GET" });
-      serveAudit(deps.audit, res, path, url.searchParams);
+      await serveAudit(deps.audit, res, path, url.searchParams);
     } catch (err) {
       if (res.headersSent) throw err;
       fail(
@@ -277,7 +277,7 @@ export function createAdminHandler(
   ): Promise<boolean> => {
     const auditPath = auditPathOf(url.pathname);
     if (auditPath !== null) {
-      auditRoute(req, res, url, auditPath);
+      await auditRoute(req, res, url, auditPath);
       return true;
     }
     const tokenPath = tokenPathOf(url.pathname);

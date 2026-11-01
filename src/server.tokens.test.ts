@@ -3,6 +3,7 @@ import { afterAll, beforeAll, test } from "bun:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -203,6 +204,24 @@ test("create validation, the grant rule, limits and the last admin", async () =>
     assert.equal(wrong.status, 401);
     assert.equal(wrong.headers.get("cache-control"), "no-store");
     assert.equal((await create(big)).status, 413);
+    const getWithBody = (path: string): Promise<number> =>
+      new Promise((resolve, reject) => {
+        const req = request({ host: "127.0.0.1", port: api.port, method: "GET", path }, (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        });
+        req.setHeader("authorization", `Bearer ${ADMIN}`);
+        req.setHeader("content-length", "5000");
+        req.on("error", reject);
+        req.end("p".repeat(5000));
+      });
+    assert.deepEqual(
+      [
+        await getWithBody("/admin/tokens"),
+        await getWithBody(`/admin/tokens/tok_${"0".repeat(24)}`),
+      ],
+      [413, 413],
+    );
 
     assert.equal((await call(api, "GET", "/admin/tokens/tok_nope", ADMIN)).status, 404);
     const missing = await call(api, "GET", `/admin/tokens/tok_${"0".repeat(24)}`, ADMIN);
