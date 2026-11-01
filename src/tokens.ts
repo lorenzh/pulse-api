@@ -2,7 +2,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { isRecord } from "@lorenzh/pulse-kit";
 import { z } from "zod";
 import { firstIssue, type Issue, pathName } from "./issue-path.ts";
-import { MAX_LOCATION_LENGTH } from "./service.ts";
+import { MAX_LOCATION_LENGTH } from "./location-limits.ts";
 
 export const MIN_TOKEN_LENGTH = 16;
 /** The prefix of every placeholder secret and token in the repository's examples. */
@@ -94,11 +94,6 @@ export function parseTokens(data: unknown): ProbeToken[] {
 }
 
 const BEARER = /^bearer (\S+)$/i;
-
-/** Lower-case hex SHA-256 of the UTF-8 bytes of `value`: the stored form of a credential. */
-export function sha256Hex(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
-}
 
 function digest(value: string): Buffer {
   return createHash("sha256").update(value).digest();

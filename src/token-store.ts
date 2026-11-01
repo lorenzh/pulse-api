@@ -9,8 +9,8 @@ import {
   type TokenScope,
 } from "@lorenzh/pulse-contract";
 import type { AuditRecord } from "./audit-log.ts";
+import { sha256Hex } from "./token-digest.ts";
 import { isLastActiveAdmin } from "./token-scopes.ts";
-import { sha256Hex } from "./tokens.ts";
 
 /** A persisted last-used value may lag the real one by at most this much (D4). */
 export const LAST_USED_PERSIST_MS = 60_000;
@@ -296,6 +296,7 @@ export function createTokenStore(deps: TokenStoreDeps): TokenStore {
 
     revoke(id, actor) {
       const at = now();
+      const state = tokens.get(id);
       db.transaction(() => {
         const row = mustRead(id);
         if (row.revoked_at !== null) throw new TokenStoreError("revoked");
@@ -303,12 +304,14 @@ export function createTokenStore(deps: TokenStoreDeps): TokenStore {
           db.query(`SELECT ${TOKEN_COLUMNS} FROM api_tokens`).all() as TokenRow[]
         ).map(activity);
         if (isLastActiveAdmin(activity(row), others, at)) throw new TokenStoreError("last-admin");
-        db.query("UPDATE api_tokens SET revoked_at = ? WHERE id = ?").run(at, id);
+        // The token leaves the index, so its last-used value commits with the revocation:
+        // a failed write then leaves the token unrevoked instead of revoked but usable.
+        const lastUsed = state?.lastUsedAt ?? null;
+        db.query(
+          "UPDATE api_tokens SET revoked_at = ?, last_used_at = COALESCE(?, last_used_at) WHERE id = ?",
+        ).run(at, lastUsed, id);
         audit(at, actor, "token.revoke", id);
       })();
-      const state = tokens.get(id);
-      // The token leaves the index, so a later flush no longer sees its value.
-      if (state !== undefined) flushOne(state);
       tokens.delete(id);
       for (const [hex, credential] of credentials) {
         if (credential.tokenId === id) credentials.delete(hex);

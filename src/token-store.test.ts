@@ -4,8 +4,9 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type AuditRecord, createAuditLog } from "./audit-log.ts";
+import type { AuditRecord } from "./audit-log.ts";
 import { openDb } from "./db.ts";
+import { canUse, type Permission } from "./token-scopes.ts";
 import {
   type Actor,
   createTokenStore,
@@ -31,8 +32,10 @@ let file: string;
 let db: Database;
 let clock: number;
 let seq: number;
+let recorded: AuditRecord[];
 beforeEach(() => {
   seq = 0;
+  recorded = [];
   dir = mkdtempSync(join(tmpdir(), "pulse-tokens-"));
   file = join(dir, "pulse.db");
   db = openDb(file);
@@ -47,7 +50,6 @@ function store(
   over: { recordAudit?: (e: AuditRecord) => void; database?: Database } = {},
 ): TokenStore {
   const database = over.database ?? db;
-  const audit = createAuditLog(database);
   return createTokenStore({
     db: database,
     now: () => clock,
@@ -56,7 +58,7 @@ function store(
     recordAudit:
       over.recordAudit ??
       ((e) => {
-        audit.record(e);
+        recorded.push(e);
       }),
   });
 }
@@ -157,6 +159,52 @@ test("revoke during the overlap rejects both credentials at once", () => {
   expect(() => s.rotate(token.id, ACTOR)).toThrow("token is revoked");
 });
 
+test("revoke commits the last-used value with the revocation, or nothing", () => {
+  const s = store();
+  s.create({ ...ADMIN, name: "other" }, ACTOR);
+  const { token, secret: old } = s.create(ADMIN, ACTOR);
+  const { secret: fresh } = s.rotate(token.id, ACTOR);
+  clock = T + 10;
+  expect(ok(s, fresh)).toBe(true);
+  db.run(`CREATE TRIGGER no_last_used BEFORE UPDATE OF last_used_at ON api_tokens
+    BEGIN SELECT RAISE(ABORT, 'last used refused'); END`);
+  clock = T + 20;
+  expect(() => s.revoke(token.id, ACTOR)).toThrow("last used refused");
+  expect(s.get(token.id)?.revokedAt).toBeNull();
+  expect(recorded.map((e) => e.action)).not.toContain("token.revoke");
+  db.run("DROP TRIGGER no_last_used");
+  expect(s.revoke(token.id, ACTOR).revokedAt).toBe(T + 20);
+  expect([ok(s, old), ok(s, fresh)]).toEqual([false, false]);
+  const row = db.query("SELECT last_used_at AS v FROM api_tokens WHERE id = ?").get(token.id);
+  expect(row).toEqual({ v: T + 10 });
+});
+
+test("the scopes read back from the store grant the D1 permissions", () => {
+  const s = store();
+  const all: Permission[] = [
+    "probe",
+    "config-read",
+    "config-write",
+    "incident-write",
+    "token-admin",
+    "audit-read",
+  ];
+  const grants = (scopes: NewToken["scopes"]): Permission[] => {
+    const { token } = s.create({ ...ADMIN, name: `n${seq}`, scopes }, ACTOR);
+    const read = s.get(token.id)?.scopes ?? [];
+    return all.filter((p) => canUse(read, p));
+  };
+  expect(grants(["probe"])).toEqual(["probe"]);
+  expect(grants(["read"])).toEqual(["config-read"]);
+  expect(grants(["admin", "checks"])).toEqual([
+    "config-read",
+    "config-write",
+    "token-admin",
+    "audit-read",
+  ]);
+  expect(grants(["incidents", "admin"])).toEqual(["incident-write", "token-admin", "audit-read"]);
+});
+
 test("last admin: the only admin stays, with two the second revoke is refused", () => {
   const s = store();
   const first = s.create(ADMIN, ACTOR);
@@ -242,14 +290,13 @@ test("each token write records one audit entry with the actor and target", () =>
   );
   s.rotate(token.id, actor);
   s.revoke(token.id, actor);
-  const page = createAuditLog(db).query({ limit: 10 });
-  expect(page.entries.map((e) => e.action)).toEqual([
-    "token.revoke",
-    "token.rotate",
-    "token.import",
+  expect(recorded.map((e) => e.action)).toEqual([
     "token.create",
+    "token.import",
+    "token.rotate",
+    "token.revoke",
   ]);
-  expect(page.entries[0]).toMatchObject({ actor, target: { kind: "token", id: token.id } });
+  expect(recorded[3]).toMatchObject({ actor, target: { kind: "token", id: token.id } });
   expect(ok(s, "legacy-secret-0123456789")).toBe(true);
 });
 

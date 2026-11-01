@@ -43,7 +43,6 @@ import {
 } from "./today.ts";
 
 export const DEFAULT_LOCATION = "default";
-export const MAX_LOCATION_LENGTH = 64;
 /** The quorum window spans this many check intervals before a result. */
 const WINDOW_INTERVALS = 2;
 

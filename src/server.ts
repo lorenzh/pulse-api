@@ -18,6 +18,7 @@ import {
 } from "./admin-auth-failures.ts";
 import type { AdminToken } from "./admin-tokens.ts";
 import { componentsUptime, componentsWithState } from "./components.ts";
+import { MAX_LOCATION_LENGTH } from "./location-limits.ts";
 import {
   ManualIncidentConflictError,
   ManualIncidentInputError,
@@ -28,7 +29,6 @@ import { createMetrics, type Metrics } from "./metrics.ts";
 import {
   DEFAULT_LOCATION,
   HEARTBEAT_LOCATION,
-  MAX_LOCATION_LENGTH,
   type Service,
   UnknownCheckError,
 } from "./service.ts";
