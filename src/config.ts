@@ -7,6 +7,7 @@ import {
   type DomainCheck,
   type HttpCheck,
   MAX_TIMER_MS,
+  MAX_WARN_DAYS,
   type MaintenanceWindow,
   type TcpCheck,
   type TlsCheck,
@@ -106,15 +107,17 @@ const HTTP_SCHEMA = z.strictObject({
 });
 
 const TLS_HOST = "must be a host name without scheme, port or path";
+const WARN_DAYS = `must be an integer from 0 to ${MAX_WARN_DAYS} (days)`;
 const TLS_SCHEMA = z.strictObject({
   ...ID_NAME,
   type: z.literal("tls"),
   host: z.string({ error: TLS_HOST }).refine(isHostName, TLS_HOST),
   port: intIn(1, 65535, "must be an integer from 1 to 65535").default(DEFAULT_TLS_PORT),
   warnDays: z
-    .number({ error: "must be an integer of 0 or more (days)" })
-    .int("must be an integer of 0 or more (days)")
-    .min(0, "must be an integer of 0 or more (days)")
+    .number({ error: WARN_DAYS })
+    .int(WARN_DAYS)
+    .min(0, WARN_DAYS)
+    .max(MAX_WARN_DAYS, WARN_DAYS)
     .default(DEFAULT_WARN_DAYS),
   intervalMs: timerMs(),
   timeoutMs: timerMs().optional(),
@@ -266,6 +269,8 @@ function parseTls(raw: Record<string, unknown>, where: (string | number)[]): Tls
   const check: TlsCheck = { id, name, type: "tls", host, port, warnDays, intervalMs };
   if (timeoutMs !== undefined) check.timeoutMs = timeoutMs;
   if (availabilityTarget !== undefined) check.availabilityTarget = availabilityTarget;
+  const verdict = validateCheck(check, pathName(where));
+  if (!verdict.ok) throw new ConfigError(verdict.error);
   return check;
 }
 

@@ -62,18 +62,18 @@ See `checks.example.json` for a complete example.
 
 An HTTP check has `type` absent or `"http"` and these fields besides the common ones:
 
-| Field                | Required | Meaning                                                                                                                                                                 |
-| -------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `url`                | yes      | `http` or `https` URL to probe. Any other URL is rejected with `checks[<i>].url: must be an http: or https: URL`.                                                       |
-| `retries`            | no       | Integer 0 to 10, default 0. Extra attempts the probe makes after a failed one before it reports `down`.                                                                 |
-| `retryDelayMs`       | no       | Integer 0 to 60000, default 1000. Wait between attempts.                                                                                                                |
-| `latencyObjectiveMs` | no       | Integer 1 to 2147483647, milliseconds. A successful (2xx) result slower than this is `degraded`. Absent means no objective.                                             |
-| `keyword`            | no       | Non-empty string, case-sensitive substring. A 2xx answer whose body does not contain it is `down` with the reason `keyword "<text>" not found`. Rejected on TLS checks. |
-| `method`             | no       | `GET` (default), `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE` or `OPTIONS`. Upper case.                                                                                     |
-| `headers`            | no       | Object of request headers, at most 20. A value is a string or `{"env": "NAME"}`.                                                                                        |
-| `body`               | no       | Request body, at most 65536 bytes. Not allowed with `GET` or `HEAD`. No `Content-Type` is added: set it in `headers`.                                                   |
-| `expectedStatus`     | no       | Non-empty list, at most 20, of integers 100 to 599 or ranges `"lo-hi"`. Default `["200-299"]`. The probe judges the final status after redirects.                       |
-| `jsonAssert`         | no       | List of at most 10 assertions on the JSON body, see below. Not allowed with `HEAD`.                                                                                     |
+| Field                | Required | Meaning                                                                                                                                                                                                                                        |
+| -------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `url`                | yes      | `http` or `https` URL to probe. Any other URL is rejected with `checks[<i>].url: must be an http: or https: URL`. A URL with a username or password (userinfo) is rejected; put credentials in an `Authorization` header with `{"env": NAME}`. |
+| `retries`            | no       | Integer 0 to 10, default 0. Extra attempts the probe makes after a failed one before it reports `down`.                                                                                                                                        |
+| `retryDelayMs`       | no       | Integer 0 to 60000, default 1000. Wait between attempts.                                                                                                                                                                                       |
+| `latencyObjectiveMs` | no       | Integer 1 to 2147483647, milliseconds. A successful (2xx) result slower than this is `degraded`. Absent means no objective.                                                                                                                    |
+| `keyword`            | no       | Non-empty string, case-sensitive substring. A 2xx answer whose body does not contain it is `down` with the reason `keyword "<text>" not found`. Rejected on TLS checks.                                                                        |
+| `method`             | no       | `GET` (default), `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE` or `OPTIONS`. Upper case.                                                                                                                                                            |
+| `headers`            | no       | Object of request headers, at most 20. A value is a string or `{"env": "NAME"}`.                                                                                                                                                               |
+| `body`               | no       | Request body, at most 65536 bytes. Not allowed with `GET` or `HEAD`. No `Content-Type` is added: set it in `headers`.                                                                                                                          |
+| `expectedStatus`     | no       | Non-empty list, at most 20, of integers 100 to 599 or ranges `"lo-hi"`. Default `["200-299"]`. The probe judges the final status after redirects.                                                                                              |
+| `jsonAssert`         | no       | List of at most 10 assertions on the JSON body, see below. Not allowed with `HEAD`.                                                                                                                                                            |
 
 A `jsonAssert` item is `{ "pointer": "/a/b", "equals": <JSON> }` or `{ "pointer": "/a/b", "exists": true }`. `pointer` is an RFC 6901 JSON pointer (an empty string is the whole document).
 
@@ -81,7 +81,7 @@ The contract (`@lorenzh/pulse-contract`) owns the exact limits: header names mus
 
 Notes:
 
-- **Secrets.** Use `{"env": "PULSE_HEADER_NAME"}` for a secret. The name must start with `PULSE_HEADER_` (case-sensitive). The probe resolves it from its own environment, so the secret lives in the probe's environment and never in the API's. The API never resolves an `env` reference. A check whose variable is unset, or whose name lacks the prefix, is skipped by that probe, with a log line that names the variable. Every probe location needs the variable. The variable replaces the whole header value, so a bearer token needs the scheme in the variable (`Bearer <token>`).
+- **Secrets.** Use `{"env": "PULSE_HEADER_NAME"}` for a secret. The name must match `PULSE_HEADER_[A-Za-z0-9_]{1,115}` (case-sensitive); another name is rejected by the API. The probe resolves it from its own environment, so the secret lives in the probe's environment and never in the API's. The API never resolves an `env` reference. A check whose variable is unset, or whose name lacks the prefix, is skipped by that probe, with a log line that names the variable. Every probe location needs the variable. The variable replaces the whole header value, so a bearer token needs the scheme in the variable (`Bearer <token>`).
 - **Redirects.** A check with `headers` or a `body` follows a redirect only to the same origin (scheme, host and port). A redirect to another origin, from https to http, or from http to https is not followed: the check is `down` with the reason `redirect to <origin> not followed`. A `301`, `302` or `303` answer to a check whose method is not `GET` is `down`, with the reason `HTTP <status> redirect not followed for <METHOD>`. At most 20 redirects are followed.
 - **Clear text.** Literal header values and bodies are clear text in the checks file and in the API database.
 - **Migration.** Rename each variable in every probe location and in the checks file, for example `SVC_TOKEN` to `PULSE_HEADER_SVC_TOKEN`. Until then the probe skips those checks.
@@ -105,7 +105,7 @@ A TLS check (`"type": "tls"`) watches the expiry of the leaf certificate of a se
 | ---------- | -------- | --------------------------------------------------------------------------------------- |
 | `host`     | yes      | Host name or IP without scheme, port or path.                                           |
 | `port`     | no       | Integer 1 to 65535, default 443.                                                        |
-| `warnDays` | no       | Integer 0 or more, default 14. The check is down when this many days or fewer are left. |
+| `warnDays` | no       | Integer 0 to 3650, default 14. The check is down when this many days or fewer are left. |
 
 Only the expiry of the leaf certificate is judged. The chain and the host name are not verified. Results carry `certDaysLeft`. `GET /checks` shows the latest value and `GET /checks/:id/results` includes it. The API accepts `certDaysLeft` from −3000000 to 3000000 days. This covers a certificate that expires in year 9999 ("no expiry", common on self-signed appliance certificates); a value outside the range gets `400`. A TLS check ignores `retries`, `retryDelayMs` and `latencyObjectiveMs`.
 
@@ -166,7 +166,7 @@ A domain check (`"type": "domain"`) watches the registration expiry through RDAP
 | Field        | Required | Meaning                                                                           |
 | ------------ | -------- | --------------------------------------------------------------------------------- |
 | `domain`     | yes      | Lowercase domain name with at least two labels, without scheme, port or path.     |
-| `warnDays`   | yes      | Integer 0 or more. The check is `degraded` when this many days or fewer are left. |
+| `warnDays`   | yes      | Integer 0 to 3650. The check is `degraded` when this many days or fewer are left. |
 | `intervalMs` | yes      | At least 3600000 (1 hour). There is no default.                                   |
 
 It also takes `timeoutMs`, `retries` and `retryDelayMs`. The check is `down` when the domain has expired (`domain expired`) or no expiry date is found (`expiry date not found in RDAP answer`). Results carry `certDaysLeft` (whole days, negative when expired), from −3000000 to 3000000 days like a TLS check, so a registration that expires in year 9999 is accepted; a value outside the range gets `400`. Registries without RDAP, such as some country codes, give `down`.
