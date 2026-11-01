@@ -30,7 +30,29 @@ test("config bounds: retries, retryDelayMs, port and warnDays", () => {
   rejects({ checks: [{ ...tls, port: 0 }] }, "port");
   rejects({ checks: [{ ...tls, warnDays: -1 }] }, "warnDays");
   assert.doesNotThrow(() => parseChecks({ checks: [{ ...tls, warnDays: 0 }] }));
-  assert.doesNotThrow(() => parseChecks({ checks: [{ ...tls, warnDays: 100000 }] }));
+  assert.doesNotThrow(() => parseChecks({ checks: [{ ...tls, warnDays: 3650 }] }));
+});
+
+test("config bounds: TLS and domain warnDays stop at 3650, TLS defaults to 14", () => {
+  assert.throws(
+    () => parseChecks({ checks: [{ ...tls, warnDays: 3651 }] }),
+    (err: unknown) =>
+      err instanceof ConfigError &&
+      err.message === "checks[0].warnDays must be an integer from 0 to 3650 (days)",
+  );
+  rejects({ checks: [{ ...tls, warnDays: 1.5 }] }, "warnDays must be an integer from 0 to 3650");
+  const domain = { id: "d", name: "D", type: "domain", domain: "example.org", intervalMs: 1000 };
+  rejects({ checks: [{ ...domain, warnDays: 3651 }] }, "checks[0]");
+  const [check] = parseChecks({ checks: [tls] });
+  assert.equal(check?.type === "tls" ? check.warnDays : undefined, 14);
+});
+
+test("config bounds: a URL with userinfo and an unprefixed env name are rejected", () => {
+  rejects({ checks: [{ ...http, url: "http://user:pw@localhost:1/" }] }, "checks[0].url");
+  rejects(
+    { checks: [{ ...http, headers: { Authorization: { env: "SVC_TOKEN" } } }] },
+    "checks[0].headers.Authorization",
+  );
 });
 
 test("config bounds: heartbeat period and grace keep their range", () => {

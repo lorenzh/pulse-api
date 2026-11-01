@@ -76,11 +76,10 @@ The API exits with code 2. Port 3000 (or `PORT`) is in use. Choose another `PORT
 
 ## 400 on POST /results
 
-The body is invalid. The message names the field. `body is not valid JSON` comes first. Then the contract validator checks the shape, and its messages start with a path, for example `result: must be an object`, `result.checkId: must be a non-empty string`, `result.timestamp: must be an integer`, `result.status: must be one of "up", "degraded", "down"`, `result.statusCode: must be an integer 100..599` (or null), `result.latencyMs: must be a finite number >= 0`, `result.reason: must be a string`, `result.attempts: must be an integer >= 1` or `result.location: must be a string`. The api bound checks below run after it:
+The body is invalid. The message names the field. `body is not valid JSON` comes first. Then the contract validator checks the shape, and its messages start with a path, for example `result: must be an object`, `result.checkId: must be a non-empty string`, `result.timestamp: must be an integer`, `result.status: must be one of "up", "degraded", "down"`, `result.statusCode: must be an integer 100..599` (or null), `result.latencyMs: must be an integer 0..2147483647` (a finite fraction >= 0 is rounded first), `result.reason: must be a string`, `result.attempts: must be an integer >= 1` or `result.location: must be a string`. The api bound checks below run after it:
 
 - `timestamp is more than <limit> ms in the future`: the probe's clock is more than the limit ahead (the check's interval, at most 60 s) of the API's. The probe does not fix this by itself; the result is rejected on every post until the clocks agree. Synchronise the clock (NTP). The probe drops a result the API answers with HTTP 400, logs `dropping result for <check>: API answered HTTP 400`, and does not retry it. Network errors are also logged as dropped.
 - `timestamp is older than 7 days`
-- `latencyMs must be a number from 0 to 86400000`
 - `reason must be at most 1000 characters`
 - `attempts must be an integer from 1 to 100`
 - `certDaysLeft must be null or an integer from -3000000 to 3000000`: no real certificate or registration date (up to year 9999) gives such a value. Check the probe version.

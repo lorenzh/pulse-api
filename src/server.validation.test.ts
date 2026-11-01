@@ -1,7 +1,14 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
-import type { Check, ChecksResponse, ErrorResponse, Result } from "@lorenzh/pulse-contract";
+import {
+  type Check,
+  type ChecksResponse,
+  type ErrorResponse,
+  type Result,
+  validateChecksResponse,
+  validateResultsResponse,
+} from "@lorenzh/pulse-contract";
 import { openDb } from "./db.ts";
 import {
   createApiServer,
@@ -59,10 +66,21 @@ test("validateResult: attempts bounds", () => {
 });
 
 test("validateResult: latencyMs bounds", () => {
-  for (const v of [-1, MAX_LATENCY_MS + 1, Number.POSITIVE_INFINITY, "1"])
+  assert.equal(MAX_LATENCY_MS, 2147483647);
+  for (const v of [-1, -0.4, 2147483648, 2147483647.6, Number.POSITIVE_INFINITY, "1"])
     rejected({ latencyMs: v }, "latencyMs");
   accepted({ latencyMs: 0 });
-  accepted({ latencyMs: MAX_LATENCY_MS });
+  accepted({ latencyMs: 2147483647 });
+});
+
+test("validateResult: a finite fractional latency >= 0 is rounded", () => {
+  const read = (v: number): unknown => {
+    const out = validateResult({ ...base, latencyMs: v }, NOW, () => undefined);
+    return typeof out === "object" ? out.latencyMs : out;
+  };
+  assert.equal(read(3.7), 4);
+  assert.equal(read(2.5), 3);
+  assert.equal(read(0.4), 0);
 });
 
 test("validateResult: statusCode is null or an integer 100-599", () => {
@@ -75,7 +93,7 @@ test("validateResult: statusCode is null or an integer 100-599", () => {
 test("validateResult: a body the contract rejects gets a message naming the path", () => {
   assert.equal(
     validateResult({ ...base, latencyMs: "fast" }, NOW, () => undefined),
-    "result.latencyMs: must be a finite number >= 0",
+    "result.latencyMs: must be an integer 0..2147483647",
   );
   assert.equal(typeof validateResult([], NOW, () => undefined), "string");
 });
@@ -182,5 +200,141 @@ test("POST /results: certDaysLeft out of range answers 400, a far expiry is stor
       server.close(() => r());
       server.closeAllConnections();
     });
+  }
+});
+
+async function startApi(service: ReturnType<typeof createService>) {
+  const server = createApiServer(service, {
+    tokens: [{ location: "default", token: PROBE }],
+    now: () => NOW,
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const host = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const close = () =>
+    new Promise<void>((r) => {
+      server.close(() => r());
+      server.closeAllConnections();
+    });
+  return { host, close };
+}
+
+const TCP: Check = {
+  id: "p",
+  name: "P",
+  type: "tcp",
+  host: "example.com",
+  port: 443,
+  intervalMs: 60_000,
+};
+
+function postRaw(host: string, body: string): Promise<Response> {
+  return fetch(`${host}/results`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${PROBE}` },
+    body,
+  });
+}
+
+test("POST /results: fractional latency is rounded, bad latency and long reasons answer 400", async () => {
+  const service = createService(openDb(":memory:"), { now: () => NOW });
+  service.upsertChecks([TCP]);
+  const { host, close } = await startApi(service);
+  let ts = NOW - 1000;
+  const body = (patch: Record<string, unknown>) => {
+    ts += 1;
+    return JSON.stringify({ ...base, checkId: "p", timestamp: ts, ...patch });
+  };
+  try {
+    assert.equal((await postRaw(host, body({ latencyMs: 3.7 }))).status, 204);
+    assert.equal(service.listResults("p", 1)[0]?.latencyMs, 4);
+    assert.equal((await postRaw(host, body({ latencyMs: 2.5 }))).status, 204);
+    assert.equal(service.listResults("p", 1)[0]?.latencyMs, 3);
+    for (const v of [-0.4, -1, 2147483647.6, "5"]) {
+      const res = await postRaw(host, body({ latencyMs: v }));
+      assert.equal(res.status, 400, String(v));
+      assert.match(((await res.json()) as ErrorResponse).error, /latencyMs/);
+    }
+    ts += 1;
+    const nan = `{"checkId":"p","timestamp":${ts},"status":"up","statusCode":200,"latencyMs":NaN,"reason":null}`;
+    assert.equal((await postRaw(host, nan)).status, 400);
+    assert.equal((await postRaw(host, body({ latencyMs: 2147483647 }))).status, 204);
+    assert.equal(service.listResults("p", 1)[0]?.latencyMs, 2147483647);
+    const down = { status: "down", statusCode: null };
+    assert.equal((await postRaw(host, body({ ...down, reason: "r".repeat(1000) }))).status, 204);
+    assert.equal((await postRaw(host, body({ ...down, reason: "r".repeat(1001) }))).status, 400);
+    assert.equal(service.listResults("p", 100).length, 4);
+  } finally {
+    await close();
+  }
+});
+
+test("POST /results: capped probe reasons reach ingestion unchanged; an uncapped one is refused", async () => {
+  const service = createService(openDb(":memory:"), { now: () => NOW });
+  service.upsertChecks([TCP]);
+  const { host, close } = await startApi(service);
+  const redirect = `redirect to http://${"a".repeat(73)}… not followed`;
+  const tcp = `${"m".repeat(999)}…`;
+  const post = (statusCode: number | null, reason: string, timestamp: number) =>
+    postRaw(
+      host,
+      JSON.stringify({
+        checkId: "p",
+        timestamp,
+        status: "down",
+        statusCode,
+        latencyMs: 0,
+        reason,
+        attempts: 1,
+      }),
+    );
+  try {
+    assert.equal((await post(302, redirect, NOW - 2)).status, 204);
+    assert.equal((await post(null, tcp, NOW - 1)).status, 204);
+    const stored = service.listResults("p", 10);
+    const served = (await (await fetch(`${host}/checks/p/results`)).json()) as Result[];
+    for (const list of [stored, served]) {
+      assert.equal(list.length, 2);
+      const [b, a] = list;
+      assert.equal(a?.status, "down");
+      assert.equal(a?.statusCode, 302);
+      assert.equal(a?.reason, redirect);
+      assert.equal(a?.reason?.length, 106);
+      assert.equal(b?.status, "down");
+      assert.equal(b?.statusCode, null);
+      assert.equal(b?.reason, tcp);
+      assert.equal(b?.reason?.length, 1000);
+    }
+    assert.equal((await post(null, `${"m".repeat(1000)}…`, NOW)).status, 400);
+    assert.equal(service.listResults("p", 10).length, 2);
+  } finally {
+    await close();
+  }
+});
+
+test("served history is normalized: 12.5 ms reads 13, a 1500-character reason reads 1000", async () => {
+  const db = openDb(":memory:");
+  const service = createService(db, { now: () => NOW });
+  service.upsertChecks([TCP]);
+  db.run(
+    "INSERT INTO results (check_id, timestamp, status, status_code, latency_ms, reason, location, attempts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    ["p", NOW - 5, "down", null, 12.5, "x".repeat(1500), "default", 1],
+  );
+  const { host, close } = await startApi(service);
+  try {
+    const raw: unknown = await (await fetch(`${host}/checks/p/results`)).json();
+    const results = validateResultsResponse(raw);
+    assert.ok(results.ok, results.ok ? "" : results.error);
+    const [r] = results.value;
+    assert.equal(r?.latencyMs, 13);
+    assert.equal(r?.reason?.length, 1000);
+    assert.equal(r?.reason?.endsWith("x…"), true);
+    const rawChecks: unknown = await (await fetch(`${host}/checks`)).json();
+    const checks = validateChecksResponse(rawChecks);
+    assert.ok(checks.ok, checks.ok ? "" : checks.error);
+    const loc = checks.value[0]?.locations[0]?.result;
+    assert.equal(loc?.latencyMs, 13);
+    assert.equal(loc?.reason?.length, 1000);
+  } finally {
+    await close();
   }
 });

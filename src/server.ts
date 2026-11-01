@@ -2,9 +2,11 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import {
   type Check,
+  MAX_REASON_LENGTH as CONTRACT_MAX_REASON_LENGTH,
   type Component,
   type ErrorResponse,
   MANUAL_INCIDENT_MAX_BODY_BYTES,
+  MAX_TIMER_MS,
   type Result,
   validatePostResultRequest,
   WIRE_VERSION,
@@ -38,9 +40,9 @@ const MAX_BODY = 1_000_000;
 const MAX_PING_BODY = 1024;
 export const MAX_FUTURE_SKEW_MS = 60_000;
 export const MAX_RESULT_AGE_MS = 7 * 86_400_000;
-export const MAX_REASON_LENGTH = 1000;
+export const MAX_REASON_LENGTH = CONTRACT_MAX_REASON_LENGTH;
 export const MAX_ATTEMPTS = 100;
-export const MAX_LATENCY_MS = 86_400_000;
+export const MAX_LATENCY_MS = MAX_TIMER_MS;
 /** Covers every expiry up to year 9999 (the X.509 and RDAP maximum), even from a clock at the epoch. */
 export const MAX_CERT_DAYS = 3_000_000;
 export const DEFAULT_LIMIT = 100;
@@ -83,10 +85,6 @@ function bodyFailure(err: unknown): unknown {
   return new HttpError(400, "request body could not be read");
 }
 
-function isFiniteNumber(v: unknown): v is number {
-  return typeof v === "number" && Number.isFinite(v);
-}
-
 function isIntegerIn(v: unknown, min: number, max: number): v is number {
   return typeof v === "number" && Number.isInteger(v) && v >= min && v <= max;
 }
@@ -108,8 +106,8 @@ function checkTimestamp(v: unknown, now: number, limit: number): string | undefi
 function checkMeasurements(b: Record<string, unknown>): string | undefined {
   if (b.statusCode !== null && !isIntegerIn(b.statusCode, 100, 599))
     return "statusCode must be null or an integer from 100 to 599";
-  if (!isFiniteNumber(b.latencyMs) || b.latencyMs < 0 || b.latencyMs > MAX_LATENCY_MS)
-    return `latencyMs must be a number from 0 to ${MAX_LATENCY_MS}`;
+  if (!isIntegerIn(b.latencyMs, 0, MAX_LATENCY_MS))
+    return `latencyMs: must be an integer 0..${MAX_LATENCY_MS}`;
   if (b.reason !== null && typeof b.reason !== "string") return "reason must be a string or null";
   if (typeof b.reason === "string" && b.reason.length > MAX_REASON_LENGTH)
     return `reason must be at most ${MAX_REASON_LENGTH} characters`;
@@ -134,6 +132,15 @@ function parseLocation(v: unknown): string {
   return trimmed === "" ? DEFAULT_LOCATION : trimmed;
 }
 
+/** Older probes send fractional latency; round a finite value >= 0 so the contract accepts it. */
+function withRoundedLatency(body: unknown): unknown {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return body;
+  if (Object.getPrototypeOf(body) !== Object.prototype) return body;
+  const raw = Object.getOwnPropertyDescriptor(body, "latencyMs")?.value;
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 0) return body;
+  return { ...body, latencyMs: Math.round(raw) };
+}
+
 /** Validate a POST /results body against the clock `now` (epoch ms); returns an error message or the Result. */
 // eslint-disable-next-line sonarjs/function-return-type -- the result is a deliberate Result-or-message union
 export function validateResult(
@@ -141,12 +148,13 @@ export function validateResult(
   now: number,
   findCheck: (id: string) => Check | undefined,
 ): Result | string {
-  const shape = validatePostResultRequest(body);
+  const input = withRoundedLatency(body);
+  const shape = validatePostResultRequest(input);
   if (!shape.ok) return shape.error;
-  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
     return "body must be a JSON object";
   }
-  const b = body as Record<string, unknown>;
+  const b = input as Record<string, unknown>;
   if (typeof b.checkId !== "string" || b.checkId === "")
     return "checkId must be a non-empty string";
   const timestampError = checkTimestamp(b.timestamp, now, maxFutureSkewMs(findCheck(b.checkId)));
