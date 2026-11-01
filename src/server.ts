@@ -16,6 +16,7 @@ import {
   adminAccess,
   createAdminAuthFailures,
 } from "./admin-auth-failures.ts";
+import { auditPathOf, auditRouteOf } from "./audit-routes.ts";
 import { componentsUptime, componentsWithState } from "./components.ts";
 import { MAX_LOCATION_LENGTH } from "./location-limits.ts";
 import {
@@ -33,7 +34,7 @@ import {
 } from "./service.ts";
 import { tokenPathOf, tokenRouteOf } from "./token-routes.ts";
 import { canUse } from "./token-scopes.ts";
-import type { TokenStore } from "./token-store.ts";
+import type { Actor, TokenStore } from "./token-store.ts";
 import { bearerSecret } from "./tokens.ts";
 
 const MAX_BODY = 1_000_000;
@@ -212,6 +213,8 @@ function routeOf(rawUrl: string | undefined): string {
   if (RESULTS_PATH.test(path)) return "/checks/:id/results";
   if (LATENCY_PATH.test(path)) return "/checks/:id/latency";
   if (HEARTBEAT_PATH.test(path)) return "/heartbeat/:id";
+  const audit = auditPathOf(path);
+  if (audit !== null) return auditRouteOf(audit);
   const token = tokenPathOf(path);
   if (token !== null) return tokenRouteOf(token);
   const admin = ADMIN_ROUTE.exec(path);
@@ -408,12 +411,12 @@ function manualId(idText: string | undefined): number | undefined {
   return Number(idText);
 }
 
-/** Authorize a manual-incident write; returns the admin token's name. */
-function requireAdmin(ops: Ops, req: IncomingMessage, route: string): string {
+/** Authorize a manual-incident write; returns the caller as the audit entry names it. */
+function requireAdmin(ops: Ops, req: IncomingMessage, route: string): Actor {
   // Before the admin bootstrap the feature is off and the write routes do not exist.
   if (!ops.isAdminEnabled) throw new HttpError(404, "not found");
   const access = adminAccess(ops.tokens, req.headers.authorization, "incident-write");
-  if (access.kind === "ok") return access.token.name;
+  if (access.kind === "ok") return { tokenId: access.token.id, name: access.token.name };
   ops.authFailures.record(route, access.status, access.token);
   if (access.status === 403) throw new HttpError(403, "forbidden");
   throw new HttpError(401, "unauthorized", { "www-authenticate": "Bearer" });
@@ -440,9 +443,11 @@ async function applyManualWrite(
   res: ServerResponse,
   action: ManualWrite,
   id: number | undefined,
+  actor: Actor,
 ): Promise<number> {
+  // Each store call commits the change with its audit entry before the response is written.
   if (action === "create") {
-    const created = store.create(await readManualBody(req, false));
+    const created = store.create(await readManualBody(req, false), actor);
     sendJson(res, 201, created);
     return created.id;
   }
@@ -450,13 +455,13 @@ async function applyManualWrite(
   if (id === undefined) throw new HttpError(404, "not found");
   switch (action) {
     case "update":
-      sendJson(res, 201, store.addUpdate(id, await readManualBody(req, false)));
+      sendJson(res, 201, store.addUpdate(id, await readManualBody(req, false), actor));
       return id;
     case "resolve":
-      sendJson(res, 200, store.resolve(id, await readManualBody(req, true)));
+      sendJson(res, 200, store.resolve(id, await readManualBody(req, true), actor));
       return id;
     case "delete":
-      store.remove(id);
+      store.remove(id, actor);
       res.writeHead(204).end();
       return id;
     default: {
@@ -473,12 +478,12 @@ async function writeManual(
   res: ServerResponse,
   action: ManualWrite,
   id: number | undefined,
-  tokenName: string,
+  actor: Actor,
 ): Promise<void> {
   try {
-    const written = await applyManualWrite(ops.manualIncidents, req, res, action, id);
+    const written = await applyManualWrite(ops.manualIncidents, req, res, action, id, actor);
     // Names, the action and the id only: no title, message, body or header value.
-    ops.info("manual incident write", { token: tokenName, action, id: String(written) });
+    ops.info("manual incident write", { token: actor.name, action, id: String(written) });
   } catch (err) {
     const failure = manualFailure(err);
     // A 500 is logged once, as "request failed".
@@ -521,8 +526,8 @@ async function serveManualIncidents(
     sendJson(res, 200, incident);
     return;
   }
-  const tokenName = requireAdmin(ops, req, manualRoute(shape));
-  await writeManual(ops, req, res, action, id, tokenName);
+  const actor = requireAdmin(ops, req, manualRoute(shape));
+  await writeManual(ops, req, res, action, id, actor);
 }
 
 function decodeCheckId(encoded: string | undefined): string {

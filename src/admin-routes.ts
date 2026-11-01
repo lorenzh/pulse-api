@@ -7,6 +7,14 @@ import {
 } from "@lorenzh/pulse-contract";
 import { BodyError, readBody, readJsonBody, sendJson } from "@lorenzh/pulse-kit";
 import { type AdminAuthFailures, adminAccess } from "./admin-auth-failures.ts";
+import type { AuditLog } from "./audit-log.ts";
+import {
+  type AuditPath,
+  AuditQueryError,
+  auditPathOf,
+  auditRouteOf,
+  serveAudit,
+} from "./audit-routes.ts";
 import type { ConfigEdit, ConfigKind, ConfigWriter, WriteFailure } from "./config-write.ts";
 import { ConfigWriteError } from "./config-write.ts";
 import type { ConfigWriteAction, ConfigWriteResult, Metrics } from "./metrics.ts";
@@ -19,6 +27,8 @@ export interface AdminRoutesDeps {
   metrics: Pick<Metrics, "recordConfigWrite">;
   /** Authenticates the Bearer credential and serves `/admin/tokens*`. */
   tokens: TokenStore;
+  /** Serves `/admin/audit` and `/admin/audit/export`. */
+  audit: AuditLog;
   now: () => number;
   info: (message: string, fields: Record<string, string>) => void;
   warn: (message: string, fields: Record<string, string>) => void;
@@ -237,13 +247,48 @@ export function createAdminHandler(
     await handleTokenRoute(tokenDeps, req, res, path, caller);
   };
 
-  return async (req, res) => {
-    const url = new URL(req.url ?? "/", "http://localhost");
-    const tokenPath = tokenPathOf(url.pathname);
-    if (tokenPath !== null) {
-      await tokenRoute(req, res, tokenPath);
+  const auditRoute = (
+    req: IncomingMessage,
+    res: ServerResponse,
+    url: URL,
+    path: AuditPath,
+  ): void => {
+    res.setHeader("cache-control", "no-store");
+    try {
+      authorize(req, auditRouteOf(path), "audit-read");
+      if (req.method !== "GET") throw new RouteError(405, "method not allowed", { Allow: "GET" });
+      serveAudit(deps.audit, res, path, url.searchParams);
+    } catch (err) {
+      if (res.headersSent) throw err;
+      fail(
+        res,
+        err instanceof AuditQueryError ? new RouteError(400, err.message) : err,
+        undefined,
+        undefined,
+      );
+    }
+  };
+
+  /** Serve the audit and token routes; false for any other path. */
+  const otherRoute = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+    url: URL,
+  ): Promise<boolean> => {
+    const auditPath = auditPathOf(url.pathname);
+    if (auditPath !== null) {
+      auditRoute(req, res, url, auditPath);
       return true;
     }
+    const tokenPath = tokenPathOf(url.pathname);
+    if (tokenPath === null) return false;
+    await tokenRoute(req, res, tokenPath);
+    return true;
+  };
+
+  return async (req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    if (await otherRoute(req, res, url)) return true;
     const match = ADMIN_PATH.exec(url.pathname);
     if (match === null) return false;
     const section = match[1] ?? "";

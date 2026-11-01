@@ -13,7 +13,7 @@ import {
 import { createAdminAuthFailures } from "./admin-auth-failures.ts";
 import { createAdminHandler } from "./admin-routes.ts";
 import type { AdminToken } from "./admin-tokens.ts";
-import { createPendingAudit } from "./audit-log.ts";
+import { createAuditLog, createPendingAudit } from "./audit-log.ts";
 import { componentBudgets } from "./components.ts";
 import { ConfigError, loadAdminTokens, loadTokens } from "./config.ts";
 import { nodeConfigFs } from "./config-fs.ts";
@@ -254,10 +254,14 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     onIncident: (event) => metrics.recordIncident(event),
   });
   service.upsertChecks(checks);
+  const auditLog = createAuditLog(db);
   const manualIncidents = createManualIncidentStore(db, {
     now: deps.now,
     componentIds: () => new Set(holder.get().components.map((c) => c.id)),
     onEvent: (event) => metrics.recordManualIncident(event),
+    recordAudit: (entry) => {
+      auditLog.record(entry);
+    },
   });
 
   const retention = startRetention({
@@ -326,6 +330,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     writer,
     metrics,
     tokens: tokenStore,
+    audit: auditLog,
     now: deps.now,
     info,
     warn,

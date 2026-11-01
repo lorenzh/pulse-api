@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import type { ManualIncident } from "@lorenzh/pulse-contract";
 import { createAdminAuthFailures } from "./admin-auth-failures.ts";
+import type { AuditRecord } from "./audit-log.ts";
 import { openDb } from "./db.ts";
 import { createManualIncidentStore } from "./manual-incidents.ts";
 import { createMetrics } from "./metrics.ts";
@@ -19,6 +20,8 @@ const MESSAGE = "message-sentinel";
 type Line = { level: "info" | "warn"; message: string; fields: Record<string, string> };
 const lines: Line[] = [];
 let clock = Date.parse("2030-01-10T12:00:00Z");
+const audited: AuditRecord[] = [];
+let isAuditDown = false;
 
 function setup(isAdminOn: boolean) {
   const db = openDb(":memory:");
@@ -26,6 +29,10 @@ function setup(isAdminOn: boolean) {
   const store = createManualIncidentStore(db, {
     now: () => clock,
     componentIds: () => new Set(["web"]),
+    recordAudit: (entry) => {
+      if (isAuditDown) throw new Error("audit log down");
+      audited.push(entry);
+    },
   });
   const warn = (message: string, fields: Record<string, string>) =>
     lines.push({ level: "warn", message, fields });
@@ -69,6 +76,8 @@ afterAll(async () => {
 });
 beforeEach(() => {
   lines.length = 0;
+  audited.length = 0;
+  isAuditDown = false;
   clock += 10 * 60_000;
 });
 
@@ -188,4 +197,43 @@ test("with the feature off a write answers 404 and logs nothing", async () => {
   assert.equal(r.status, 404);
   assert.deepEqual(lines, []);
   assert.doesNotMatch(off.metrics.render(), /pulse_api_admin_auth_failures_total\{/);
+});
+
+test("each successful manual-incident write adds one audit entry", async () => {
+  const created = await call("POST", "/manual-incidents", NEW);
+  assert.equal(created.status, 201);
+  const id = String((created.json as ManualIncident).id);
+  const update = { status: "identified", message: MESSAGE };
+  assert.equal((await call("POST", `/manual-incidents/${id}/updates`, update)).status, 201);
+  assert.equal((await call("POST", `/manual-incidents/${id}/resolve`)).status, 200);
+  assert.equal((await call("DELETE", `/manual-incidents/${id}`)).status, 204);
+  assert.deepEqual(
+    audited.map((e) => [e.action, e.target.kind, e.target.id, e.actor.name, e.revision]),
+    ["create", "update", "resolve", "delete"].map((a) => [
+      `manual-incident.${a}`,
+      "manual-incident",
+      id,
+      "ops",
+      null,
+    ]),
+  );
+  assert.ok(audited.every((e) => e.actor.tokenId?.startsWith("tok_")));
+  const text = JSON.stringify(audited);
+  assert.ok(!text.includes(TITLE) && !text.includes(MESSAGE) && !text.includes(ADMIN));
+});
+
+test("a failing audit insert rolls the manual-incident write back and answers 500", async () => {
+  const before = await call("GET", "/manual-incidents?status=all", undefined, null);
+  isAuditDown = true;
+  const created = await call("POST", "/manual-incidents", NEW);
+  assert.equal(created.status, 500);
+  assert.deepEqual(await call("GET", "/manual-incidents?status=all", undefined, null), before);
+  isAuditDown = false;
+  const kept = await call("POST", "/manual-incidents", NEW);
+  const id = String((kept.json as ManualIncident).id);
+  isAuditDown = true;
+  assert.equal((await call("POST", `/manual-incidents/${id}/resolve`)).status, 500);
+  assert.equal((await call("DELETE", `/manual-incidents/${id}`)).status, 500);
+  const after = await call("GET", `/manual-incidents/${id}`, undefined, null);
+  assert.equal((after.json as ManualIncident).status, "investigating");
 });
