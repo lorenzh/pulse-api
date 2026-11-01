@@ -1,14 +1,10 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
-import { authenticate, EXAMPLE_TOKENS, parseTokens, TokensError } from "./tokens.ts";
+import { bearerSecret, EXAMPLE_TOKENS, parseTokens, TokensError } from "./tokens.ts";
 
 const A = "token-a-0123456789abcdef";
 const B = "token-b-0123456789abcdef";
-const tokens = [
-  { location: "east", token: A },
-  { location: "west", token: B },
-];
 
 function rejects(data: unknown, pattern: RegExp): void {
   assert.throws(
@@ -59,12 +55,12 @@ test("parseTokens: rejects bad files without printing tokens", () => {
   }
 });
 
-test("authenticate: valid bearer returns the location", () => {
-  assert.equal(authenticate(tokens, `Bearer ${A}`), "east");
-  assert.equal(authenticate(tokens, `bEaReR ${B}`), "west");
+test("bearerSecret: reads the secret of a Bearer header", () => {
+  assert.equal(bearerSecret(`Bearer ${A}`), A);
+  assert.equal(bearerSecret(`bEaReR ${B}`), B);
 });
 
-test("authenticate: strict header parsing", () => {
+test("bearerSecret: strict header parsing", () => {
   for (const header of [
     undefined,
     "",
@@ -76,10 +72,8 @@ test("authenticate: strict header parsing", () => {
     `Basic ${A}`,
     `Token ${A}`,
     A,
-    "Bearer wrong",
-    `Bearer ${A}x`,
   ]) {
-    assert.equal(authenticate(tokens, header), undefined, String(header));
+    assert.equal(bearerSecret(header), undefined, String(header));
   }
 });
 

@@ -6,20 +6,18 @@ import {
   isAdminRevision,
 } from "@lorenzh/pulse-contract";
 import { BodyError, readBody, readJsonBody, sendJson } from "@lorenzh/pulse-kit";
-import { type AdminAuthFailures, tokenKindOf } from "./admin-auth-failures.ts";
-import type { AdminToken } from "./admin-tokens.ts";
+import { type AdminAuthFailures, adminAccess } from "./admin-auth-failures.ts";
 import type { ConfigEdit, ConfigKind, ConfigWriter, WriteFailure } from "./config-write.ts";
 import { ConfigWriteError } from "./config-write.ts";
 import type { ConfigWriteAction, ConfigWriteResult, Metrics } from "./metrics.ts";
-import { findByToken } from "./tokens.ts";
+import type { Permission } from "./token-scopes.ts";
+import type { TokenStore } from "./token-store.ts";
 
 export interface AdminRoutesDeps {
   writer: ConfigWriter;
   metrics: Pick<Metrics, "recordConfigWrite">;
-  /** Admin tokens; the name is what the log line carries. */
-  adminTokens: readonly AdminToken[];
-  /** True for a valid probe token: it gets 403 instead of 401. */
-  isProbeToken: (authorization: string | undefined) => boolean;
+  /** Authenticates the Bearer credential; the token name is what the write log line carries. */
+  tokens: Pick<TokenStore, "authenticate">;
   info: (message: string, fields: Record<string, string>) => void;
   warn: (message: string, fields: Record<string, string>) => void;
   /** Logs and counts a failed authentication; shared with the manual-incident routes. */
@@ -140,16 +138,11 @@ interface Target {
 export function createAdminHandler(
   deps: AdminRoutesDeps,
 ): (req: IncomingMessage, res: ServerResponse) => Promise<boolean> {
-  const authorize = (req: IncomingMessage, route: string): string => {
-    const header = req.headers.authorization;
-    const admin = findByToken(deps.adminTokens, header);
-    if (admin !== undefined) return admin.name;
-    const kind = tokenKindOf(header, deps.isProbeToken);
-    if (kind === "probe") {
-      deps.authFailures.record(route, 403, kind);
-      throw new RouteError(403, "forbidden");
-    }
-    deps.authFailures.record(route, 401, kind);
+  const authorize = (req: IncomingMessage, route: string, permission: Permission): string => {
+    const access = adminAccess(deps.tokens, req.headers.authorization, permission);
+    if (access.kind === "ok") return access.token.name;
+    deps.authFailures.record(route, access.status, access.token);
+    if (access.status === 403) throw new RouteError(403, "forbidden");
     throw new RouteError(401, "unauthorized", { "www-authenticate": "Bearer" });
   };
 
@@ -227,8 +220,7 @@ export function createAdminHandler(
     let target: Target | undefined;
     let action: ConfigWriteAction | undefined;
     try {
-      // The route pattern, as in the request metric: never the raw path.
-      const tokenName = authorize(req, `/admin/${section}${match[2] === undefined ? "" : "/:id"}`);
+      const tokenName = authorize(req, ...routeAccess(section, match[2]));
       if (section === "config") {
         if (match[2] !== undefined) throw new RouteError(404, "not found");
         if (method !== "GET") throw new RouteError(405, "method not allowed", { Allow: "GET" });
@@ -257,6 +249,12 @@ export function createAdminHandler(
     }
     return true;
   };
+}
+
+/** The route pattern of the request metric (never the raw path), and the permission it needs. */
+function routeAccess(section: string, id: string | undefined): [string, Permission] {
+  const route = `/admin/${section}${id === undefined ? "" : "/:id"}`;
+  return [route, section === "config" ? "config-read" : "config-write"];
 }
 
 function editOf(

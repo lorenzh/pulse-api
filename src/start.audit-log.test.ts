@@ -150,7 +150,10 @@ test("sentinel: tokens, the heartbeat secret and the placeholder never reach a l
   assert.equal(created.status, 201);
   assert.equal((await call(host, "POST", "/manual-incidents/999/resolve", ADMIN)).status, 404);
   for (const token of [null, PROBE, "not-a-real-token-123456"]) {
-    assert.equal((await call(host, "POST", "/manual-incidents", token)).status, 401);
+    assert.equal(
+      (await call(host, "POST", "/manual-incidents", token)).status,
+      token === PROBE ? 403 : 401,
+    );
     assert.equal(
       (await call(host, "GET", "/admin/checks", token)).status,
       token === PROBE ? 403 : 401,

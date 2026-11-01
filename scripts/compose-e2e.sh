@@ -474,8 +474,8 @@ step "Manual incidents"
 probe_token=$(env_value PULSE_PROBE_TOKEN "")
 body='{"title":"T","impact":"major","componentIds":["web"],"message":"m"}'
 [[ "$(manual_code POST /manual-incidents "$body" "")" == "401" ]] || fail "an unauthenticated write was not refused"
-[[ "$(manual_code POST /manual-incidents "$body" "$probe_token")" == "401" ]] || fail "a probe token write was not refused"
-echo "ok: writes without a token and with a probe token answer 401"
+[[ "$(manual_code POST /manual-incidents "$body" "$probe_token")" == "403" ]] || fail "a probe token write was not refused with 403"
+echo "ok: a write without a token answers 401, a probe token write answers 403"
 [[ "$(manual_code POST /manual-incidents '{"title":"T","impact":"major","componentIds":["nope"],"message":"m"}' "$e2e_admin_token")" == "400" ]] ||
   fail "an unknown component was accepted"
 long_title=$(printf 'x%.0s' $(seq 1 201))

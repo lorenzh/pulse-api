@@ -13,6 +13,7 @@ import { openDb } from "./db.ts";
 import { createApiServer, validateResult } from "./server.ts";
 import { createService } from "./service.ts";
 import { applyResult, INITIAL_STATE, quorumStatus } from "./state.ts";
+import { openTokenStore } from "./token-import.ts";
 
 const base = { id: "a", name: "A", url: "http://localhost:1/", intervalMs: 1000 };
 // eslint-disable-next-line sonarjs/no-clear-text-protocols -- plain http/ftp literal is a local test fixture, never requested over a network
@@ -70,7 +71,13 @@ test("server: POST degraded is 204, unknown is 400, GET /checks serves the objec
   const service = createService(openDb(":memory:"));
   service.upsertChecks([{ ...check, latencyObjectiveMs: 500 }]);
   const server = createApiServer(service, {
-    tokens: [{ location: "default", token: "test-token-default-0123456789" }],
+    tokenStore: openTokenStore(
+      { db: openDb(":memory:"), now: () => 0 },
+      {
+        probe: [{ location: "default", token: "test-token-default-0123456789" }],
+        admin: undefined,
+      },
+    ),
     now: () => 1000,
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));

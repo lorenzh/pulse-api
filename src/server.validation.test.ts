@@ -15,6 +15,7 @@ import {
   validateResult,
 } from "./server.ts";
 import { createService } from "./service.ts";
+import { openTokenStore } from "./token-import.ts";
 
 const NOW = 10 * 86_400_000;
 
@@ -154,7 +155,10 @@ test("POST /results: certDaysLeft out of range answers 400, a far expiry is stor
     },
   };
   const server = createApiServer(counted, {
-    tokens: [{ location: "default", token: PROBE }],
+    tokenStore: openTokenStore(
+      { db: openDb(":memory:"), now: () => 0 },
+      { probe: [{ location: "default", token: PROBE }], admin: undefined },
+    ),
     now: () => NOW,
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));

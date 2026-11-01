@@ -37,12 +37,16 @@ beforeAll(() => {
 });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
+let dbCount = 0;
+
+/** Each call gets its own database: the token bootstrap of one test must not reach the next. */
 function deps(env: Record<string, string>, extra: Partial<StartDeps> = {}) {
+  dbCount += 1;
   const lines: { line: string; level: LogLevel }[] = [];
   const base: StartDeps = {
     env: {
       PORT: "0",
-      PULSE_DB: join(dir, "t.db"),
+      PULSE_DB: join(dir, `t${dbCount}.db`),
       PULSE_CHECKS_FILE: checksFile,
       PULSE_TOKENS_FILE: tokensFile,
       ...env,

@@ -12,7 +12,7 @@ import {
 } from "@lorenzh/pulse-kit";
 import { createAdminAuthFailures } from "./admin-auth-failures.ts";
 import { createAdminHandler } from "./admin-routes.ts";
-import { assertDistinctFromProbeTokens } from "./admin-tokens.ts";
+import type { AdminToken } from "./admin-tokens.ts";
 import { componentBudgets } from "./components.ts";
 import { ConfigError, loadAdminTokens, loadTokens } from "./config.ts";
 import { nodeConfigFs } from "./config-fs.ts";
@@ -29,7 +29,10 @@ import { createMetrics } from "./metrics.ts";
 import { readRetentionDays, startRetention } from "./retention.ts";
 import { createApiServer } from "./server.ts";
 import { createService } from "./service.ts";
-import { authenticate, TokensError } from "./tokens.ts";
+import { openTokenStore, readBootstrap } from "./token-import.ts";
+import { isActive } from "./token-scopes.ts";
+import { generateSecret, generateTokenId, type TokenStore } from "./token-store.ts";
+import { type ProbeToken, TokensError } from "./tokens.ts";
 import { startUptimeRollup } from "./uptime-rollup.ts";
 
 export const SHUTDOWN_TIMEOUT_MS = 5000;
@@ -64,6 +67,10 @@ export interface StartDeps {
   configFs?: ReloadFs & WriteFs;
   /** Unique part of the temp file name of an admin write; defaults to a random one. */
   tempSuffix?: () => string;
+  /** New token secrets; defaults to `generateSecret`. A test hook. */
+  generateSecret?: () => string;
+  /** New token ids; defaults to `generateTokenId`. A test hook. */
+  generateTokenId?: () => string;
   /** Time between retention runs; a test hook, the production interval is fixed at one hour. */
   retentionIntervalMs?: number;
 }
@@ -100,18 +107,71 @@ function readReloadIntervalMs(env: StartDeps["env"]): number {
   return value;
 }
 
-function readAdminTokens(
-  file: string,
-  probeTokens: ReturnType<typeof loadTokens>,
-): ReturnType<typeof loadAdminTokens> {
+/** Run `fn`; a TokensError gets the setting and the path appended. */
+function withFile<T>(setting: string, file: string, fn: () => T): T {
   try {
-    const admin = loadAdminTokens(file);
-    assertDistinctFromProbeTokens(admin, probeTokens);
-    return admin;
+    return fn();
   } catch (err) {
     if (!(err instanceof TokensError)) throw err;
-    throw new TokensError(`${err.message} (PULSE_API_ADMIN_TOKENS_FILE=${file})`, { cause: err });
+    throw new TokensError(`${err.message} (${setting}=${file})`, { cause: err });
   }
+}
+
+interface TokenFiles {
+  tokensFile: string;
+  adminTokensFile: string | undefined;
+}
+
+const IGNORED = "ignored: tokens are stored in the database";
+
+/**
+ * D5 steps 3 to 5: read the bootstrap rows, open only the files of pending imports, import them in
+ * one transaction, then build the store. A file whose import is done is never opened.
+ */
+function bootstrapTokens(
+  deps: StartDeps,
+  db: Database,
+  files: TokenFiles,
+  info: (message: string) => void,
+): { store: TokenStore; isAdminEnabled: boolean } {
+  const { env } = deps;
+  const done = readBootstrap(db);
+  let probe: ProbeToken[] | undefined;
+  let admin: AdminToken[] | undefined;
+  if (done.isProbeDone) {
+    if (readString(env, "PULSE_TOKENS_FILE") !== undefined) info(`PULSE_TOKENS_FILE ${IGNORED}`);
+  } else {
+    probe = withFile("PULSE_TOKENS_FILE", files.tokensFile, () => loadTokens(files.tokensFile));
+  }
+  const adminFile = files.adminTokensFile;
+  if (done.isAdminDone) {
+    if (adminFile !== undefined) info(`PULSE_API_ADMIN_TOKENS_FILE ${IGNORED}`);
+  } else if (adminFile !== undefined) {
+    admin = withFile("PULSE_API_ADMIN_TOKENS_FILE", adminFile, () => loadAdminTokens(adminFile));
+  }
+  const store = withFile("PULSE_API_ADMIN_TOKENS_FILE", adminFile ?? "", () =>
+    openTokenStore(
+      {
+        db,
+        now: deps.now,
+        generateId: deps.generateTokenId ?? generateTokenId,
+        generateSecret: deps.generateSecret ?? generateSecret,
+      },
+      { probe, admin },
+    ),
+  );
+  return { store, isAdminEnabled: done.isAdminDone || admin !== undefined };
+}
+
+/** The token counts of the startup line, from the database. */
+function tokenCounts(store: TokenStore, at: number) {
+  const active = store.list().filter((t) => isActive(t, at));
+  const probe = active.filter((t) => t.scopes.includes("probe"));
+  return {
+    probeTokens: probe.length,
+    locations: new Set(probe.map((t) => t.location)).size,
+    adminTokens: active.length - probe.length,
+  };
 }
 
 /** Load the configuration, open the database and listen. Every configuration error is a StartupError. */
@@ -147,16 +207,6 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
   const initial = loadInitialConfig(configFs, checksFile);
   const holder = createConfigHolder(initial.config);
   const { checks, maintenance, components } = initial.config;
-  let tokens: ReturnType<typeof loadTokens>;
-  try {
-    tokens = loadTokens(tokensFile);
-  } catch (err) {
-    if (!(err instanceof TokensError)) throw err;
-    throw new TokensError(`${err.message} (PULSE_TOKENS_FILE=${tokensFile})`, { cause: err });
-  }
-  const adminTokens =
-    adminTokensFile === undefined ? undefined : readAdminTokens(adminTokensFile, tokens);
-
   let db: Database;
   try {
     db = deps.openDb(dbPath, (line) => logger.info(line));
@@ -166,6 +216,12 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     });
   }
   onDb(db);
+  const { store: tokenStore, isAdminEnabled } = bootstrapTokens(
+    deps,
+    db,
+    { tokensFile, adminTokensFile },
+    (line) => logger.info(line),
+  );
 
   const metrics = createMetrics({
     listStates: () => service.listCheckStates(),
@@ -260,24 +316,23 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     logger.warn(message, fields);
   // One recorder for /admin/* and the manual-incident writes: one rate limit, one counter.
   const authFailures = createAdminAuthFailures({ now: deps.now, warn, metrics });
-  const adminHandler = (list: ReturnType<typeof loadAdminTokens>) =>
-    createAdminHandler({
-      writer,
-      metrics,
-      adminTokens: list,
-      isProbeToken: (header) => authenticate(tokens, header) !== undefined,
-      info,
-      warn,
-      authFailures,
-    });
+  const adminHandler = createAdminHandler({
+    writer,
+    metrics,
+    tokens: tokenStore,
+    info,
+    warn,
+    authFailures,
+  });
 
   let isShuttingDown = false;
   const server = createApiServer(service, {
-    tokens,
+    tokenStore,
+    isAdminEnabled,
     heartbeatSecrets: () => holder.get().secrets,
     components: () => holder.get().components,
     manualIncidents,
-    ...(adminTokens === undefined ? {} : { adminTokens, admin: adminHandler(adminTokens) }),
+    ...(isAdminEnabled ? { admin: adminHandler } : {}),
     adminAuthFailures: authFailures,
     info,
     warn,
@@ -302,6 +357,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     });
   }
   const boundPort = (server.address() as AddressInfo).port;
+  const counts = tokenCounts(tokenStore, deps.now());
   logger.info("listening", {
     port: boundPort,
     checks: checks.length,
@@ -310,14 +366,13 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     checksFile,
     db: dbPath,
     retentionDays,
-    probeTokens: tokens.length,
-    locations: new Set(tokens.map((t) => t.location)).size,
+    ...counts,
     tokensFile,
-    manualIncidents: adminTokens === undefined ? "off" : "writable",
-    adminTokens: adminTokens?.length ?? 0,
+    tokenStore: "database",
+    manualIncidents: isAdminEnabled ? "writable" : "off",
     locationSilentMs: locationSilentMs ?? "auto",
     reloadIntervalMs,
-    configWrites: adminTokens === undefined ? "off" : "on",
+    configWrites: isAdminEnabled ? "on" : "off",
   });
 
   // Created only after listen: the backfill must not run inside the startup work.
@@ -368,6 +423,8 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     }
     // The database closes only after the run in progress has ended, so nothing writes after close.
     await retentionEnded;
+    // Unpersisted last-used values go to disk before the close (D4).
+    tokenStore.flush();
     // `true` finalizes the prepared statements first. Without it SQLite keeps the connection open
     // until exit, so the WAL is not checkpointed and -wal and -shm stay next to the file.
     db.close(true);

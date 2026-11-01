@@ -8,6 +8,7 @@ import { createManualIncidentStore } from "./manual-incidents.ts";
 import { createMetrics } from "./metrics.ts";
 import { createApiServer } from "./server.ts";
 import { createService } from "./service.ts";
+import { openTokenStore } from "./token-import.ts";
 
 const ADMIN = "admin-sentinel-0123456789abcdef";
 const PROBE = "probe-sentinel-0123456789abcdef";
@@ -31,11 +32,17 @@ function setup(isAdminOn: boolean) {
   return {
     metrics,
     server: createApiServer(createService(db, { now: () => clock }), {
-      tokens: [{ location: "default", token: PROBE }],
+      tokenStore: openTokenStore(
+        { db, now: () => clock },
+        {
+          probe: [{ location: "default", token: PROBE }],
+          admin: isAdminOn ? [{ name: "ops", token: ADMIN }] : undefined,
+        },
+      ),
+      isAdminEnabled: isAdminOn,
       now: () => clock,
       metrics,
       manualIncidents: store,
-      ...(isAdminOn ? { adminTokens: [{ name: "ops", token: ADMIN }] } : {}),
       // A new clock value per failure keeps every line out of the rate limit.
       adminAuthFailures: createAdminAuthFailures({ now: () => clock, warn, metrics }),
       info: (message, fields) => lines.push({ level: "info", message, fields }),
@@ -142,22 +149,27 @@ test("a 405 is decided before auth and logs nothing", async () => {
   assert.deepEqual(lines, []);
 });
 
-test("failed authentication answers 401 and logs the token kind, never the token", async () => {
-  const cases: [string | null, string][] = [
-    [null, "missing"],
-    [PROBE, "probe"],
-    [UNKNOWN, "unknown"],
+test("failed authentication answers 401 or 403 and logs the token kind, never the token", async () => {
+  const cases: [string | null, string, number][] = [
+    [null, "missing", 401],
+    [PROBE, "probe", 403],
+    [UNKNOWN, "unknown", 401],
   ];
-  for (const [token, kind] of cases) {
+  for (const [token, kind, status] of cases) {
     lines.length = 0;
     clock += 10 * 60_000;
     const r = await call("POST", "/manual-incidents", NEW, token);
-    assert.equal(r.status, 401);
+    assert.equal(r.status, status);
     assert.deepEqual(lines, [
       {
         level: "warn",
         message: "admin auth failed",
-        fields: { route: "/manual-incidents", status: "401", token: kind, suppressed: "0" },
+        fields: {
+          route: "/manual-incidents",
+          status: String(status),
+          token: kind,
+          suppressed: "0",
+        },
       },
     ]);
   }
@@ -167,7 +179,7 @@ test("failed authentication answers 401 and logs the token kind, never the token
   assertNoSecrets();
   assert.match(
     on.metrics.render(),
-    /pulse_api_admin_auth_failures_total\{route="\/manual-incidents",status="401"\} 3\n/,
+    /pulse_api_admin_auth_failures_total\{route="\/manual-incidents",status="401"\} 2\n/,
   );
 });
 

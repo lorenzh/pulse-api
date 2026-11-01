@@ -13,10 +13,9 @@ import {
 import { BodyError, handleOps, readBody, readJsonBody, sendJson } from "@lorenzh/pulse-kit";
 import {
   type AdminAuthFailures,
+  adminAccess,
   createAdminAuthFailures,
-  tokenKindOf,
 } from "./admin-auth-failures.ts";
-import type { AdminToken } from "./admin-tokens.ts";
 import { componentsUptime, componentsWithState } from "./components.ts";
 import { MAX_LOCATION_LENGTH } from "./location-limits.ts";
 import {
@@ -32,7 +31,9 @@ import {
   type Service,
   UnknownCheckError,
 } from "./service.ts";
-import { authenticate, findByToken, type ProbeToken } from "./tokens.ts";
+import { canUse } from "./token-scopes.ts";
+import type { TokenStore } from "./token-store.ts";
+import { bearerSecret } from "./tokens.ts";
 
 const MAX_BODY = 1_000_000;
 const MAX_PING_BODY = 1024;
@@ -229,10 +230,9 @@ type Ops = {
   heartbeatSecrets: () => ReadonlyMap<string, string>;
   components: () => readonly Component[];
   manualIncidents: ManualIncidentStore;
-  /** Admin tokens; undefined when the feature is off and the write routes answer 404. */
-  adminTokens: readonly AdminToken[] | undefined;
-  /** True for a valid probe token, so a failed admin authentication is logged with kind `probe`. */
-  isProbeToken: (authorization: string | undefined) => boolean;
+  tokens: Pick<TokenStore, "authenticate">;
+  /** False before the admin bootstrap: the manual-incident writes answer 404. */
+  isAdminEnabled: boolean;
   authFailures: AdminAuthFailures;
   info: LogFn;
   warn: LogFn;
@@ -407,16 +407,25 @@ function manualId(idText: string | undefined): number | undefined {
 
 /** Authorize a manual-incident write; returns the admin token's name. */
 function requireAdmin(ops: Ops, req: IncomingMessage, route: string): string {
-  // Without admin tokens the feature is off and the write routes do not exist.
-  if (ops.adminTokens === undefined) throw new HttpError(404, "not found");
-  const header = req.headers.authorization;
-  const admin = findByToken(ops.adminTokens, header);
-  if (admin === undefined) {
-    // A probe token also answers 401 here; only the log line tells it apart.
-    ops.authFailures.record(route, 401, tokenKindOf(header, ops.isProbeToken));
+  // Before the admin bootstrap the feature is off and the write routes do not exist.
+  if (!ops.isAdminEnabled) throw new HttpError(404, "not found");
+  const access = adminAccess(ops.tokens, req.headers.authorization, "incident-write");
+  if (access.kind === "ok") return access.token.name;
+  ops.authFailures.record(route, access.status, access.token);
+  if (access.status === 403) throw new HttpError(403, "forbidden");
+  throw new HttpError(401, "unauthorized", { "www-authenticate": "Bearer" });
+}
+
+/** The location of the probe token in `header`; 401 without a valid one, 403 for another token. */
+function requireProbe(ops: Ops, header: string | undefined): string {
+  const secret = bearerSecret(header);
+  const auth = secret === undefined ? undefined : ops.tokens.authenticate(secret);
+  if (auth?.kind !== "ok") {
     throw new HttpError(401, "unauthorized", { "www-authenticate": "Bearer" });
   }
-  return admin.name;
+  const { scopes, location } = auth.token;
+  if (!canUse(scopes, "probe") || location === null) throw new HttpError(403, "forbidden");
+  return location;
 }
 
 type ManualWrite = "create" | "update" | "resolve" | "delete";
@@ -526,7 +535,6 @@ function decodeCheckId(encoded: string | undefined): string {
 // eslint-disable-next-line sonarjs/cognitive-complexity -- splitting this validator/handler would be a behaviour-risking refactor
 async function handle(
   ops: Ops,
-  tokens: readonly ProbeToken[],
   now: () => number,
   req: IncomingMessage,
   res: ServerResponse,
@@ -539,7 +547,7 @@ async function handle(
   const ping = HEARTBEAT_PATH.exec(path);
   if (ping) return servePing(ops, now, req, res, ping);
   if (path.startsWith("/admin/")) {
-    // Without admin tokens or a writer the routes do not exist.
+    // Before the admin bootstrap, or without a writer, the routes do not exist.
     if ((await ops.admin?.(req, res)) !== true) throw new HttpError(404, "not found");
     return;
   }
@@ -562,10 +570,7 @@ async function handle(
 
   if (path === "/results") {
     if (method !== "POST") throw new HttpError(405, "method not allowed");
-    const tokenLocation = authenticate(tokens, req.headers.authorization);
-    if (tokenLocation === undefined) {
-      throw new HttpError(401, "unauthorized", { "www-authenticate": "Bearer" });
-    }
+    const tokenLocation = requireProbe(ops, req.headers.authorization);
     let parsed: unknown;
     try {
       parsed = await readJsonBody(req, { maxBytes: MAX_BODY });
@@ -606,9 +611,7 @@ async function handle(
 
   if (path === "/probe/checks") {
     // Carries headers and bodies exactly as written, so it needs a probe token.
-    if (authenticate(tokens, req.headers.authorization) === undefined) {
-      throw new HttpError(401, "unauthorized", { "www-authenticate": "Bearer" });
-    }
+    requireProbe(ops, req.headers.authorization);
     sendJson(res, 200, service.listProbeChecks());
     return;
   }
@@ -700,7 +703,10 @@ async function handle(
 }
 
 export type ApiServerOptions = {
-  tokens: readonly ProbeToken[];
+  /** Authenticates every Bearer credential. Without it every credential is unknown (401). */
+  tokenStore?: Pick<TokenStore, "authenticate">;
+  /** True once admins are bootstrapped (a `token_bootstrap` row). Defaults to false. */
+  isAdminEnabled?: boolean;
   now?: () => number;
   /** Counters for `/metrics`; the caller shares it with the service to count incidents. */
   metrics?: Metrics;
@@ -712,10 +718,8 @@ export type ApiServerOptions = {
   heartbeatSecrets?: () => ReadonlyMap<string, string>;
   /** The configured components, served by `/components` and `/components/uptime`. */
   components?: () => readonly Component[];
-  /** Store behind `/manual-incidents`. Without it, or without `adminTokens`, the reads are empty. */
+  /** Store behind `/manual-incidents`. Without it, or before the admin bootstrap, the reads are empty. */
   manualIncidents?: ManualIncidentStore;
-  /** Tokens that may write manual incidents. Without them the writes answer 404 and the reads are empty. */
-  adminTokens?: readonly AdminToken[];
   /** Logs and counts failed admin authentications; defaults to one that only counts in `metrics`. */
   adminAuthFailures?: AdminAuthFailures;
   /** Receives the manual-incident write lines. */
@@ -745,6 +749,7 @@ function emptyManualIncidents(): ManualIncidentStore {
 export function createApiServer(service: Service, options: ApiServerOptions): Server {
   const now = options.now ?? Date.now;
   const metrics = options.metrics ?? createMetrics({ listStates: () => service.listCheckStates() });
+  const isAdminEnabled = options.isAdminEnabled ?? false;
   const ignore: LogFn = () => {
     // No logger given: the lines are dropped on purpose.
   };
@@ -754,13 +759,12 @@ export function createApiServer(service: Service, options: ApiServerOptions): Se
     notReadyReason: options.notReadyReason ?? (() => undefined),
     heartbeatSecrets: options.heartbeatSecrets ?? (() => new Map()),
     components: options.components ?? (() => []),
-    // Without admin tokens the feature is off: every read is empty, even with stored incidents.
-    manualIncidents:
-      options.adminTokens === undefined
-        ? emptyManualIncidents()
-        : (options.manualIncidents ?? emptyManualIncidents()),
-    adminTokens: options.adminTokens,
-    isProbeToken: (header) => authenticate(options.tokens, header) !== undefined,
+    // Before the admin bootstrap the feature is off: every read is empty, even with stored incidents.
+    manualIncidents: isAdminEnabled
+      ? (options.manualIncidents ?? emptyManualIncidents())
+      : emptyManualIncidents(),
+    tokens: options.tokenStore ?? { authenticate: () => ({ kind: "unknown" }) },
+    isAdminEnabled,
     authFailures:
       options.adminAuthFailures ?? createAdminAuthFailures({ now, warn: ignore, metrics }),
     info: options.info ?? ignore,
@@ -772,7 +776,7 @@ export function createApiServer(service: Service, options: ApiServerOptions): Se
     res.on("finish", () => ops.metrics.recordRequest(routeOf(req.url), res.statusCode));
     // Set before any write; writeHead keeps these next to the headers a response adds.
     for (const [name, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(name, value);
-    handle(ops, options.tokens, now, req, res).catch((err: unknown) => {
+    handle(ops, now, req, res).catch((err: unknown) => {
       if (res.headersSent) {
         res.destroy();
         return;

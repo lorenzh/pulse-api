@@ -5,6 +5,7 @@ import type { Check, CheckWithState } from "@lorenzh/pulse-contract";
 import { openDb } from "./db.ts";
 import { createApiServer } from "./server.ts";
 import { createService } from "./service.ts";
+import { openTokenStore } from "./token-import.ts";
 
 const TOKEN = "token-a-0123456789abcdef";
 const HEADER_SECRET = "literal-header-sentinel";
@@ -54,7 +55,10 @@ const checks: Check[] = [
 const service = createService(openDb(":memory:"), { now: () => 1000 });
 service.upsertChecks(checks);
 const server = createApiServer(service, {
-  tokens: [{ location: "east", token: TOKEN }],
+  tokenStore: openTokenStore(
+    { db: openDb(":memory:"), now: () => 0 },
+    { probe: [{ location: "east", token: TOKEN }], admin: undefined },
+  ),
   now: () => 1000,
 });
 let base = "";
