@@ -1,7 +1,8 @@
 import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, test } from "bun:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ChecksResponse } from "@lorenzh/pulse-contract";
@@ -575,4 +576,40 @@ test("a clean shutdown closes the database: the WAL is checkpointed and -wal and
   await api.close();
   assert.equal(existsSync(`${path}-wal`), false);
   assert.equal(existsSync(`${path}-shm`), false);
+});
+
+test("startup resolves a pending audit entry before listen", async () => {
+  const fileB = readFileSync(checksFile);
+  const revB = `sha256-${createHash("sha256").update(fileB).digest("hex")}`;
+  const insertRow = (path: string): void => {
+    const db = openDb(path);
+    db.query(
+      `INSERT INTO audit_pending (at, actor_token_id, actor_name, action, target_kind, target_id,
+        revision, temp_path) VALUES (1, 'tok_1', 'ops', 'check.create', 'check', 'c1', ?, ?)`,
+    ).run(revB, join(dir, "checks.json.gone.tmp"));
+    db.close();
+  };
+  const countEntries = (path: string): unknown => {
+    const db = new Database(path);
+    try {
+      return db.query("SELECT revision FROM audit_log WHERE action = 'check.create'").all();
+    } finally {
+      db.close();
+    }
+  };
+  // A port in use fails the listen: the entry is promoted all the same, so before it.
+  const first = await startApi(deps({}).base);
+  try {
+    const blocked = deps({ PORT: String(first.port) });
+    insertRow(blocked.base.env.PULSE_DB ?? "");
+    await assert.rejects(startApi(blocked.base), StartupError);
+    assert.deepEqual(countEntries(blocked.base.env.PULSE_DB ?? ""), [{ revision: revB }]);
+  } finally {
+    await first.close();
+  }
+  const { base } = deps({});
+  insertRow(base.env.PULSE_DB ?? "");
+  const api = await startApi(base);
+  await api.close();
+  assert.deepEqual(countEntries(base.env.PULSE_DB ?? ""), [{ revision: revB }]);
 });

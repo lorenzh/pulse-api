@@ -157,7 +157,7 @@ export function createAdminHandler(
     res: ServerResponse,
     target: Target,
     action: ConfigWriteAction,
-    tokenName: string,
+    caller: AuthenticatedToken,
   ): Promise<void> => {
     const { kind, ref } = target;
     const body = await readBodyJson(req, action === "delete");
@@ -172,11 +172,14 @@ export function createAdminHandler(
       throw err instanceof ConfigWriteError ? err : new RouteError(503, "checks file not writable");
     }
     const edit = editOf(kind, action, ref, body);
-    const outcome = await deps.writer.apply(edit, ifMatch);
+    const outcome = await deps.writer.apply(edit, ifMatch, {
+      tokenId: caller.id,
+      name: caller.name,
+    });
     deps.metrics.recordConfigWrite(kind, action, "ok");
     const created = kind === "maintenance" ? (outcome.index ?? 0) : bodyId(body);
     const id = String((action === "create" ? created : ref) ?? "");
-    deps.info("config write", { token: tokenName, kind, action, id });
+    deps.info("config write", { token: caller.name, kind, action, id });
     const headers = etag(outcome.revision);
     if (action === "delete") {
       res.writeHead(204, headers).end();
@@ -248,7 +251,7 @@ export function createAdminHandler(
     let target: Target | undefined;
     let action: ConfigWriteAction | undefined;
     try {
-      const tokenName = authorize(req, ...routeAccess(section, match[2])).name;
+      const caller = authorize(req, ...routeAccess(section, match[2]));
       if (section === "config") {
         if (match[2] !== undefined) throw new RouteError(404, "not found");
         if (method !== "GET") throw new RouteError(405, "method not allowed", { Allow: "GET" });
@@ -270,7 +273,7 @@ export function createAdminHandler(
           Allow: target.ref === undefined ? "POST" : "PUT, DELETE",
         });
       }
-      await write(req, res, target, action, tokenName);
+      await write(req, res, target, action, caller);
     } catch (err) {
       if (res.headersSent) throw err;
       fail(res, err, target, action);

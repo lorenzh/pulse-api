@@ -1,4 +1,4 @@
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import type {
   AdminCheckView,
   AdminComponent,
@@ -7,7 +7,8 @@ import type {
   AdminWriteResponse,
   Check,
 } from "@lorenzh/pulse-contract";
-import { type AtomicWriteSyncFs, isRecord, writeFileAtomicSync } from "@lorenzh/pulse-kit";
+import { isRecord } from "@lorenzh/pulse-kit";
+import type { AuditRecord, PendingAudit } from "./audit-log.ts";
 import { type Config, ConfigError, parseConfig } from "./config.ts";
 import type { ConfigHolder } from "./config-holder.ts";
 import { type ConfigReloader, revisionOf } from "./config-reload.ts";
@@ -36,11 +37,25 @@ export class ConfigWriteError extends Error {
 /** The file operations of a write. Every step may throw an error with a Node `code`. */
 export interface WriteFs {
   readFile(path: string): Buffer;
-  /** Temp file, rename and directory fsync of the atomic write; keeps mode and owner. */
-  atomic: AtomicWriteSyncFs;
+  /**
+   * Create `temp` exclusively with `data` and fsync its data; it takes the mode and owner of
+   * `like`. On a failure after the create it removes `temp` itself.
+   */
+  writeTemp(temp: string, data: Buffer, like: string): void;
+  /** Fsync the directory entries of `dir`. */
+  fsyncDir(dir: string): void;
+  rename(from: string, to: string): void;
+  remove(path: string): void;
+  /** Throws (`ENOENT` and others) when `path` cannot be looked up. */
+  lstat(path: string): void;
   /** Throws when `dir` is not writable. */
   assertWritable(dir: string): void;
 }
+
+/** Who made a write; stored in its audit entry. */
+export type WriteActor = AuditRecord["actor"];
+
+type PendingRecord = AuditRecord & { revision: string };
 
 export interface WriterDeps {
   path: string;
@@ -51,6 +66,13 @@ export interface WriterDeps {
   tempSuffix: () => string;
   /** True when an unresolved manual incident names the component. */
   hasOpenIncidentFor: (componentId: string) => boolean;
+  /** Pending audit entries of config writes (D8). */
+  pending: PendingAudit;
+  now: () => number;
+  /** Warn lines name an error code only, never a path. */
+  warn: (line: string) => void;
+  /** Test only: called after each named step of the write protocol. */
+  fault?: (point: string) => void;
 }
 
 export interface WriteOutcome {
@@ -67,8 +89,14 @@ export interface ConfigWriter {
   /** Throws a `readonly` ConfigWriteError when the directory cannot take a new file. */
   assertWritable(): void;
   /** One write under the lock. `ifMatch` is the unquoted revision the caller based it on. */
-  apply(edit: ConfigEdit, ifMatch: string): Promise<WriteOutcome>;
+  apply(edit: ConfigEdit, ifMatch: string, actor: WriteActor): Promise<WriteOutcome>;
+  /** Resolve pending audit entries by the existence of their temp files (startup). */
+  resolvePending(): void;
 }
+
+export const AUDIT_WRITE_FAILED = "audit log could not be written";
+export const AUDIT_PENDING =
+  "checks file stored; its audit entry is pending and is resolved at the next write or restart";
 
 const READONLY_CODES: ReadonlySet<string> = new Set(["EROFS", "EACCES", "EPERM", "EBUSY", "EXDEV"]);
 
@@ -327,9 +355,26 @@ function entityOf(edit: ConfigEdit, config: Config, index: number): AdminWriteRe
   }
 }
 
+/** The audit target id: a check or component id unchanged, a window index as decimal text. */
+function targetIdOf(edit: ConfigEdit, doc: Doc, index: number): string {
+  if (edit.kind === "maintenance") return String(index);
+  if (edit.action === "delete") return String(edit.ref);
+  return String(idOf(listOf(doc, listKey(edit.kind))[index]));
+}
+
+function lstatCode(fs: WriteFs, path: string): string | undefined {
+  try {
+    fs.lstat(path);
+    return undefined;
+  } catch (err) {
+    return codeOf(err);
+  }
+}
+
 export function createConfigWriter(deps: WriterDeps): ConfigWriter {
-  const { path, fs } = deps;
+  const { path, fs, pending } = deps;
   const dir = dirname(path);
+  const fault = deps.fault ?? (() => undefined);
   let tail: Promise<unknown> = Promise.resolve();
 
   const readBytes = (): Buffer => {
@@ -348,21 +393,137 @@ export function createConfigWriter(deps: WriterDeps): ConfigWriter {
     return bytes;
   };
 
-  /** Temp file, fsync, a second revision check, rename, fsync of the directory, then apply. */
-  const store = (data: Buffer, ifMatch: string, config: Config): void => {
+  /**
+   * The durable abort: the row goes first, durably; the temp file is removed only after that
+   * delete returned, because it is the only evidence that the rename did not happen.
+   */
+  const abort = (temp: string, tempPath: string, point: string): void => {
     try {
-      writeFileAtomicSync(path, data, {
-        fs: fs.atomic,
-        tempSuffix: deps.tempSuffix,
-        beforeRename: () => {
-          // An external writer racing after this check stays possible.
-          assertCurrent(ifMatch);
-          return true;
-        },
-      });
+      pending.deleteByTemp(tempPath);
+    } catch (err) {
+      deps.warn(`audit pending entry kept (${codeOf(err)})`);
+      return;
+    }
+    fault(`${point}.delete`);
+    try {
+      fs.remove(temp);
+    } catch (err) {
+      deps.warn(`config temp file not removed (${codeOf(err)})`);
+    }
+    fault(`${point}.remove`);
+  };
+
+  const promote = (pendingId: number): boolean => {
+    try {
+      pending.promote(pendingId);
+      return true;
+    } catch (err) {
+      deps.warn(`audit pending entry unresolved (${codeOf(err)})`);
+      return false;
+    }
+  };
+
+  /** Promote candidates only after a sync of their directories that started after the lstat. */
+  const promoteAll = (candidates: { pendingId: number; tempPath: string }[]): void => {
+    if (candidates.length === 0) return;
+    try {
+      for (const d of new Set(candidates.map((c) => dirname(c.tempPath)))) fs.fsyncDir(d);
+    } catch (err) {
+      deps.warn(`audit pending entry unresolved (${codeOf(err)})`);
+      return;
+    }
+    fault("resolver.fsyncDir");
+    for (const c of candidates) {
+      promote(c.pendingId);
+      fault("resolver.promote");
+    }
+  };
+
+  /** Decide each pending row by its temp file: present means no rename, missing means renamed. */
+  const resolvePending = (): void => {
+    let rows: ReturnType<PendingAudit["list"]>;
+    try {
+      rows = pending.list();
+    } catch (err) {
+      deps.warn(`audit pending entry unresolved (${codeOf(err)})`);
+      return;
+    }
+    const candidates: { pendingId: number; tempPath: string }[] = [];
+    for (const row of rows) {
+      const code = lstatCode(fs, row.tempPath);
+      fault("resolver.lstat");
+      if (code === undefined) abort(row.tempPath, row.tempPath, "resolver");
+      else if (code === "ENOENT") candidates.push(row);
+      else deps.warn(`audit pending entry unresolved (${code})`);
+    }
+    promoteAll(candidates);
+  };
+
+  /** Steps 3 and 4: the temp file with its name on disk, then the durable pending row. */
+  const prepare = (temp: string, tempPath: string, data: Buffer, entry: PendingRecord): number => {
+    try {
+      fs.writeTemp(temp, data, path);
     } catch (err) {
       throw mapFsError(err);
     }
+    fault("writeTemp");
+    try {
+      fs.fsyncDir(dir);
+    } catch (err) {
+      try {
+        fs.remove(temp);
+      } catch {
+        // No pending row names this temp file yet; the original error is reported.
+      }
+      throw mapFsError(err);
+    }
+    fault("fsyncDir.temp");
+    let pendingId: number;
+    try {
+      pendingId = pending.insert(entry, tempPath);
+    } catch (err) {
+      abort(temp, tempPath, "abort");
+      throw new ConfigWriteError("error", AUDIT_WRITE_FAILED, { cause: err });
+    }
+    fault("pending.insert");
+    return pendingId;
+  };
+
+  /** Step 5: the second revision check and the rename. */
+  const replace = (temp: string, tempPath: string, ifMatch: string): void => {
+    try {
+      // An external writer racing after this check stays possible.
+      assertCurrent(ifMatch);
+    } catch (err) {
+      abort(temp, tempPath, "abort");
+      throw err;
+    }
+    try {
+      fs.rename(temp, path);
+    } catch (err) {
+      const code = lstatCode(fs, temp);
+      fault("lstat");
+      // Only a temp file that is still there proves the rename did not happen.
+      if (code === undefined) abort(temp, tempPath, "abort");
+      throw mapFsError(err);
+    }
+    fault("rename");
+  };
+
+  const store = (data: Buffer, ifMatch: string, config: Config, entry: PendingRecord): void => {
+    const temp = `${path}.${deps.tempSuffix()}.tmp`;
+    // Absolute: a later start may run from another working directory.
+    const tempPath = resolve(temp);
+    const pendingId = prepare(temp, tempPath, data, entry);
+    replace(temp, tempPath, ifMatch);
+    try {
+      fs.fsyncDir(dir);
+    } catch (err) {
+      throw mapFsError(err);
+    }
+    fault("fsyncDir");
+    const isPromoted = promote(pendingId);
+    fault("promote");
     try {
       deps.reloader.adopt(data, config);
     } catch (err) {
@@ -374,15 +535,24 @@ export function createConfigWriter(deps: WriterDeps): ConfigWriter {
         { cause: err },
       );
     }
+    if (!isPromoted) throw new ConfigWriteError("error", AUDIT_PENDING);
   };
 
-  const run = (edit: ConfigEdit, ifMatch: string): WriteOutcome => {
+  const run = (edit: ConfigEdit, ifMatch: string, actor: WriteActor): WriteOutcome => {
+    resolvePending();
     const doc = parseDoc(assertCurrent(ifMatch));
     const { index } = applyEdit(edit, doc, deps.hasOpenIncidentFor);
     const config = validated(doc);
     const data = Buffer.from(`${JSON.stringify(doc, null, 2)}\n`, "utf8");
-    store(data, ifMatch, config);
-    return { revision: revisionOf(data), entity: entityOf(edit, config, index), index };
+    const revision = revisionOf(data);
+    store(data, ifMatch, config, {
+      at: deps.now(),
+      actor,
+      action: `${edit.kind}.${edit.action}`,
+      target: { kind: edit.kind, id: targetIdOf(edit, doc, index) },
+      revision,
+    });
+    return { revision, entity: entityOf(edit, config, index), index };
   };
 
   return {
@@ -394,11 +564,12 @@ export function createConfigWriter(deps: WriterDeps): ConfigWriter {
         throw mapFsError(err);
       }
     },
-    apply(edit, ifMatch) {
-      const result = tail.then(() => run(edit, ifMatch));
+    apply(edit, ifMatch, actor) {
+      const result = tail.then(() => run(edit, ifMatch, actor));
       // The chain goes on after a failure.
       tail = result.catch(() => undefined);
       return result;
     },
+    resolvePending,
   };
 }

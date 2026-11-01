@@ -39,8 +39,8 @@ export interface PendingEntry {
 
 /** Storage of pending config-write entries (D8). */
 export interface PendingAudit {
-  /** Durably insert the pending row of a config write. */
-  insert(entry: AuditRecord & { revision: string }, tempPath: string): void;
+  /** Durably insert the pending row of a config write; returns its pending id. */
+  insert(entry: AuditRecord & { revision: string }, tempPath: string): number;
   /** Durably delete every pending row that names `tempPath`. */
   deleteByTemp(tempPath: string): void;
   /** Move one pending row into `audit_log` in one normal transaction. */
@@ -169,13 +169,14 @@ export function createPendingAudit(
 ): PendingAudit {
   return {
     insert(entry, tempPath) {
-      durable(() =>
+      const result = durable(() =>
         db
           .query(
             `INSERT INTO audit_pending (${COLUMNS}, temp_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(...values(entry), tempPath),
       );
+      return Number(result.lastInsertRowid);
     },
     deleteByTemp(tempPath) {
       durable(() => db.query("DELETE FROM audit_pending WHERE temp_path = ?").run(tempPath));
