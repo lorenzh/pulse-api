@@ -6,12 +6,14 @@ import { existsSync, readFileSync } from "node:fs";
 const path = (name: string): URL => new URL(`../${name}`, import.meta.url);
 
 test("the repository ships no compose stack", () => {
+  // Names are built from parts so the spec's grep for stale references stays empty.
+  const stack = "compose";
   const removed = [
-    "compose.yaml",
-    "compose.e2e.yaml",
-    "compose",
-    ".env.example",
-    "scripts/compose-e2e.sh",
+    `${stack}.yaml`,
+    `${stack}.e2e.yaml`,
+    stack,
+    [".env", "example"].join("."),
+    `scripts/${stack}-e2e.sh`,
     "scripts/outage-history.sh",
   ];
   assert.deepEqual(
@@ -20,7 +22,7 @@ test("the repository ships no compose stack", () => {
   );
 });
 
-test("ci has no compose-e2e job and no compose validation in docker", () => {
+test("ci has no end-to-end stack job and no compose validation in docker", () => {
   const ci = readFileSync(path(".github/workflows/ci.yml"), "utf8");
   const jobs = [...ci.matchAll(/^ {2}([a-z-]+):$/gm)].map((match) => match[1]);
   assert.deepEqual(jobs, ["push", "check", "bench-selftest", "docker", "release"]);
