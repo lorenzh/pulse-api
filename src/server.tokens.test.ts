@@ -251,3 +251,34 @@ test("revoking the last active admin answers 409", async () => {
     await api.close();
   }
 });
+
+test("a probe token created with a padded location accepts results for that location", async () => {
+  const api = await startApi(deps(bootstrap("padded.db")));
+  try {
+    const made = await call(api, "POST", "/admin/tokens", ADMIN, {
+      name: "probe eu",
+      scopes: ["probe"],
+      location: " eu ",
+    });
+    assert.equal(made.status, 201);
+    const { token, secret } = secretOf(made);
+    assert.equal(token.location, "eu");
+    const result = (location: string) => ({
+      checkId: "x",
+      timestamp: T,
+      status: "up",
+      statusCode: 200,
+      latencyMs: 3,
+      reason: null,
+      attempts: 1,
+      location,
+    });
+    const statuses = [
+      (await call(api, "POST", "/results", secret, result("eu"))).status,
+      (await call(api, "POST", "/results", secret, result(" eu "))).status,
+    ];
+    assert.deepEqual(statuses, [204, 204]);
+  } finally {
+    await api.close();
+  }
+});

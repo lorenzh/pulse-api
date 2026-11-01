@@ -216,7 +216,8 @@ async function create(
     {
       name: input.name,
       scopes: input.scopes,
-      location: input.location ?? null,
+      // Results trim their location, so the binding is stored trimmed too.
+      location: input.location?.trim() ?? null,
       expiresAt,
       source: "api",
     },
