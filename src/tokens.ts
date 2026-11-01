@@ -95,6 +95,11 @@ export function parseTokens(data: unknown): ProbeToken[] {
 
 const BEARER = /^bearer (\S+)$/i;
 
+/** Lower-case hex SHA-256 of the UTF-8 bytes of `value`: the stored form of a credential. */
+export function sha256Hex(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 function digest(value: string): Buffer {
   return createHash("sha256").update(value).digest();
 }
