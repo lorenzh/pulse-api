@@ -21,6 +21,8 @@ import {
   headerValueSchema,
   httpMethodSchema,
   jsonAssertSchema,
+  MAX_REASON_LENGTH,
+  MAX_TIMER_MS,
 } from "@lorenzh/pulse-contract";
 import { z } from "zod";
 import {
@@ -640,8 +642,11 @@ export function createService(
       timestamp: r.timestamp,
       status: r.status,
       statusCode: r.status_code,
-      latencyMs: r.latency_ms,
-      reason: r.reason,
+      latencyMs: Math.min(MAX_TIMER_MS, Math.max(0, Math.round(r.latency_ms))),
+      reason:
+        r.reason !== null && r.reason.length > MAX_REASON_LENGTH
+          ? `${r.reason.slice(0, MAX_REASON_LENGTH - 1)}…`
+          : r.reason,
       location: r.location,
       attempts: r.attempts ?? 1,
     };

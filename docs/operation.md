@@ -76,6 +76,15 @@ An hourly run logs `uptime rollup: stored <N> days in <D> ms` only when it store
 2. Stop the API and start the new version with the same `PULSE_DB`.
 3. Look at the start log line to see that it came up (see [Logs](#logs)).
 
+Upgrade to the version that binds header secrets to hosts: prepare before the API starts, or the checks file fails to load.
+
+- Rename every `env` reference to `PULSE_HEADER_*`.
+- Remove userinfo from check URLs; move credentials to an `Authorization` header with `{ "env": NAME }`.
+- Set TLS and domain `warnDays` to 0..3650.
+- Set `PULSE_PROBE_HEADER_HOSTS` at every probe location (older probes ignore it).
+
+Served results now carry integer `latencyMs` (stored fractions are rounded) and a `reason` of at most 1000 characters (longer stored ones end in `…`). Stored rows are not rewritten.
+
 Do not open a database file of an older version with this version. Restore the backup to go back (see [Backup and restore](#backup-and-restore)).
 
 A checks file whose heartbeat `secret` still starts with `replace-with-` (the example placeholder) stops the start with `checks[<i>].secret still has the example placeholder secret` and exit code 2. Replace the secret with `openssl rand -hex 32` and update the job that pings, or remove the check. An API that is already running rejects such a reload and keeps its config.
@@ -166,6 +175,10 @@ This holds on a local file system where `fsync` of a file and its directory pers
 A leftover `<checks>.<suffix>.tmp` file next to the checks file without a pending entry (after a crash, or when its removal failed) is never read and does not change the audit. Delete it while the API is stopped.
 
 Manual-incident and token writes commit with their entry in one transaction.
+
+## Admin tokens and header secrets
+
+An admin token can point any check that references `{ "env": NAME }` at any URL. The probe sends the secret there if it binds `NAME` to that host in `PULSE_PROBE_HEADER_HOSTS`. So an admin token is as sensitive as every header secret it can address, and the probe's `PULSE_PROBE_HEADER_HOSTS` is the limit. Bind each secret only to the hosts that need it.
 
 ## Changing checks
 

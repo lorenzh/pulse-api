@@ -30,7 +30,7 @@ const ADMIN = "admin-token-0123456789abcdef";
 const NOW = Date.parse("2026-10-28T12:00:00Z");
 const RELOAD_MS = 2000;
 const SENTINEL_HEADER = "sentinel-header-value-7731";
-const SENTINEL_ENV = "SENTINEL_ENV_NAME_7731";
+const SENTINEL_ENV = "PULSE_HEADER_SENTINEL_ENV_NAME_7731";
 const SENTINEL_BODY = "sentinel-body-text-7731";
 const SECRET = "sentinel-secret-7731-abcdef";
 const SECRET2 = "rotated-secret-7731-abcdefgh";
@@ -833,4 +833,26 @@ test("sentinel: header values, env names, bodies and secrets stay out of every o
     await fetch(`${b.base}/probe/checks`, { headers: { authorization: `Bearer ${PROBE}` } })
   ).text();
   assert.ok(probe.includes(SENTINEL_HEADER));
+});
+
+test("admin writes: userinfo URL, warnDays 3651 and an unprefixed env name answer 422, the file is unchanged", async () => {
+  const b = await boot();
+  const before = readFileSync(file, "utf8");
+  const http = { id: "w", name: "W", url: "https://w.example/", intervalMs: 60000 };
+  const bad = [
+    { ...http, url: "https://user:pw@w.example/" },
+    { id: "w", name: "W", type: "tls", host: "w.example", intervalMs: 60000, warnDays: 3651 },
+    { id: "w", name: "W", type: "domain", domain: "w.example", intervalMs: 60000, warnDays: 3651 },
+    { ...http, headers: { Authorization: { env: "SVC_TOKEN" } } },
+  ];
+  for (const body of bad) {
+    const post = await b.call("POST", "/admin/checks", { body, ifMatch: await b.revision() });
+    assert.equal(post.status, 422, JSON.stringify(body));
+    const put = await b.call("PUT", `/admin/checks/${BASE_FILE.checks[0]?.id}`, {
+      body: { ...body, id: BASE_FILE.checks[0]?.id },
+      ifMatch: await b.revision(),
+    });
+    assert.equal(put.status, 422, JSON.stringify(body));
+  }
+  assert.equal(readFileSync(file, "utf8"), before);
 });

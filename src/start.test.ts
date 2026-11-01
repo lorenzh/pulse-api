@@ -15,7 +15,7 @@ import { ShutdownTimeoutError, type StartDeps, startApi } from "./start.ts";
 const ROLLUP_START_DELAY_MS = 5000;
 
 const TOKEN = "test-token-east-0123456789abcdef";
-const SECRET_URL = "https://user:hunter2@internal.example/path";
+const SECRET_URL = "https://internal.example/hunter2/path";
 const KEYWORD = "s3cret-keyword";
 const NOW = Date.parse("2026-10-28T12:00:00Z");
 
