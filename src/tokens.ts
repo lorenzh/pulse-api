@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import { isRecord } from "@lorenzh/pulse-kit";
 import { z } from "zod";
 import { firstIssue, type Issue, pathName } from "./issue-path.ts";
 import { MAX_LOCATION_LENGTH } from "./service.ts";
@@ -54,10 +55,6 @@ const TOKENS_SCHEMA = z.object(
   },
   { error: TOKENS_SHAPE },
 );
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
 
 /** The trimmed location of entry `index` in the raw data, for a message about its token. */
 function locationOf(data: unknown, index: number): string | undefined {

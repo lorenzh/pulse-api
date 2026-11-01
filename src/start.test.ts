@@ -8,7 +8,7 @@ import type { ChecksResponse } from "@lorenzh/pulse-contract";
 import { type LogLevel, StartupError } from "@lorenzh/pulse-kit";
 import { openDb } from "./db.ts";
 import { createManualIncidentStore } from "./manual-incidents.ts";
-import { type StartDeps, startApi } from "./start.ts";
+import { ShutdownTimeoutError, type StartDeps, startApi } from "./start.ts";
 
 /** The default start delay of the latency rollup that the spec sets. */
 const ROLLUP_START_DELAY_MS = 5000;
@@ -236,7 +236,7 @@ test("healthz does not read the checks table", async () => {
   }
 });
 
-test("shutdown during an open connection hits the bound, warns and still closes", async () => {
+test("shutdown during an open connection hits the bound, warns, closes and rejects", async () => {
   let release: () => void = () => undefined;
   let db: Database | undefined;
   const { base, lines } = deps(
@@ -258,10 +258,25 @@ test("shutdown during an open connection hits the bound, warns and still closes"
   await new Promise((r) => setImmediate(r));
   const closing = api.close();
   release();
-  await closing;
+  await assert.rejects(closing, (err: unknown) => {
+    assert.ok(err instanceof ShutdownTimeoutError);
+    assert.equal(err.message, "shutdown did not finish within 5000ms");
+    return true;
+  });
   assert.ok(lines.some((l) => l.level === "warn" && l.line.includes("shutdown bound")));
   assert.throws(() => db?.prepare("SELECT 1"));
+  const again = api.close();
+  assert.equal(again, closing);
+  await assert.rejects(again, ShutdownTimeoutError);
   socket.destroy();
+});
+
+test("a shutdown that drains in time resolves", async () => {
+  const { base } = deps({}, { sleep: () => new Promise<void>(() => undefined) });
+  const api = await startApi(base);
+  const res = await fetch(`http://127.0.0.1:${api.port}/healthz`);
+  assert.equal(res.status, 200);
+  await api.close();
 });
 
 test("metrics: series appear, and no url, keyword or token", async () => {

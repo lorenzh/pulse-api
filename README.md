@@ -66,7 +66,7 @@ Operators post incidents with timed updates through `POST /manual-incidents`, `/
 
 `GET /locations` (no token) lists the probe locations as `reporting` or `silent`; `PULSE_LOCATION_SILENT_MS` sets the threshold (default derived from the check intervals) and the metric `pulse_api_location_last_result_timestamp_seconds{location}` mirrors it. `POST /results` is idempotent on (check, location, timestamp), so a probe may re-send. See [REST API](docs/rest-api.md#get-locations).
 
-`GET /healthz` is liveness: it answers `200 ok` without touching the database, also while the API shuts down. `GET /readyz` is readiness: `200 ok` when the database answers and the API is not shutting down, else `503` without error text. `GET /metrics` serves Prometheus text with check ids only: keep it on a private network. Logs are JSON lines (`PULSE_LOG_LEVEL`). The API stops cleanly on `SIGINT` and `SIGTERM` (exit 0). A configuration error prints one line `pulse-api: <message>` and exits with 2. See [Operation](docs/operation.md).
+`GET /healthz` is liveness: it answers `200 ok` without touching the database, also while the API shuts down. `GET /readyz` is readiness: `200 ok` when the database answers and the API is not shutting down, else `503` without error text. `GET /metrics` serves Prometheus text with check ids only: keep it on a private network. Logs are JSON lines (`PULSE_LOG_LEVEL`). The API stops cleanly on `SIGINT` and `SIGTERM` (exit 0). A shutdown that hits its 5 s bound closes the remaining connections, finishes cleanup, closes the database and exits 1. A configuration error prints one line `pulse-api: <message>` and exits with 2. See [Operation](docs/operation.md).
 
 ## Documentation
 

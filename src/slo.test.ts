@@ -15,7 +15,7 @@ import { openDb } from "./db.ts";
 import { createMetrics } from "./metrics.ts";
 import { createService } from "./service.ts";
 import { buildSlo } from "./slo.ts";
-import { type StartDeps, startApi } from "./start.ts";
+import { SHUTDOWN_TIMEOUT_MS, type StartDeps, startApi } from "./start.ts";
 
 const DAY = 86_400_000;
 const NOW = Date.parse("2026-10-28T12:00:00Z");
@@ -164,7 +164,9 @@ test("end to end: slo, latency and the gauge over HTTP; the probe listing carrie
       PULSE_TOKENS_FILE: join(dir, "tokens.json"),
     },
     now: () => NOW,
-    sleep: () => Promise.resolve(),
+    // The shutdown bound never fires, so a drained close resolves.
+    sleep: (ms) =>
+      ms === SHUTDOWN_TIMEOUT_MS ? new Promise<void>(() => undefined) : Promise.resolve(),
     setTimeout: () => undefined,
     clearTimeout: () => undefined,
     write: (_level, line) => lines.push(line),
