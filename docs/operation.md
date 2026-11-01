@@ -6,6 +6,8 @@ The API reads `checks.json`, the tokens file and its environment at start. It re
 
 After a change to the checks file, restart only the API. Probes reload their checks from the API on their own, within their reload interval (`PULSE_CHECKS_RELOAD_MS`, see the probe docs).
 
+The `docker compose …` commands on this page run inside your pulse-deploy setup directory, for example `cd pulse-deploy/full`.
+
 ```sh
 docker compose restart api
 ```
@@ -137,7 +139,7 @@ Tokens are read at start. Restart the API to rotate. A location may have several
 
 1. Add the new token to the tokens file, next to the old one.
 2. Restart the API.
-3. Give the probe the new token (`PULSE_PROBE_TOKEN`) and restart the probe.
+3. Give the probe the new token (in pulse-deploy: `secrets/probe-token`) and restart the probe.
 4. Remove the old token from the tokens file.
 5. Restart the API.
 
@@ -173,7 +175,7 @@ curl -sS -X POST "$API/admin/checks" -H "Authorization: Bearer $TOKEN" -H "If-Ma
   -d '{"id":"blog","name":"Blog","url":"https://blog.example/","intervalMs":60000}'
 ```
 
-A write needs a checks file that the API can replace: it writes a temp file in the same directory and renames it over the file. A read-only mount, or a single file bind-mounted into the container, answers `503` (for example `checks file is read-only (EROFS)`). `compose.yaml` mounts the directory read-only (`./compose:/config:ro`), so a hand edit, also a save by rename, reaches the container. To opt in to writes, replace it with a writable directory mount (`./compose:/config`, with a directory that the container user may write). The file keeps its mode and, when the process may set it, its owner. The write rewrites the file as JSON with two spaces: comments and layout of a hand-made file are not kept. A hand edit and a write at the same moment can still race in the last millisecond before the rename; the revision check makes this rare, not impossible. A write runs in this order: temp file, `fsync`, revision check, rename, `fsync` of the directory, then apply. When a step after the rename fails (the directory `fsync`, or applying to the database), the write answers `500` (`503` for a read-only cause), but the new file is already in place. The running configuration and the `ETag` stay at the old revision, and the next reload (a look or `SIGHUP`) applies the file. Until then a write gets `412`.
+A write needs a checks file that the API can replace: it writes a temp file in the same directory and renames it over the file. A read-only mount, or a single file bind-mounted into the container, answers `503` (for example `checks file is read-only (EROFS)`). The `full` setup of [pulse-deploy](https://github.com/lorenzh/pulse-deploy) mounts its `full/config` directory read-only, so a hand edit, also a save by rename, reaches the container. To opt in to writes, mount that directory writable instead, with a directory that the container user may write. The file keeps its mode and, when the process may set it, its owner. The write rewrites the file as JSON with two spaces: comments and layout of a hand-made file are not kept. A hand edit and a write at the same moment can still race in the last millisecond before the rename; the revision check makes this rare, not impossible. A write runs in this order: temp file, `fsync`, revision check, rename, `fsync` of the directory, then apply. When a step after the rename fails (the directory `fsync`, or applying to the database), the write answers `500` (`503` for a read-only cause), but the new file is already in place. The running configuration and the `ETag` stay at the old revision, and the next reload (a look or `SIGHUP`) applies the file. Until then a write gets `412`.
 
 Each successful write logs one `info` line `config write` with the token name, kind, action and id; a failed write logs one `warn` line with the status and kind. Metrics: `pulse_api_config_writes_total{kind,action,result}`.
 

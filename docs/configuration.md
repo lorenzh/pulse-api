@@ -254,16 +254,4 @@ An admin token must differ from every probe token, and tokens must not repeat. E
 
 ## Compose variables
 
-`compose.yaml` and `.env` use these variables. Copy `.env.example` to `.env` to set them.
-
-| Variable                 | Default   | Meaning                                                                    |
-| ------------------------ | --------- | -------------------------------------------------------------------------- |
-| `PULSE_PROBE_TOKEN`      | empty     | Token of the probe. Compose also writes it to the API's tokens file.       |
-| `PULSE_LOCATION`         | `default` | Location of the probe. It is the location of the token in the tokens file. |
-| `PULSE_API_PORT`         | `3000`    | Host port of the API. Bound to 127.0.0.1.                                  |
-| `PULSE_STATUS_PORT`      | `8080`    | Host port of the status page.                                              |
-| `PULSE_CONSOLE_PORT`     | `8082`    | Host port of the console. Bound to 127.0.0.1.                              |
-| `PULSE_DEMO_API_PORT`    | `3001`    | Host port of `demo-api` (demo profile). Bound to 127.0.0.1.                |
-| `PULSE_DEMO_STATUS_PORT` | `8081`    | Host port of `demo-status` (demo profile).                                 |
-
-`.env.example` sets `PULSE_PROBE_TOKEN` to the placeholder `replace-with-a-random-token` and `PULSE_LOCATION=default`. The three port lines are commented out. The API rejects the placeholder at start, so replace it with your own token. See [Install](install.md#the-env-file).
+The Compose setups and their variables are described in the setup READMEs of [pulse-deploy](https://github.com/lorenzh/pulse-deploy), for example [`full`](https://github.com/lorenzh/pulse-deploy/blob/main/full/README.md).

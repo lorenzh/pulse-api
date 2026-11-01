@@ -47,17 +47,10 @@ jobs:
       - run: docker build --tag pulse-api:local .
       - name: Image ignores dotenv files
         run: bash scripts/image-dotenv.sh pulse-api:local
-      - run: cp .env.example .env && docker compose config --quiet
       - name: Image holds no test files
         run: |
           found=$(docker run --rm --entrypoint sh pulse-api:local -c "find /app -type f \( -name '*.test.ts' -o -name '*.spec.ts' \) -not -path '*/node_modules/*'")
           if [ -n "$found" ]; then echo "$found"; exit 1; fi
-      - name: Status port override
-        run: |
-          PULSE_STATUS_PORT=8090 docker compose config | grep 'published: "8090"'
-      - name: Console port override
-        run: |
-          PULSE_CONSOLE_PORT=8092 docker compose config --format json | jq -e '.services.console.ports[0].published == "8092" and .services.console.ports[0].host_ip == "127.0.0.1" and .services.console.ports[0].target == 8082'
 
   release:
     if: github.ref_type == 'tag'
@@ -68,17 +61,3 @@ jobs:
       id-token: write
       attestations: write
     uses: lorenzh/pulse-config/.github/workflows/release.yml@04108fa0c67d9a79c0f6d1ade4dd78df3ad8a4a7
-
-  compose-e2e:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - run: bash scripts/compose-e2e.sh
-      - name: Remove leftover containers and volumes
-        if: always()
-        run: docker compose --project-name pulse-e2e --profile demo down -v --remove-orphans
