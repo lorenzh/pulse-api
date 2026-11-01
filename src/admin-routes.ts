@@ -95,6 +95,11 @@ function ifMatchOf(header: string | undefined): string | undefined {
   return value;
 }
 
+/** Read a body that the route ignores, only to enforce the size limit on every method. */
+async function discardBody(req: IncomingMessage): Promise<void> {
+  await readBodyJson(req, true);
+}
+
 /** The JSON body; a DELETE body is read only to enforce the size limit, then dropped. */
 async function readBodyJson(req: IncomingMessage, isDelete: boolean): Promise<unknown> {
   try {
@@ -257,6 +262,7 @@ export function createAdminHandler(
     try {
       authorize(req, auditRouteOf(path), "audit-read");
       if (req.method !== "GET") throw new RouteError(405, "method not allowed", { Allow: "GET" });
+      await discardBody(req);
       await serveAudit(deps.audit, res, path, url.searchParams);
     } catch (err) {
       if (res.headersSent) throw err;
@@ -300,6 +306,7 @@ export function createAdminHandler(
       if (section === "config") {
         if (match[2] !== undefined) throw new RouteError(404, "not found");
         if (method !== "GET") throw new RouteError(405, "method not allowed", { Allow: "GET" });
+        await discardBody(req);
         const view = deps.writer.view();
         sendJson(res, 200, view, etag(view.revision));
         return true;
