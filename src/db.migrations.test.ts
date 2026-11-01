@@ -143,7 +143,7 @@ test("migration 4: a version 3 file becomes version 4 with the token and audit t
   expect(version(v3)).toBe(3);
   expect(names(v3)).toEqual([]);
   v3.close();
-  const db = openDb(path);
+  const db = openDb(path, MIGRATIONS.slice(0, 4));
   expect(version(db)).toBe(4);
   expect(names(db)).toEqual([
     "api_tokens",
@@ -167,9 +167,28 @@ test("migration 4: a version 5 file is refused", () => {
   const raw = new Database(path);
   raw.run("PRAGMA user_version = 5");
   raw.close();
-  expect(() => openDb(path)).toThrow(
+  expect(() => openDb(path, MIGRATIONS.slice(0, 4))).toThrow(
     "database schema version 5 is newer than this program supports (4); downgrades are not supported",
   );
+});
+
+test("migration 5: token listing uses the token id index after upgrading version 4", () => {
+  const path = join(dir, "v4.db");
+  openDb(path, MIGRATIONS.slice(0, 4)).close();
+  const db = openDb(path);
+  try {
+    const plan = db
+      .query<{ detail: string }, [string, number]>(
+        "EXPLAIN QUERY PLAN SELECT MAX(retires_at) AS until FROM token_secrets WHERE token_id = ? AND retires_at > ?",
+      )
+      .all("tok_example", 0);
+    expect(plan.map((row) => row.detail).join("\n")).toContain(
+      "USING INDEX token_secrets_by_token_id (token_id=?)",
+    );
+    expect(version(db)).toBe(5);
+  } finally {
+    db.close();
+  }
 });
 
 test("a fresh file has the same schema as an upgraded one, and reopening changes nothing", () => {

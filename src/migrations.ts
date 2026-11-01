@@ -118,6 +118,8 @@ CREATE TABLE audit_pending (
   temp_path TEXT NOT NULL
 );
 `,
+  // 5: token metadata looks up rotation credentials by token id for every listed token.
+  `CREATE INDEX token_secrets_by_token_id ON token_secrets (token_id);`,
 ];
 
 /** The step that adds the unique sample index; `openDb` counts the duplicates it removes. */
