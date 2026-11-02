@@ -421,3 +421,24 @@ test("http: GET /uptime, /components/uptime and /checks are identical before, du
     await freshApi.close();
   }
 });
+
+test("uptime logs: the failure line is warn, the start line is info", async () => {
+  const { service } = setup();
+  const lines: [string, string][] = [];
+  const failing: RollupService = {
+    listUptimeCheckIds: () => service.listUptimeCheckIds(),
+    missingUptimeDays: () => {
+      throw new Error("boom");
+    },
+    fillUptimeDay: () => true,
+  };
+  const { deps, timers } = runnerDeps(failing, {
+    log: (m, level) => lines.push([m, level]),
+  });
+  startUptimeRollup(deps);
+  await fire(timers, 0);
+  assert.deepEqual(lines, [
+    ["uptime rollup: backfill started (3 checks)", "info"],
+    ["uptime rollup failed: boom", "warn"],
+  ]);
+});

@@ -10,17 +10,7 @@ import {
   validateResultsResponse,
 } from "@lorenzh/pulse-contract";
 import { openDb } from "./db.ts";
-import {
-  createApiServer,
-  MAX_ATTEMPTS,
-  MAX_CERT_DAYS,
-  MAX_FUTURE_SKEW_MS,
-  MAX_LATENCY_MS,
-  MAX_REASON_LENGTH,
-  MAX_RESULT_AGE_MS,
-  maxFutureSkewMs,
-  validateResult,
-} from "./server.ts";
+import { createApiServer, maxFutureSkewMs, validateResult } from "./server.ts";
 import { createService } from "./service.ts";
 import { openTokenStore } from "./token-import.ts";
 
@@ -49,25 +39,24 @@ function accepted(patch: Record<string, unknown>): void {
 
 test("validateResult: timestamp must be an integer within the allowed window", () => {
   for (const v of [1.5, "1", Number.NaN, null]) rejected({ timestamp: v }, "timestamp");
-  rejected({ timestamp: NOW + MAX_FUTURE_SKEW_MS + 1 }, "timestamp");
-  rejected({ timestamp: NOW - MAX_RESULT_AGE_MS - 1 }, "timestamp");
-  accepted({ timestamp: NOW + MAX_FUTURE_SKEW_MS });
-  accepted({ timestamp: NOW - MAX_RESULT_AGE_MS });
+  rejected({ timestamp: NOW + 60001 }, "timestamp");
+  rejected({ timestamp: NOW - 604800001 }, "timestamp");
+  accepted({ timestamp: NOW + 60000 });
+  accepted({ timestamp: NOW - 604800000 });
 });
 
 test("validateResult: reason length", () => {
-  rejected({ reason: "x".repeat(MAX_REASON_LENGTH + 1) }, "reason");
-  accepted({ reason: "x".repeat(MAX_REASON_LENGTH) });
+  rejected({ reason: "x".repeat(1001) }, "reason");
+  accepted({ reason: "x".repeat(1000) });
 });
 
 test("validateResult: attempts bounds", () => {
-  for (const v of [0, MAX_ATTEMPTS + 1, 1.5, "2"]) rejected({ attempts: v }, "attempts");
+  for (const v of [0, 101, 1.5, "2"]) rejected({ attempts: v }, "attempts");
   accepted({ attempts: 1 });
-  accepted({ attempts: MAX_ATTEMPTS });
+  accepted({ attempts: 100 });
 });
 
 test("validateResult: latencyMs bounds", () => {
-  assert.equal(MAX_LATENCY_MS, 2147483647);
   for (const v of [-1, -0.4, 2147483648, 2147483647.6, Number.POSITIVE_INFINITY, "1"])
     rejected({ latencyMs: v }, "latencyMs");
   accepted({ latencyMs: 0 });
@@ -82,6 +71,25 @@ test("validateResult: a finite fractional latency >= 0 is rounded", () => {
   assert.equal(read(3.7), 4);
   assert.equal(read(2.5), 3);
   assert.equal(read(0.4), 0);
+});
+
+test("validateResult: accessors are rejected before rounding or validation reads them", () => {
+  for (const field of ["latencyMs", "reason"]) {
+    let reads = 0;
+    const body = { ...base, latencyMs: 3.7 };
+    Object.defineProperty(body, field, {
+      enumerable: true,
+      get: () => {
+        reads += 1;
+        return field === "latencyMs" ? 3.7 : null;
+      },
+    });
+    assert.equal(
+      validateResult(body, NOW, () => undefined),
+      "body must not have accessor properties",
+    );
+    assert.equal(reads, 0);
+  }
 });
 
 test("validateResult: statusCode is null or an integer 100-599", () => {
@@ -133,16 +141,15 @@ test("validateResult: a 10 s check rejects a timestamp 30 s ahead and names the 
 
 const CERT_TEXT = "certDaysLeft must be null or an integer from -3000000 to 3000000";
 
-test("validateResult: certDaysLeft is absent, null or an integer within MAX_CERT_DAYS", () => {
-  assert.equal(MAX_CERT_DAYS, 3_000_000);
-  for (const v of [1e9, 3_000_001, -3_000_001, Number.MAX_SAFE_INTEGER]) {
+test("validateResult: certDaysLeft is absent, null or an integer within 3000000", () => {
+  for (const v of [1e9, 3000001, -3000001, Number.MAX_SAFE_INTEGER]) {
     assert.equal(
       validateResult({ ...base, certDaysLeft: v }, NOW, () => undefined),
       CERT_TEXT,
     );
   }
   rejected({ certDaysLeft: 30.5 }, "certDaysLeft");
-  for (const v of [3_000_000, -3_000_000, 0, null, 30, -5, 2_912_000, 40_000]) {
+  for (const v of [3000000, -3000000, 0, null, 30, -5, 2_912_000, 40_000]) {
     const out = validateResult({ ...base, certDaysLeft: v }, NOW, () => undefined);
     assert.equal(typeof out === "object" ? out.certDaysLeft : out, v);
   }
