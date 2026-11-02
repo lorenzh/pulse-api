@@ -5,13 +5,17 @@ import { WIRE_VERSION, WIRE_VERSION_HEADER } from "@lorenzh/pulse-contract";
 import { openDb } from "./db.ts";
 import { createApiServer } from "./server.ts";
 import { createService } from "./service.ts";
+import { openTokenStore } from "./token-import.ts";
 
 const TOKEN = "header-token-0123456789abcdef";
 const service = createService(openDb(":memory:"));
 // eslint-disable-next-line sonarjs/no-clear-text-protocols -- local test fixture, never requested
 service.upsertChecks([{ id: "c1", name: "C1", url: "http://x/", intervalMs: 1000 }]);
 const server = createApiServer(service, {
-  tokens: [{ location: "default", token: TOKEN }],
+  tokenStore: openTokenStore(
+    { db: openDb(":memory:"), now: () => 0 },
+    { probe: [{ location: "default", token: TOKEN }], admin: undefined },
+  ),
   now: () => 1000,
 });
 let base = "";

@@ -1,7 +1,8 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { assertDistinctFromProbeTokens, parseAdminTokens } from "./admin-tokens.ts";
-import { EXAMPLE_TOKENS, findByToken, TokensError } from "./tokens.ts";
+import { createHash } from "node:crypto";
+import { assertDistinctDigests, parseAdminTokens } from "./admin-tokens.ts";
+import { EXAMPLE_TOKENS, TokensError } from "./tokens.ts";
 
 const A = "admin-a-0123456789abcdef";
 const B = "admin-b-0123456789abcdef";
@@ -46,25 +47,23 @@ test("error messages never contain a token", () => {
   );
 });
 
-test("assertDistinctFromProbeTokens: an overlap is a startup error without the token", () => {
+test("assertDistinctDigests: a probe or stored digest refuses without the token", () => {
+  // SHA-256 of A and B, from `printf %s <token> | sha256sum`.
+  const digestA = createHash("sha256").update(A).digest("hex");
+  const digestB = createHash("sha256").update(B).digest("hex");
   const admin = [{ name: "ops", token: A }];
-  assertDistinctFromProbeTokens(admin, [{ location: "eu", token: B }]);
-  assert.throws(
-    () => assertDistinctFromProbeTokens(admin, [{ location: "eu", token: A }]),
-    (err: Error) =>
-      err instanceof TokensError &&
-      /also a probe token/.test(err.message) &&
-      !err.message.includes(A),
+  assertDistinctDigests(admin, new Set([digestB]), new Set([digestB]));
+  const refuses = (probe: Set<string>, stored: Set<string>, text: string): void => {
+    assert.throws(
+      () => assertDistinctDigests(admin, probe, stored),
+      (err: Error) =>
+        err instanceof TokensError && err.message === text && !err.message.includes(A),
+    );
+  };
+  refuses(
+    new Set([digestA]),
+    new Set([digestA]),
+    "admin tokens[0] is also a probe token: use a separate token",
   );
-});
-
-test("findByToken: needs a Bearer header with a configured token", () => {
-  const a = { name: "a", token: A };
-  const b = { name: "b", token: B };
-  assert.equal(findByToken([a, b], `Bearer ${B}`), b);
-  assert.equal(findByToken([a, b], `bearer ${A}`), a);
-  assert.equal(findByToken([a], `Bearer ${B}`), undefined);
-  assert.equal(findByToken([a], A), undefined);
-  assert.equal(findByToken([a], undefined), undefined);
-  assert.equal(findByToken([], `Bearer ${A}`), undefined);
+  refuses(new Set(), new Set([digestA]), "admin tokens[0] repeats a stored token");
 });

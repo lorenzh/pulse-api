@@ -5,6 +5,7 @@ import type { ErrorResponse, ResultsResponse } from "@lorenzh/pulse-contract";
 import { openDb } from "./db.ts";
 import { createApiServer } from "./server.ts";
 import { createService } from "./service.ts";
+import { openTokenStore } from "./token-import.ts";
 
 const A = "token-a-0123456789abcdef";
 const B = "token-b-0123456789abcdef";
@@ -15,10 +16,16 @@ service.upsertChecks([
   { id: "c1", name: "C1", url: "http://x/", intervalMs: 1000 },
 ]);
 const server = createApiServer(service, {
-  tokens: [
-    { location: "east", token: A },
-    { location: "west", token: B },
-  ],
+  tokenStore: openTokenStore(
+    { db: openDb(":memory:"), now: () => 1000 },
+    {
+      probe: [
+        { location: "east", token: A },
+        { location: "west", token: B },
+      ],
+      admin: undefined,
+    },
+  ),
   now: () => 1000,
 });
 let base = "";

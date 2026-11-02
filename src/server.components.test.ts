@@ -42,7 +42,7 @@ function start(list: readonly Component[]) {
   result("a", "up", NOW - 10);
   result("b", "up", NOW - 60);
   for (const t of [50, 40, 30]) result("b", "down", NOW - t);
-  const server = createApiServer(service, { tokens: [], now: () => NOW, components: () => list });
+  const server = createApiServer(service, { now: () => NOW, components: () => list });
   return { server };
 }
 

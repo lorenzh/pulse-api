@@ -49,3 +49,33 @@ test("operation: the backup is a VACUUM INTO copy without free pages, not a copy
   assert.doesNotMatch(doc, /it keeps free pages/);
   assert.match(doc, /without free pages, so deleted rows are not in it/);
 });
+
+test("configuration: both token files are imported once and then ignored", () => {
+  const doc = read("docs/configuration.md");
+  assert.match(doc, /Both token files are imported once and then ignored/);
+  assert.doesNotMatch(doc, /a change to the environment or to the tokens files needs a restart/);
+  assert.match(doc, /ignored: tokens are stored in the database/);
+});
+
+test("rest-api: tokens, scopes, overlap, paging and export are documented", () => {
+  const doc = read("docs/rest-api.md");
+  for (const route of ["POST /admin/tokens", "/rotate", "/revoke", "GET /admin/audit/export"]) {
+    assert.ok(doc.includes(route), route);
+  }
+  assert.match(doc, /valid for 10 minutes/);
+  assert.match(doc, /application\/x-ndjson; charset=utf-8/);
+  assert.match(doc, /`limit` \(1 to 1000, default 100\)/);
+  assert.match(doc, /`at` is not strictly ordered by `id`/);
+  assert.doesNotMatch(doc, /A missing, wrong or probe token answers `401`/);
+});
+
+test("operation: rotation overlap, lockout restore, audit growth, EXTRA and orphan temp files", () => {
+  const doc = read("docs/operation.md");
+  assert.doesNotMatch(doc, /Tokens are read at start\. Restart the API to rotate/);
+  assert.match(doc, /PULSE_PROBE_TOKEN/);
+  assert.match(doc, /restore a \[backup\]/);
+  assert.match(doc, /The table only grows/);
+  assert.match(doc, /`synchronous = EXTRA`/);
+  assert.match(doc, /Delete it while the API is stopped/);
+  assert.match(doc, /Rotate them once after the upgrade/);
+});

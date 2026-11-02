@@ -1,8 +1,7 @@
-import { createHash, timingSafeEqual } from "node:crypto";
 import { isRecord } from "@lorenzh/pulse-kit";
 import { z } from "zod";
 import { firstIssue, type Issue, pathName } from "./issue-path.ts";
-import { MAX_LOCATION_LENGTH } from "./service.ts";
+import { MAX_LOCATION_LENGTH } from "./location-limits.ts";
 
 export const MIN_TOKEN_LENGTH = 16;
 /** The prefix of every placeholder secret and token in the repository's examples. */
@@ -95,37 +94,7 @@ export function parseTokens(data: unknown): ProbeToken[] {
 
 const BEARER = /^bearer (\S+)$/i;
 
-function digest(value: string): Buffer {
-  return createHash("sha256").update(value).digest();
-}
-
-/**
- * The first entry whose token is the Bearer token in `header`, or undefined. Compares the digest
- * against every entry without an early exit, so the time does not reveal which entry matched.
- */
-export function findByToken<T extends { token: string }>(
-  entries: readonly T[],
-  header: string | undefined,
-): T | undefined {
-  const presented = header === undefined ? undefined : BEARER.exec(header)?.[1];
-  if (presented === undefined) return undefined;
-  const wanted = digest(presented);
-  let found: T | undefined;
-  for (const entry of entries) {
-    if (timingSafeEqual(wanted, digest(entry.token)) && found === undefined) found = entry;
-  }
-  return found;
-}
-
-/** True when `header` has the Bearer form that `findByToken` reads. */
-export function isBearer(header: string | undefined): boolean {
-  return header !== undefined && BEARER.test(header);
-}
-
-/** Return the location bound to the bearer token in `header`, or undefined. */
-export function authenticate(
-  tokens: readonly ProbeToken[],
-  header: string | undefined,
-): string | undefined {
-  return findByToken(tokens, header)?.location;
+/** The secret of a Bearer `header`, or undefined when the header is missing or has another form. */
+export function bearerSecret(header: string | undefined): string | undefined {
+  return header === undefined ? undefined : BEARER.exec(header)?.[1];
 }

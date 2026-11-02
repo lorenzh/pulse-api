@@ -523,7 +523,7 @@ test("retention: rollups before the cutoff day and of removed checks are deleted
 });
 
 async function listen(service: ReturnType<typeof setup>["service"], now: () => number = () => NOW) {
-  const server = createApiServer(service, { tokens: [], now });
+  const server = createApiServer(service, { now });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   return {

@@ -1,11 +1,14 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   ADMIN_AUTH_LOG_WINDOW_MS,
+  adminAccess,
   createAdminAuthFailures,
-  tokenKindOf,
 } from "./admin-auth-failures.ts";
+import { openDb } from "./db.ts";
 import { createMetrics } from "./metrics.ts";
+import { openTokenStore } from "./token-import.ts";
 
 function setup() {
   let t = 0;
@@ -82,11 +85,63 @@ test("the same route pattern is one key, and no metric series exists before a fa
   );
 });
 
-test("tokenKindOf: missing without a Bearer header, probe for a probe token, else unknown", () => {
-  const isProbe = (h: string | undefined) => h === "Bearer probe-token";
-  assert.equal(tokenKindOf(undefined, isProbe), "missing");
-  assert.equal(tokenKindOf("Basic abc", isProbe), "missing");
-  assert.equal(tokenKindOf("Bearer a b", isProbe), "missing");
-  assert.equal(tokenKindOf("Bearer probe-token", isProbe), "probe");
-  assert.equal(tokenKindOf("Bearer not-a-real-token-123456", isProbe), "unknown");
+const PROBE = "probe-token-0123456789abcdef";
+const ADMIN = "admin-token-0123456789abcdef";
+
+function storeAt(clock: { t: number }) {
+  const store = openTokenStore(
+    { db: openDb(":memory:"), now: () => clock.t },
+    { probe: [{ location: "eu", token: PROBE }], admin: [{ name: "ops", token: ADMIN }] },
+  );
+  const actor = { tokenId: null, name: "test" };
+  const reader = store.create(
+    { name: "reader", scopes: ["read"], location: null, expiresAt: 100, source: "api" },
+    actor,
+  );
+  return { store, reader };
+}
+
+test("adminAccess: the D2 kinds missing, unknown, inactive, probe and scope", () => {
+  const clock = { t: 0 };
+  const { store, reader } = storeAt(clock);
+  const kind = (header: string | undefined) => {
+    const access = adminAccess(store, header, "config-write");
+    return access.kind === "ok" ? "ok" : `${access.status} ${access.token}`;
+  };
+  assert.equal(kind(undefined), "401 missing");
+  assert.equal(kind("Basic abc"), "401 missing");
+  assert.equal(kind("Bearer not-a-real-token-123456"), "401 unknown");
+  assert.equal(kind(`Bearer ${PROBE}`), "403 probe");
+  assert.equal(kind(`Bearer ${reader.secret}`), "403 scope");
+  assert.equal(kind(`Bearer ${ADMIN}`), "ok");
+  clock.t = 100;
+  assert.equal(kind(`Bearer ${reader.secret}`), "401 inactive");
+});
+
+test("no auth-failure line holds a token, its digest, its id or its name", () => {
+  const clock = { t: 0 };
+  const { store, reader } = storeAt(clock);
+  const { recorder, lines } = setup();
+  const headers = [undefined, "Bearer unknown-token-0123456789", `Bearer ${PROBE}`];
+  headers.push(`Bearer ${reader.secret}`);
+  for (const header of headers) {
+    const access = adminAccess(store, header, "config-write");
+    if (access.kind === "denied") recorder.record("/admin/checks", access.status, access.token);
+  }
+  clock.t = 100;
+  const expired = adminAccess(store, `Bearer ${reader.secret}`, "config-write");
+  if (expired.kind === "denied") recorder.record("/admin/checks", expired.status, expired.token);
+  assert.deepEqual(
+    lines.map((l) => l.fields.token),
+    ["missing", "unknown", "probe", "scope", "inactive"],
+  );
+  const text = JSON.stringify(lines);
+  const probeId = store.list().find((t) => t.scopes.includes("probe"))?.id ?? "missing id";
+  for (const secret of [PROBE, reader.secret, "unknown-token-0123456789"]) {
+    assert.ok(!text.includes(secret));
+    assert.ok(!text.includes(createHash("sha256").update(secret).digest("hex")));
+  }
+  for (const word of [reader.token.id, reader.token.name, probeId, "probe eu #1"]) {
+    assert.ok(!text.includes(word), word);
+  }
 });

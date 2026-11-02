@@ -49,9 +49,13 @@ A check of type `heartbeat` is for cron jobs and workers. The job calls `POST|GE
 
 ## Manual incidents
 
-Checks, components and maintenance windows can be changed through `/admin/*` routes with an admin token (`PULSE_API_ADMIN_TOKENS_FILE`), and the API applies a changed checks file without a restart: it looks at the file every `PULSE_CHECKS_RELOAD_INTERVAL_MS` (default 5000, `0` is off) and on `SIGHUP`. See [REST API](docs/rest-api.md#admin-config-routes) and [Operation](docs/operation.md#changing-checks).
+Checks, components and maintenance windows can be changed through `/admin/*` routes with a token that has the scopes `admin` and `checks`, and the API applies a changed checks file without a restart: it looks at the file every `PULSE_CHECKS_RELOAD_INTERVAL_MS` (default 5000, `0` is off) and on `SIGHUP`. See [REST API](docs/rest-api.md#admin-config-routes) and [Operation](docs/operation.md#changing-checks).
 
-Operators post incidents with timed updates through `POST /manual-incidents`, `/manual-incidents/:id/updates` and `/manual-incidents/:id/resolve`, and read them from `GET /manual-incidents`. Writes need an admin token from `PULSE_API_ADMIN_TOKENS_FILE` (copy `admin-tokens.example.json`). Without the setting the feature is off: writes answer `404` and the reads are empty. See [REST API](docs/rest-api.md#manual-incidents) for the shapes, limits and `curl` examples.
+Operators post incidents with timed updates through `POST /manual-incidents`, `/manual-incidents/:id/updates` and `/manual-incidents/:id/resolve`, and read them from `GET /manual-incidents`. Writes need a token with `admin` and `incidents`. Before the first admin import from `PULSE_API_ADMIN_TOKENS_FILE` (copy `admin-tokens.example.json`) the feature is off: writes answer `404` and the reads are empty. See [REST API](docs/rest-api.md#manual-incidents) for the shapes, limits and `curl` examples.
+
+## Tokens and audit
+
+Probe and admin tokens are stored in the database as SHA-256 digests, with scopes (`read`, `checks`, `incidents`, `admin`, `probe`), an optional expiry and a last-used time. `tokens.json` and the admin tokens file are imported once at the first start and then ignored. Admins create, list, rotate (10-minute overlap) and revoke tokens through `/admin/tokens`. Every admin write is stored as a secret-free audit entry, served by `GET /admin/audit` and `GET /admin/audit/export` (JSON lines). See [REST API](docs/rest-api.md#tokens), [Configuration](docs/configuration.md#token-import) and [Operation](docs/operation.md#token-rotation).
 
 ## Health and metrics
 

@@ -21,6 +21,8 @@ The API serves JSON over HTTP. The types come from [pulse-contract](https://gith
 | `GET`         | `/healthz`                 | none             | `200 ok` (liveness, `text/plain`)                      |
 | `GET`         | `/readyz`                  | none             | `200 ok` or `503` with a reason (`text/plain`)         |
 | `GET`         | `/metrics`                 | none             | Prometheus text                                        |
+| `GET`, `POST` | `/admin/tokens[/:id[/…]]`  | `admin`          | see [Tokens](#tokens)                                  |
+| `GET`         | `/admin/audit[/export]`    | `admin`          | see [Audit log](#audit-log)                            |
 
 General rules:
 
@@ -278,11 +280,13 @@ Limits: `title` 1 to 200 characters, `message` 1 to 2000, at most 100 updates pe
 
 ### GET /manual-incidents
 
-Public, like the other reads. `?status=open|resolved|all` (default `all`): open incidents (newest created first), then incidents resolved within 14 days (newest first, at most 50). `resolved` returns only the second group. Another value answers `400`. `GET /manual-incidents/:id` answers one incident or `404`. Without `PULSE_API_ADMIN_TOKENS_FILE` the feature is off: the list is empty and every id answers `404`, even when the database holds incidents.
+Public, like the other reads. `?status=open|resolved|all` (default `all`): open incidents (newest created first), then incidents resolved within 14 days (newest first, at most 50). `resolved` returns only the second group. Another value answers `400`. `GET /manual-incidents/:id` answers one incident or `404`. Before the first admin import (see [Token import](configuration.md#token-import)) the feature is off: the list is empty and every id answers `404`, even when the database holds incidents.
 
 ### Write routes
 
-All need `Authorization: Bearer <admin token>` (see [admin-tokens.json](configuration.md#admin-tokensjson)). A missing, wrong or probe token answers `401`; the `admin auth failed` log line tells them apart with `token` `missing`, `unknown` or `probe`. Without `PULSE_API_ADMIN_TOKENS_FILE` they answer `404` and log nothing.
+All need `Authorization: Bearer <token>` of a token with the scopes `admin` and `incidents` (see [Scopes](#scopes)). A missing, unknown, expired, revoked or rotated-out token answers `401`. A probe token or a token without those scopes answers `403`. The `admin auth failed` log line tells them apart with `token` `missing`, `unknown`, `inactive`, `probe` or `scope`. Before the first admin import (see [admin-tokens.json](configuration.md#admin-tokensjson)) they answer `404` and log nothing.
+
+Each write and its [audit entry](#audit-log) commit in one transaction, and the answer is sent after the commit. If the audit entry cannot be written, nothing changes and the answer is `500`.
 
 Each successful write logs one `info` line `manual incident write` with the admin token name, the action and the id. A write that fails after authentication (`400`, `404`, `409`, `413`) logs one `warn` line `manual incident write failed` with the status, the action and, except for a create, the id. No title, message or body goes into a line. See [Logs](operation.md#logs).
 
@@ -312,7 +316,7 @@ curl -sS -X DELETE "$API/manual-incidents/1" -H "Authorization: Bearer $TOKEN"
 
 ## Admin config routes
 
-Operators change checks, components and maintenance windows through the API. The checks file stays the only source of truth: a write rewrites it and the API applies it at once. The shapes are `AdminConfigResponse`, `AdminCheckInput`, `AdminCheckView`, `AdminComponent` and `AdminMaintenanceInput`/`AdminMaintenanceView` of `@lorenzh/pulse-contract`. The routes need `PULSE_API_ADMIN_TOKENS_FILE` and `Authorization: Bearer <admin token>`.
+Operators change checks, components and maintenance windows through the API. The checks file stays the only source of truth: a write rewrites it and the API applies it at once. The shapes are `AdminConfigResponse`, `AdminCheckInput`, `AdminCheckView`, `AdminComponent` and `AdminMaintenanceInput`/`AdminMaintenanceView` of `@lorenzh/pulse-contract`. The routes need the admin import (see [admin-tokens.json](configuration.md#admin-tokensjson)) and `Authorization: Bearer <token>`: `GET /admin/config` needs `read` or `checks`, a write needs `admin` and `checks` (see [Scopes](#scopes)).
 
 | Route                                                               | Answer                                                                              |
 | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
@@ -325,11 +329,77 @@ Operators change checks, components and maintenance windows through the API. The
 
 The **revision** is `sha256-<hex>` of the bytes of the file. It is sent as a quoted `ETag` and as `revision` in bodies. Every write needs `If-Match: "<revision>"`: missing gives `428`, stale gives `412`, `*` or a malformed value gives `400`. Every success carries the new `ETag`.
 
-Statuses, in the order the API decides them: `404` feature off, `401` missing or wrong token, `403` a valid probe token, `413` body over 1 MB, `400` bad JSON, bad `If-Match` or id mismatch, `428`, `503` the checks file cannot be written, `412`, `422` the body or the resulting file is invalid (the same messages as the checks file; they never quote a value), `409` id exists or still referenced, `404` unknown id or index. `405` for another method. A `401` or `403` is logged as `admin auth failed` and counted in `pulse_api_admin_auth_failures_total` (see [Logs](operation.md#logs)).
+Statuses, in the order the API decides them: `404` feature off, `401` missing or wrong token, `403` a probe token or a token without the scope, `413` body over 1 MB, `400` bad JSON, bad `If-Match` or id mismatch, `428`, `503` the checks file cannot be written, `412`, `422` the body or the resulting file is invalid (the same messages as the checks file; they never quote a value), `409` id exists or still referenced, `404` unknown id or index. `405` for another method. A `401` or `403` is logged as `admin auth failed` and counted in `pulse_api_admin_auth_failures_total` (see [Logs](operation.md#logs)).
 
 Bodies are validated by the same parsers as the file, so unknown keys, limits and `{"env": NAME}` headers behave as in [checks.json](configuration.md#checksjson). A maintenance window may carry `start` and `end` as ISO strings or epoch milliseconds; the file keeps ISO strings. Responses never contain header values, `{"env": NAME}` references, request bodies or heartbeat secrets: a check lists its header names under `headers`, `hasBody: true` stands for a body, and a heartbeat check shows `hasSecret: true`. A heartbeat `secret` is write-only: send it on `POST` or to rotate it with `PUT`; a `PUT` without `secret` keeps the old one, and changing a check to a heartbeat check needs one.
 
-`GET /probe/checks` and the rights of probe tokens are unchanged.
+`GET /probe/checks` and `POST /results` need a probe token. An admin-side token gets `403` there.
+
+Every successful write adds one [audit entry](#audit-log) with the new file revision. The entry is first stored as pending, durably, before the file is renamed, and is confirmed after the rename is on disk. If the pending entry cannot be stored, the file stays unchanged and the answer is `500 {"error":"audit log could not be written"}`. If the file was stored but the confirmation failed, the answer is `500 {"error":"checks file stored; its audit entry is pending and is resolved at the next write or restart"}`. See [Audit durability](operation.md#audit-durability).
+
+## Scopes
+
+Tokens are stored in the database as SHA-256 digests only. Each token has one or more scopes, in the order `read`, `checks`, `incidents`, `admin`, `probe`. A probe token has exactly `["probe"]` and a `location`. An admin-side token has 1 to 4 of the other scopes and no location.
+
+| Route                                                                            | Passes when the token holds  |
+| -------------------------------------------------------------------------------- | ---------------------------- |
+| `GET /probe/checks`, `POST /results`                                             | `probe`                      |
+| `GET /admin/config`                                                              | `read` or `checks`           |
+| `POST`/`PUT`/`DELETE` `/admin/checks`, `/admin/components`, `/admin/maintenance` | `admin` and `checks`         |
+| Manual-incident writes                                                           | `admin` and `incidents`      |
+| `GET /admin/tokens`, `GET /admin/tokens/:id`                                     | `admin`                      |
+| `POST /admin/tokens`, `.../rotate`, `.../revoke`                                 | `admin`, plus the grant rule |
+| `GET /admin/audit`, `GET /admin/audit/export`                                    | `admin`                      |
+
+Statuses on admin routes: `404` before the first admin import, then `401` `{"error":"unauthorized"}` with `WWW-Authenticate: Bearer` for a missing, unknown, expired, revoked or rotated-out token (the body never says which), then `403` `{"error":"forbidden"}` for a valid token without the scope, then the route's own statuses.
+
+**Grant rule:** a caller may create, rotate or revoke a token only when it holds every scope of that token, where `probe` counts as `checks` (a probe token reads check headers and bodies). Otherwise `403`.
+
+**Last-admin rule:** revoking the last active token with `admin` answers `409` `{"error":"cannot revoke the last active admin token"}`. A token is active when it is not revoked and not expired. Expiry can still lock everyone out; the recovery is a [backup restore](operation.md#backup-and-restore).
+
+## Tokens
+
+All token routes answer with `cache-control: no-store`, also on `401` and `403`. Bodies are limited to 4096 bytes (`413`). Bad JSON answers `400`. An unknown or malformed `:id` answers `404 {"error":"token not found"}` after auth.
+
+| Route                           | Body               | Answer                                                   |
+| ------------------------------- | ------------------ | -------------------------------------------------------- |
+| `GET /admin/tokens`             | none               | `200` `TokensResponse` `{tokens}`, revoked ones included |
+| `GET /admin/tokens/:id`         | none               | `200` `TokenMetadata`                                    |
+| `POST /admin/tokens`            | `TokenCreateInput` | `201` `TokenSecretResponse` and a `Location` header      |
+| `POST /admin/tokens/:id/rotate` | empty or `{}`      | `200` `TokenSecretResponse`                              |
+| `POST /admin/tokens/:id/revoke` | empty or `{}`      | `200` `TokenMetadata`                                    |
+- `TokenCreateInput` is `{name, scopes, location?, expiresAt?}`; unknown keys answer `400`, so a client never picks its secret. `name` is 1 to 100 characters after trim without control characters. A probe token needs `location` (1 to 64 characters after trim, stored trimmed); other tokens must not have one. `expiresAt` (epoch ms) must be later than now and at most 3650 days ahead.
+- `TokenSecretResponse` is `{token, secret, previousValidUntil}`. The `secret` (`pulse_` and 43 base64url characters) is shown only in this one answer. No other route, log line or audit entry holds it, and it cannot be read again.
+- `TokenMetadata` is `{id, name, scopes, location, source, createdAt, lastUsedAt, expiresAt, revokedAt, rotatedAt, previousValidUntil}`. `source` is `api` or `file` (imported). `lastUsedAt` is written to the database at most once a minute per token.
+- **Rotation overlap:** a rotate makes a new secret. The old one stays valid for 10 minutes (`previousValidUntil`, at most until `expiresAt`), so a probe or a script can switch without a gap. A second rotate during the overlap answers `409` `{"error":"a rotation is still in its overlap"}`. A revoked token answers `409` `{"error":"token is revoked"}`, an expired one `409` `{"error":"token is expired"}`.
+- **Revoke** invalidates every secret of the token at once, also one in its overlap.
+- Each write logs `token write` with the caller's name, the action and the token id.
+
+```sh
+curl -sS -X POST "$API/admin/tokens" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"name":"probe eu","scopes":["probe"],"location":"eu"}'
+curl -sS -X POST "$API/admin/tokens/<id>/rotate" -H "Authorization: Bearer $TOKEN"
+curl -sS -X POST "$API/admin/tokens/<id>/revoke" -H "Authorization: Bearer $TOKEN"
+```
+
+## Audit log
+
+Every admin write is stored as an `AuditEntry` `{id, at, actor: {tokenId, name}, action, target: {kind, id}, revision}`. `actor.name` is the token name at write time. `action` is one of `check.*`, `component.*`, `maintenance.*` (`create`, `replace`, `delete`), `manual-incident.*` (`create`, `update`, `resolve`, `delete`) and `token.*` (`create`, `rotate`, `revoke`, `import`). `target.id` is the check or component id unchanged (any length), the maintenance index as text, the incident id as text, or the token id. `revision` is the checks file revision after a config write, else `null`. An entry never holds a body, title, message, header, heartbeat secret, URL, token value or digest. Rejected attempts and automatic work (results, pings, reloads, retention) are not audited. Entries are never deleted.
+
+### GET /admin/audit
+
+Query parameters, all optional: `actor` (token id), `action`, `targetKind`, `targetId` (exact), `since` (epoch ms, inclusive), `until` (exclusive), `limit` (1 to 1000, default 100) and `before` (an entry id, the cursor). An unknown or repeated parameter, a malformed value or `since >= until` answers `400` with a message that names the parameter but not its value.
+
+The answer is `200` `AuditPage` `{entries, nextBefore}`, ordered by `id` descending. `nextBefore` is the id to pass as `before` for the next page, or `null` on the last page. Ids follow commit order, so a walk by `before` never skips or repeats an entry; entries committed during the walk show on a fresh first page. `at` is the time of the request, and a config entry confirmed late keeps its `at`, so `at` is not strictly ordered by `id`: a `since`/`until` window can gain an older entry after it was read.
+
+### GET /admin/audit/export
+
+The same filters without `limit` and `before` (either answers `400`). The answer is `200` with `content-type: application/x-ndjson; charset=utf-8`: one JSON entry per line, by `id` ascending, up to the largest id at the start of the export. It is read in batches of 500, so memory stays small. An empty result is an empty body.
+
+```sh
+curl -sS "$API/admin/audit?action=check.create&limit=10" -H "Authorization: Bearer $TOKEN"
+curl -sS "$API/admin/audit/export" -H "Authorization: Bearer $TOKEN" > audit.ndjson
+```
 
 ## GET /healthz
 

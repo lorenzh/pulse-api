@@ -325,7 +325,7 @@ const components: Component[] = [
 ];
 
 async function listen(service: Service, now: () => number) {
-  const server = createApiServer(service, { tokens: [], now, components: () => components });
+  const server = createApiServer(service, { now, components: () => components });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   return {

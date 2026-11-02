@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openDb } from "./db.ts";
+import { openDb, withDurableCommit } from "./db.ts";
 
 function namesOf(path: string, type: "table" | "index"): string[] {
   const db = openDb(path);
@@ -99,5 +99,76 @@ test("a file database uses WAL with synchronous NORMAL, also a file made in dele
 test("an in-memory database keeps its journal mode and synchronous FULL", () => {
   const db = openDb(":memory:");
   assert.deepEqual(pragmas(db), { mode: "memory", sync: 2 });
+  db.close();
+});
+
+function synchronous(db: Database): number {
+  return (db.query("PRAGMA synchronous").get() as { synchronous: number }).synchronous;
+}
+
+function journal(db: Database): string {
+  return (db.query("PRAGMA journal_mode").get() as { journal_mode: string }).journal_mode;
+}
+
+/** Levels read inside `fn` and after it, for a returning and for a throwing `fn`. */
+function durableLevels(db: Database): number[] {
+  const seen: number[] = [];
+  withDurableCommit(db, () => {
+    seen.push(synchronous(db));
+  });
+  seen.push(synchronous(db));
+  expect(() =>
+    withDurableCommit(db, () => {
+      seen.push(synchronous(db));
+      throw new Error("boom");
+    }),
+  ).toThrow("boom");
+  seen.push(synchronous(db));
+  return seen;
+}
+
+test("withDurableCommit runs at EXTRA on a WAL file and restores NORMAL", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pulse-db-"));
+  try {
+    const db = openDb(join(dir, "pulse.db"));
+    expect(journal(db)).toBe("wal");
+    expect(durableLevels(db)).toEqual([3, 1, 3, 1]);
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("withDurableCommit runs at EXTRA on a delete-mode file and restores FULL", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pulse-db-"));
+  try {
+    const db = new Database(join(dir, "plain.db"));
+    db.run("PRAGMA journal_mode = DELETE");
+    expect(journal(db)).toBe("delete");
+    expect(durableLevels(db)).toEqual([3, 2, 3, 2]);
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("withDurableCommit runs at EXTRA on :memory: and restores FULL", () => {
+  const db = openDb(":memory:");
+  expect(durableLevels(db)).toEqual([3, 2, 3, 2]);
+  db.close();
+});
+
+test("withDurableCommit throws inside a transaction and leaves synchronous unchanged", () => {
+  const db = openDb(":memory:");
+  let ran = false;
+  expect(() =>
+    db.transaction(() =>
+      withDurableCommit(db, () => {
+        ran = true;
+      }),
+    )(),
+  ).toThrow("withDurableCommit must run outside a transaction");
+  expect(ran).toBe(false);
+  expect(synchronous(db)).toBe(2);
   db.close();
 });

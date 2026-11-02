@@ -1,6 +1,6 @@
 # Configuration
 
-The API is configured by environment variables and two JSON files. It reads them at start. The checks file is also reloaded while the API runs (see [Changing checks](operation.md#changing-checks)); a change to the environment or to the tokens files needs a restart.
+The API is configured by environment variables and two JSON files. It reads them at start. The checks file is also reloaded while the API runs (see [Changing checks](operation.md#changing-checks)); a change to the environment needs a restart. Both token files are imported once into the database and then ignored (see [Token import](#token-import)).
 
 ## Environment variables
 
@@ -9,8 +9,8 @@ The API is configured by environment variables and two JSON files. It reads them
 | `PORT`                            | `3000`          | HTTP port. An integer from 0 to 65535.                                                                                                                                                    |
 | `PULSE_DB`                        | `./pulse.db`    | Path of the SQLite file. It is created if it does not exist.                                                                                                                              |
 | `PULSE_CHECKS_FILE`               | `./checks.json` | Path of the [checks file](#checksjson).                                                                                                                                                   |
-| `PULSE_TOKENS_FILE`               | `./tokens.json` | Path of the [tokens file](#tokensjson).                                                                                                                                                   |
-| `PULSE_API_ADMIN_TOKENS_FILE`     | unset           | Path of the [admin tokens file](#admin-tokensjson). Unset turns the write routes of manual incidents and the [admin config routes](rest-api.md#admin-config-routes) off.                  |
+| `PULSE_TOKENS_FILE`               | `./tokens.json` | Path of the [tokens file](#tokensjson). Read only until its one-time import.                                                                                                              |
+| `PULSE_API_ADMIN_TOKENS_FILE`     | unset           | Path of the [admin tokens file](#admin-tokensjson). Read only until its one-time import. Until then, the admin routes are off.                                                            |
 | `PULSE_CHECKS_RELOAD_INTERVAL_MS` | `5000`          | Time between two looks at the checks file for a change. `0` turns the look off; else an integer from 1000 to 3600000. See [Hot reload](operation.md#changing-checks).                     |
 | `PULSE_RETENTION_DAYS`            | `90`            | Days of raw results to keep. An integer of at least 90.                                                                                                                                   |
 | `PULSE_LOCATION_SILENT_MS`        | derived         | Silence after which a probe location is `silent` in `GET /locations`. An integer from 1 to 2147483647. Unset: `max(180000, 3 × the largest interval of the active non-heartbeat checks)`. |
@@ -228,6 +228,15 @@ The secret is kept in memory only. `GET /checks`, `/metrics`, incident reasons a
 
 A check may be in several components. A component id may equal a check id. An unknown key, an unknown check id or a duplicate component id stops the start, for example `components[0].checkIds[1] must reference a configured check`. A change to components applies without a restart, like the rest of the file (see [Changing checks](operation.md#changing-checks)); an invalid file is not applied and the running components stay.
 
+## Token import
+
+Tokens live in the database as SHA-256 digests (see [Scopes](rest-api.md#scopes)). Both token files are imported once and then ignored:
+
+- **Probe tokens.** At the first start, `PULSE_TOKENS_FILE` must exist and be valid. Each entry becomes a token with `["probe"]`, its location and the name `probe <location> #<n>` (`n` is the position in the file).
+- **Admin tokens.** At the first start with `PULSE_API_ADMIN_TOKENS_FILE` set, each entry becomes a token with its name and `["read","checks","incidents","admin"]`, the same access as before. This first import turns the admin routes on for good: removing the file later, or revoking every admin, does not turn them off.
+- Each imported token keeps its secret and gets one `token.import` [audit entry](rest-api.md#audit-log) by `bootstrap`. A failed import rolls back and fails the start; the next start tries again.
+- After an import, its file is never opened again: it may be missing, and edits to it change nothing. A revoked or rotated token does not come back from the file. If the setting is set, the start logs `<setting> ignored: tokens are stored in the database`. New tokens come from [`POST /admin/tokens`](rest-api.md#tokens).
+
 ## tokens.json
 
 The file is `{"tokens": [{"location": "east", "token": "<secret>"}]}`. Keep it out of git. Copy `tokens.example.json` as a start.
@@ -242,7 +251,7 @@ A token must not contain whitespace, must not start with `replace-with-` and mus
 
 ## admin-tokens.json
 
-Optional. Set `PULSE_API_ADMIN_TOKENS_FILE` to enable `POST`, `DELETE` on `/manual-incidents`. The file is `{"tokens": [{"name": "ops", "token": "<secret>"}]}`. Copy `admin-tokens.example.json` as a start and keep the file out of git.
+Optional, read once (see [Token import](#token-import)). Set `PULSE_API_ADMIN_TOKENS_FILE` to enable `POST`, `DELETE` on `/manual-incidents`. The file is `{"tokens": [{"name": "ops", "token": "<secret>"}]}`. Copy `admin-tokens.example.json` as a start and keep the file out of git.
 
 | Field    | Rule                                                                                                        |
 | -------- | ----------------------------------------------------------------------------------------------------------- |
@@ -250,7 +259,7 @@ Optional. Set `PULSE_API_ADMIN_TOKENS_FILE` to enable `POST`, `DELETE` on `/manu
 | `name`   | Non-empty string; only for your own bookkeeping.                                                            |
 | `token`  | The same rules as a probe token: 16 or more characters, no whitespace, not a placeholder or public example. |
 
-An admin token must differ from every probe token, and tokens must not repeat. Either error stops the start with `pulse-api: <message> (PULSE_API_ADMIN_TOKENS_FILE=<path>)` and exit code 2. Messages never print token values and the start log only counts tokens. Without the setting the manual incidents feature is off: the write routes answer `404`, `GET /manual-incidents` answers `200` with an empty list and `GET /manual-incidents/<id>` answers `404`, even when the database holds incidents. The stored incidents come back when the setting is set again. The tokens are compared in constant time.
+An admin token must differ from every probe token and every stored token, and tokens must not repeat (`admin tokens[<i>] is also a probe token: use a separate token`, `admin tokens[<i>] repeats a stored token`). Either error stops the start with `pulse-api: <message> (PULSE_API_ADMIN_TOKENS_FILE=<path>)` and exit code 2. Messages never print token values and the start log only counts tokens. Before the first admin import the manual incidents feature is off: the write routes answer `404`, `GET /manual-incidents` answers `200` with an empty list and `GET /manual-incidents/<id>` answers `404`, even when the database holds incidents. The stored incidents come back after the admin import. A presented token is hashed and its digest is confirmed in constant time.
 
 ## Compose variables
 

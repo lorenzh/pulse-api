@@ -9,6 +9,7 @@ import { ConfigError, parseChecks } from "./config.ts";
 import { openDb } from "./db.ts";
 import { createApiServer } from "./server.ts";
 import { createService } from "./service.ts";
+import { openTokenStore } from "./token-import.ts";
 
 // eslint-disable-next-line sonarjs/no-clear-text-protocols -- plain http/ftp literal is a local test fixture, never requested over a network
 const base = { id: "k", name: "K", url: "http://x/", intervalMs: 1000 };
@@ -73,7 +74,13 @@ test("server: GET /checks serves the keyword only for checks that have one", asy
     { ...base, id: "plain" },
   ]);
   const server = createApiServer(service, {
-    tokens: [{ location: "default", token: "test-token-default-0123456789" }],
+    tokenStore: openTokenStore(
+      { db: openDb(":memory:"), now: () => 0 },
+      {
+        probe: [{ location: "default", token: "test-token-default-0123456789" }],
+        admin: undefined,
+      },
+    ),
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   try {

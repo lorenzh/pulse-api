@@ -5,9 +5,13 @@ import type { ErrorResponse } from "@lorenzh/pulse-contract";
 import { openDb } from "./db.ts";
 import { createApiServer } from "./server.ts";
 import { createService } from "./service.ts";
+import { openTokenStore } from "./token-import.ts";
 
 const server = createApiServer(createService(openDb(":memory:")), {
-  tokens: [{ location: "default", token: "ops-token-0123456789abcdef" }],
+  tokenStore: openTokenStore(
+    { db: openDb(":memory:"), now: () => 0 },
+    { probe: [{ location: "default", token: "ops-token-0123456789abcdef" }], admin: undefined },
+  ),
   now: () => 1000,
 });
 let base = "";

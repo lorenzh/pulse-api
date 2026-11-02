@@ -38,7 +38,6 @@ async function start(
   service.upsertChecks([CHECK]);
   opts.prepare?.(service, db);
   const server = createApiServer(service, {
-    tokens: [],
     now: () => 1000,
     ...(opts.notReady === undefined ? {} : { notReadyReason: opts.notReady }),
   });
@@ -195,7 +194,7 @@ test("/readyz: 200, 503 while shutting down, 503 without error text when the db 
   }
   const db = openDb(":memory:");
   const service = createService(db);
-  const server = createApiServer(service, { tokens: [] });
+  const server = createApiServer(service, {});
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   try {

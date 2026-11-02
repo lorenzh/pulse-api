@@ -6,6 +6,7 @@ import { openDb } from "./db.ts";
 import { createMetrics } from "./metrics.ts";
 import { createApiServer } from "./server.ts";
 import { createService } from "./service.ts";
+import { openTokenStore } from "./token-import.ts";
 
 const TOKEN = "test-token-east-0123456789abcdef";
 // eslint-disable-next-line sonarjs/no-clear-text-protocols -- local test fixture, never requested
@@ -68,7 +69,10 @@ test("POST /results twice: 204 both times, one row, one metric count", async () 
   service.upsertChecks([CHECK]);
   const metrics = createMetrics();
   const server = createApiServer(service, {
-    tokens: [{ location: "default", token: TOKEN }],
+    tokenStore: openTokenStore(
+      { db: openDb(":memory:"), now: () => 0 },
+      { probe: [{ location: "default", token: TOKEN }], admin: undefined },
+    ),
     now: () => 1000,
     metrics,
   });
@@ -108,7 +112,10 @@ test("POST /results twice with a down result: one row, no second state change", 
   const service = createService(openDb(":memory:"));
   service.upsertChecks([CHECK]);
   const server = createApiServer(service, {
-    tokens: [{ location: "default", token: TOKEN }],
+    tokenStore: openTokenStore(
+      { db: openDb(":memory:"), now: () => 0 },
+      { probe: [{ location: "default", token: TOKEN }], admin: undefined },
+    ),
     now: () => 1000,
     metrics: createMetrics(),
   });

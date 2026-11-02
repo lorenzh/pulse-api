@@ -20,7 +20,7 @@ import {
   validateAdminConfigResponse,
   validateAdminMaintenanceView,
 } from "@lorenzh/pulse-contract";
-import { type LogLevel, nodeAtomicWriteSyncFs } from "@lorenzh/pulse-kit";
+import type { LogLevel } from "@lorenzh/pulse-kit";
 import { nodeConfigFs } from "./config-fs.ts";
 import { openDb } from "./db.ts";
 import { type RunningApi, type StartDeps, startApi } from "./start.ts";
@@ -541,20 +541,22 @@ test("admin: the file keeps its mode and the format has 2 spaces and a final new
 
 const ENOSPC = (): Error => Object.assign(new Error("boom"), { code: "ENOSPC" });
 
-/** The kit fs with `fsync` number `n` of a write (1 = temp file, 2 = directory) or `rename` broken. */
-function brokenAtomic(step: "fsync-temp" | "rename" | "fsync-dir", isBroken: () => boolean) {
-  const real = nodeAtomicWriteSyncFs;
-  let fsyncs = 0;
+/** The real fs with the temp write, `rename`, or the second (step-6) directory fsync broken. */
+function brokenFs(step: "fsync-temp" | "rename" | "fsync-dir", isBroken: () => boolean) {
+  const real = nodeConfigFs;
+  let dirSyncs = 0;
   return {
     ...real,
-    fsync: (fd: number) => {
+    writeTemp: (temp: string, data: Buffer, like: string) => {
+      if (isBroken() && step === "fsync-temp") throw ENOSPC();
+      real.writeTemp(temp, data, like);
+    },
+    fsyncDir: (d: string) => {
       if (isBroken()) {
-        fsyncs += 1;
-        if ((step === "fsync-temp" && fsyncs === 1) || (step === "fsync-dir" && fsyncs === 2)) {
-          throw ENOSPC();
-        }
+        dirSyncs += 1;
+        if (step === "fsync-dir" && dirSyncs === 2) throw ENOSPC();
       }
-      real.fsync(fd);
+      real.fsyncDir(d);
     },
     rename: (from: string, to: string) => {
       if (isBroken() && step === "rename") throw ENOSPC();
@@ -566,10 +568,7 @@ function brokenAtomic(step: "fsync-temp" | "rename" | "fsync-dir", isBroken: () 
 for (const step of ["fsync-temp", "rename", "fsync-dir"] as const) {
   test(`admin: a failing ${step} leaves a valid file and no temp file`, async () => {
     let isBroken = false;
-    const configFs: StartDeps["configFs"] = {
-      ...nodeConfigFs,
-      atomic: brokenAtomic(step, () => isBroken),
-    };
+    const configFs: StartDeps["configFs"] = brokenFs(step, () => isBroken);
     const b = await boot(BASE_FILE, { configFs });
     const before = readFileSync(file, "utf8");
     const rev = await b.revision();
@@ -592,11 +591,8 @@ for (const step of ["fsync-temp", "rename", "fsync-dir"] as const) {
 test("admin: EXDEV on rename answers 503 naming the cause", async () => {
   const configFs: StartDeps["configFs"] = {
     ...nodeConfigFs,
-    atomic: {
-      ...nodeAtomicWriteSyncFs,
-      rename: () => {
-        throw Object.assign(new Error("x"), { code: "EXDEV" });
-      },
+    rename: () => {
+      throw Object.assign(new Error("x"), { code: "EXDEV" });
     },
   };
   const b = await boot(BASE_FILE, { configFs });
@@ -614,15 +610,12 @@ test("admin: a hand edit between the temp file and the rename answers 412 and ke
   const edited = `${JSON.stringify({ ...BASE_FILE, components: [] }, null, 2)}\n`;
   const configFs: StartDeps["configFs"] = {
     ...nodeConfigFs,
-    atomic: {
-      ...nodeAtomicWriteSyncFs,
-      close: (fd: number) => {
-        nodeAtomicWriteSyncFs.close(fd);
-        if (isArmed) {
-          isArmed = false;
-          writeFileSync(file, edited);
-        }
-      },
+    writeTemp: (temp: string, data: Buffer, like: string) => {
+      nodeConfigFs.writeTemp(temp, data, like);
+      if (isArmed) {
+        isArmed = false;
+        writeFileSync(file, edited);
+      }
     },
   };
   const b = await boot(BASE_FILE, { configFs });
@@ -673,21 +666,12 @@ test("review fix: a reload the database rejects keeps the running config and rev
 
 test("review fix: an apply failure after the rename syncs the directory and keeps memory consistent", async () => {
   let dirSyncs = 0;
-  const dirFds = new Set<number>();
   const { b, db } = await bootWithDb({
     configFs: {
       ...nodeConfigFs,
-      atomic: {
-        ...nodeAtomicWriteSyncFs,
-        open: (path, flags, mode) => {
-          const fd = nodeAtomicWriteSyncFs.open(path, flags, mode);
-          if (flags === "r") dirFds.add(fd);
-          return fd;
-        },
-        fsync: (fd) => {
-          if (dirFds.delete(fd)) dirSyncs += 1;
-          nodeAtomicWriteSyncFs.fsync(fd);
-        },
+      fsyncDir: (d) => {
+        dirSyncs += 1;
+        nodeConfigFs.fsyncDir(d);
       },
     },
   });
@@ -696,7 +680,7 @@ test("review fix: an apply failure after the rename syncs the directory and keep
   const r = await b.call("POST", "/admin/checks", { body: NEW_CHECK, ifMatch: await b.revision() });
   assert.equal(r.status, 500);
   assert.match(((await r.json()) as { error: string }).error, /stored, but applying it failed/);
-  assert.equal(dirSyncs, 1, "the directory is synced before the apply");
+  assert.equal(dirSyncs, 2, "the temp name and the rename are synced before the apply");
   assert.ok(readFileSync(file, "utf8").includes('"new"'), "the file is the source of truth");
   assert.deepEqual(await (await b.call("GET", "/admin/config")).json(), before);
   db().prepare("DROP TRIGGER fail_upsert").run();
