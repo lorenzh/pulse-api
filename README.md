@@ -29,16 +29,7 @@ The database is created with the current schema. A file from an older version is
 
 ### Docker Compose
 
-`compose.yaml` runs the whole stack: api, one probe, status, notify and console. It needs Docker Compose >= 2.23 and access to github.com. The probe, status, notify and console images are built from `main` of their repositories. The console is on <http://127.0.0.1:8082> (loopback only) and has nothing to manage yet.
-
-```sh
-cp .env.example .env
-# Put a random token into .env. The placeholder in .env.example is rejected at start.
-sed -i.bak "s/^PULSE_PROBE_TOKEN=.*/PULSE_PROBE_TOKEN=$(openssl rand -hex 32)/" .env && rm .env.bak
-docker compose up -d --build
-```
-
-Open http://localhost:8080. Stop with `docker compose down`. The demo profile (`docker compose --profile demo up demo-status`) shows every status page state; it needs no `.env`.
+The Compose setups of the whole stack live in [pulse-deploy](https://github.com/lorenzh/pulse-deploy). Its [`full`](https://github.com/lorenzh/pulse-deploy/blob/main/full/README.md) setup runs api, probe, status, notify and console; its [`demo`](https://github.com/lorenzh/pulse-deploy/blob/main/demo/README.md) setup shows every status page state.
 
 ### Image
 
@@ -47,6 +38,8 @@ Each release publishes a multi-arch image (linux/amd64, linux/arm64) with build 
 ```sh
 docker pull ghcr.io/lorenzh/pulse-api:0.1.0
 ```
+
+The image runs `bun --no-env-file`: it never reads `.env` files, also not mounted ones. Pass settings with `-e`, `--env-file` or Compose `environment:`.
 
 See [Releasing](docs/development.md#releasing) for the tags and how to verify an image.
 
@@ -64,7 +57,7 @@ Operators post incidents with timed updates through `POST /manual-incidents`, `/
 
 `GET /locations` (no token) lists the probe locations as `reporting` or `silent`; `PULSE_LOCATION_SILENT_MS` sets the threshold (default derived from the check intervals) and the metric `pulse_api_location_last_result_timestamp_seconds{location}` mirrors it. `POST /results` is idempotent on (check, location, timestamp), so a probe may re-send. See [REST API](docs/rest-api.md#get-locations).
 
-`GET /healthz` is liveness: it answers `200 ok` without touching the database, also while the API shuts down. `GET /readyz` is readiness: `200 ok` when the database answers and the API is not shutting down, else `503` without error text. `GET /metrics` serves Prometheus text with check ids only: keep it on a private network. Logs are JSON lines (`PULSE_LOG_LEVEL`). The API stops cleanly on `SIGINT` and `SIGTERM` (exit 0). A configuration error prints one line `pulse-api: <message>` and exits with 2. See [Operation](docs/operation.md).
+`GET /healthz` is liveness: it answers `200 ok` without touching the database, also while the API shuts down. `GET /readyz` is readiness: `200 ok` when the database answers and the API is not shutting down, else `503` without error text. `GET /metrics` serves Prometheus text with check ids only: keep it on a private network. Logs are JSON lines (`PULSE_LOG_LEVEL`). The API stops cleanly on `SIGINT` and `SIGTERM` (exit 0). A shutdown that hits its 5 s bound closes the remaining connections, finishes cleanup, closes the database and exits 1. A configuration error prints one line `pulse-api: <message>` and exits with 2. See [Operation](docs/operation.md).
 
 ## Documentation
 

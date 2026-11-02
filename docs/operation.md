@@ -6,6 +6,8 @@ The API reads `checks.json`, the tokens file and its environment at start. It re
 
 After a change to the checks file, restart only the API. Probes reload their checks from the API on their own, within their reload interval (`PULSE_CHECKS_RELOAD_MS`, see the probe docs).
 
+The `docker compose …` commands on this page run inside your pulse-deploy setup directory, for example `cd pulse-deploy/full`.
+
 ```sh
 docker compose restart api
 ```
@@ -72,6 +74,15 @@ An hourly run logs `uptime rollup: stored <N> days in <D> ms` only when it store
 2. Stop the API and start the new version with the same `PULSE_DB`.
 3. Look at the start log line to see that it came up (see [Logs](#logs)).
 
+Upgrade to the version that binds header secrets to hosts: prepare before the API starts, or the checks file fails to load.
+
+- Rename every `env` reference to `PULSE_HEADER_*`.
+- Remove userinfo from check URLs; move credentials to an `Authorization` header with `{ "env": NAME }`.
+- Set TLS and domain `warnDays` to 0..3650.
+- Set `PULSE_PROBE_HEADER_HOSTS` at every probe location (older probes ignore it).
+
+Served results now carry integer `latencyMs` (stored fractions are rounded) and a `reason` of at most 1000 characters (longer stored ones end in `…`). Stored rows are not rewritten.
+
 Do not open a database file of an older version with this version. Restore the backup to go back (see [Backup and restore](#backup-and-restore)).
 
 A checks file whose heartbeat `secret` still starts with `replace-with-` (the example placeholder) stops the start with `checks[<i>].secret still has the example placeholder secret` and exit code 2. Replace the secret with `openssl rand -hex 32` and update the job that pings, or remove the check. An API that is already running rejects such a reload and keeps its config.
@@ -137,11 +148,15 @@ Tokens are read at start. Restart the API to rotate. A location may have several
 
 1. Add the new token to the tokens file, next to the old one.
 2. Restart the API.
-3. Give the probe the new token (`PULSE_PROBE_TOKEN`) and restart the probe.
+3. Give the probe the new token (in pulse-deploy: `secrets/probe-token`) and restart the probe.
 4. Remove the old token from the tokens file.
 5. Restart the API.
 
 To turn tokens on for an existing setup, give the probes their tokens first (an old API ignores the header), then enable tokens on the API. Otherwise ingestion stops.
+
+## Admin tokens and header secrets
+
+An admin token can point any check that references `{ "env": NAME }` at any URL. The probe sends the secret there if it binds `NAME` to that host in `PULSE_PROBE_HEADER_HOSTS`. So an admin token is as sensitive as every header secret it can address, and the probe's `PULSE_PROBE_HEADER_HOSTS` is the limit. Bind each secret only to the hosts that need it.
 
 Changing a probe's location means changing both `PULSE_LOCATION` of the probe and the `location` of its token. They must be equal, or every result gets `403`.
 
@@ -175,7 +190,7 @@ curl -sS -X POST "$API/admin/checks" -H "Authorization: Bearer $TOKEN" -H "If-Ma
   -d '{"id":"blog","name":"Blog","url":"https://blog.example/","intervalMs":60000}'
 ```
 
-A write needs a checks file that the API can replace: it writes a temp file in the same directory and renames it over the file. A read-only mount, or a single file bind-mounted into the container, answers `503` (for example `checks file is read-only (EROFS)`). `compose.yaml` mounts the directory read-only (`./compose:/config:ro`), so a hand edit, also a save by rename, reaches the container. To opt in to writes, replace it with a writable directory mount (`./compose:/config`, with a directory that the container user may write). The file keeps its mode and, when the process may set it, its owner. The write rewrites the file as JSON with two spaces: comments and layout of a hand-made file are not kept. A hand edit and a write at the same moment can still race in the last millisecond before the rename; the revision check makes this rare, not impossible. A write runs in this order: temp file, `fsync`, revision check, rename, `fsync` of the directory, then apply. When a step after the rename fails (the directory `fsync`, or applying to the database), the write answers `500` (`503` for a read-only cause), but the new file is already in place. The running configuration and the `ETag` stay at the old revision, and the next reload (a look or `SIGHUP`) applies the file. Until then a write gets `412`.
+A write needs a checks file that the API can replace: it writes a temp file in the same directory and renames it over the file. A read-only mount, or a single file bind-mounted into the container, answers `503` (for example `checks file is read-only (EROFS)`). The `full` setup of [pulse-deploy](https://github.com/lorenzh/pulse-deploy) mounts its `full/config` directory read-only, so a hand edit, also a save by rename, reaches the container. To opt in to writes, mount that directory writable instead, with a directory that the container user may write. The file keeps its mode and, when the process may set it, its owner. The write rewrites the file as JSON with two spaces: comments and layout of a hand-made file are not kept. A hand edit and a write at the same moment can still race in the last millisecond before the rename; the revision check makes this rare, not impossible. A write runs in this order: temp file, `fsync`, revision check, rename, `fsync` of the directory, then apply. When a step after the rename fails (the directory `fsync`, or applying to the database), the write answers `500` (`503` for a read-only cause), but the new file is already in place. The running configuration and the `ETag` stay at the old revision, and the next reload (a look or `SIGHUP`) applies the file. Until then a write gets `412`.
 
 Each successful write logs one `info` line `config write` with the token name, kind, action and id; a failed write logs one `warn` line with the status and kind. Metrics: `pulse_api_config_writes_total{kind,action,result}`.
 
@@ -238,4 +253,4 @@ A probe that could not reach the API keeps its results in a bounded buffer and r
 
 ## Shutdown
 
-`SIGINT` and `SIGTERM` are handled from the first line of the process. The API then answers `/readyz` with `503`, stops accepting connections, closes idle ones, stops the retention timer (no run starts after that), waits for open requests and for the cleanup run in progress, closes the database and exits with code 0. The wait is bounded by 5 s inside the API, with a 1 s backstop in `pulse-kit`'s `runService`. When the bound is hit, the cleanup is told to stop after its current batch (a batch is synchronous) and the database closes only after it ended; then the API logs a `warn` line, drops the remaining connections and still exits with 0. A second signal changes nothing. `docker stop` therefore returns well within its default 10 s.
+`SIGINT` and `SIGTERM` are handled from the first line of the process. The API then answers `/readyz` with `503`, stops accepting connections, closes idle ones, stops the retention timer (no run starts after that), waits for open requests and for the cleanup run in progress, closes the database and exits with code 0. The wait is bounded by 5 s inside the API, with a 1 s backstop in `pulse-kit`'s `runService`. When the bound is hit, the cleanup is told to stop after its current batch (a batch is synchronous) and the database closes only after it ended; then the API logs a `warn` line, drops the remaining connections, closes the database and exits with code 1. A clean stop exits 0. A second signal changes nothing. `docker stop` therefore returns well within its default 10 s.

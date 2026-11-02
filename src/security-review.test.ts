@@ -301,7 +301,7 @@ test("security HTTP: result boundaries, wrong types and hostile keys reject with
   for (const [field, limit, past] of [
     ["reason", "x".repeat(1000), "x".repeat(1001)],
     ["attempts", 100, 101],
-    ["latencyMs", 86400000, 86400001],
+    ["latencyMs", 2147483647, 2147483648],
     ["certDaysLeft", 3000000, 3000001],
     ["certDaysLeft", -3000000, -3000001],
     ["timestamp", NOW + 60000, NOW + 60001],

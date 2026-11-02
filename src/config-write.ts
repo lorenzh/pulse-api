@@ -7,6 +7,7 @@ import type {
   AdminWriteResponse,
   Check,
 } from "@lorenzh/pulse-contract";
+import { type AtomicWriteSyncFs, isRecord, writeFileAtomicSync } from "@lorenzh/pulse-kit";
 import { type Config, ConfigError, parseConfig } from "./config.ts";
 import type { ConfigHolder } from "./config-holder.ts";
 import { type ConfigReloader, revisionOf } from "./config-reload.ts";
@@ -35,11 +36,8 @@ export class ConfigWriteError extends Error {
 /** The file operations of a write. Every step may throw an error with a Node `code`. */
 export interface WriteFs {
   readFile(path: string): Buffer;
-  /** Create `path` exclusively, write, copy mode and owner of `like`, fsync, close. */
-  writeTemp(path: string, data: Buffer, like: string): void;
-  rename(from: string, to: string): void;
-  fsyncDir(dir: string): void;
-  remove(path: string): void;
+  /** Temp file, rename and directory fsync of the atomic write; keeps mode and owner. */
+  atomic: AtomicWriteSyncFs;
   /** Throws when `dir` is not writable. */
   assertWritable(dir: string): void;
 }
@@ -89,10 +87,6 @@ function mapFsError(err: unknown): ConfigWriteError {
   return new ConfigWriteError("error", `checks file could not be written (${code})`, {
     cause: err,
   });
-}
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
 /** The check as served: header names only, no body, no secret. */
@@ -356,17 +350,17 @@ export function createConfigWriter(deps: WriterDeps): ConfigWriter {
 
   /** Temp file, fsync, a second revision check, rename, fsync of the directory, then apply. */
   const store = (data: Buffer, ifMatch: string, config: Config): void => {
-    const temp = `${path}.${deps.tempSuffix()}.tmp`;
-    let isRenamed = false;
     try {
-      fs.writeTemp(temp, data, path);
-      // An external writer racing after this check stays possible.
-      assertCurrent(ifMatch);
-      fs.rename(temp, path);
-      isRenamed = true;
-      fs.fsyncDir(dir);
+      writeFileAtomicSync(path, data, {
+        fs: fs.atomic,
+        tempSuffix: deps.tempSuffix,
+        beforeRename: () => {
+          // An external writer racing after this check stays possible.
+          assertCurrent(ifMatch);
+          return true;
+        },
+      });
     } catch (err) {
-      if (!isRenamed) removeQuietly(fs, temp);
       throw mapFsError(err);
     }
     try {
@@ -407,12 +401,4 @@ export function createConfigWriter(deps: WriterDeps): ConfigWriter {
       return result;
     },
   };
-}
-
-function removeQuietly(fs: WriteFs, path: string): void {
-  try {
-    fs.remove(path);
-  } catch {
-    // The temp file may not exist yet; the write error is the one to report.
-  }
 }

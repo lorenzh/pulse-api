@@ -1,6 +1,7 @@
 # Bench stack: one run is one project of this file. The harness sets the BENCH_* variables
 # (see bench/run.ts); the defaults only let `docker compose config --quiet` pass in CI.
-# Keep the environment names in step with compose.yaml. Healthchecks are disabled so they
+# Keep the environment names in step with pulse-deploy's common/services.yaml
+# (https://github.com/lorenzh/pulse-deploy/blob/main/common/services.yaml). Healthchecks are disabled so they
 # cannot add CPU; the harness polls /readyz itself.
 name: ${BENCH_PROJECT:-pulse-bench}
 
