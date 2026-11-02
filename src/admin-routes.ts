@@ -239,16 +239,14 @@ export function createAdminHandler(
       const kind = KINDS[section];
       action = ACTION_OF_METHOD[method];
       if (kind === undefined || action === undefined) {
-        throw new RouteError(405, "method not allowed");
+        throw new RouteError(405, "method not allowed", { Allow: allowOf(match[2]) });
       }
       target = {
         kind,
         ref: match[2] === undefined ? undefined : decodeRef(kind, match[2]),
       };
       if ((action === "create") !== (target.ref === undefined)) {
-        throw new RouteError(405, "method not allowed", {
-          Allow: target.ref === undefined ? "POST" : "PUT, DELETE",
-        });
+        throw new RouteError(405, "method not allowed", { Allow: allowOf(target.ref) });
       }
       await write(req, res, target, action, tokenName);
     } catch (err) {
@@ -259,6 +257,11 @@ export function createAdminHandler(
   };
 }
 
+/** The methods of a list path (no item ref) or an item path. */
+function allowOf(ref: unknown): string {
+  return ref === undefined ? "POST" : "PUT, DELETE";
+}
+
 function editOf(
   kind: ConfigKind,
   action: ConfigWriteAction,
@@ -266,6 +269,6 @@ function editOf(
   body: unknown,
 ): ConfigEdit {
   if (action === "create") return { kind, action, body };
-  if (ref === undefined) throw new RouteError(405, "method not allowed");
+  if (ref === undefined) throw new RouteError(405, "method not allowed", { Allow: "POST" });
   return action === "replace" ? { kind, action, ref, body } : { kind, action, ref };
 }

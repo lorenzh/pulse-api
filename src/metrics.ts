@@ -3,7 +3,7 @@ import { createRegistry, DURATION_BUCKETS_SECONDS } from "@lorenzh/pulse-kit";
 
 const CHECK_STATES: readonly CheckState[] = ["up", "degraded", "down", "unknown", "maintenance"];
 
-export const CONFIG_RELOAD_RESULTS = ["ok", "invalid"] as const;
+export const CONFIG_RELOAD_RESULTS = ["ok", "invalid", "error"] as const;
 export const CONFIG_WRITE_KINDS = ["check", "component", "maintenance"] as const;
 export const CONFIG_WRITE_ACTIONS = ["create", "replace", "delete"] as const;
 export const CONFIG_WRITE_RESULTS = [

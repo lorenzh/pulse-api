@@ -211,7 +211,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     ...(deps.retentionIntervalMs === undefined ? {} : { intervalMs: deps.retentionIntervalMs }),
     setTimeout: (fn, ms) => deps.setTimeout(() => void fn(), ms),
     clearTimeout: deps.clearTimeout,
-    log: (line) => logger.info(line),
+    log: (line, level) => logger[level](line),
     deleteManualIncidents: (cutoff) => manualIncidents.deleteResolvedBefore(cutoff),
     deleteLatencyRollups: (cutoff) => service.deleteExpiredLatency(cutoff),
     deleteUptimeRollups: (cutoff) => service.deleteExpiredUptime(cutoff),
@@ -328,7 +328,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     ...(deps.retentionIntervalMs === undefined ? {} : { intervalMs: deps.retentionIntervalMs }),
     setTimeout: (fn, ms) => deps.setTimeout(() => void fn(), ms),
     clearTimeout: deps.clearTimeout,
-    log: (line) => logger.info(line),
+    log: (line, level) => logger[level](line),
   });
   const uptimeRollup = startUptimeRollup({
     service,
@@ -337,7 +337,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     ...(deps.retentionIntervalMs === undefined ? {} : { intervalMs: deps.retentionIntervalMs }),
     setTimeout: (fn, ms) => deps.setTimeout(() => void fn(), ms),
     clearTimeout: deps.clearTimeout,
-    log: (line) => logger.info(line),
+    log: (line, level) => logger[level](line),
   });
 
   const timeoutMs = deps.shutdownTimeoutMs ?? SHUTDOWN_TIMEOUT_MS;
