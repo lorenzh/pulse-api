@@ -117,6 +117,10 @@ The body is invalid. The message names the field. `body is not valid JSON` comes
 
 The request target cannot be parsed as a URL path, for example `//[` or `//%zz`. The client sent a broken request line; fix the client. The API answers before auth and logs nothing; `/metrics` counts it as `pulse_api_http_requests_total{route="unmatched",code="400"}`.
 
+## 429 `too many requests` on admin routes
+
+The client failed admin authentication 10 times within 60 s (wrong, missing, short or under-scoped tokens), so every admin request from its address answers `429` until `Retry-After` seconds have passed, also with a valid token. Fix the client's token, wait, and retry. Clients behind one proxy or NAT share the budget, so one broken script there blocks the others. Restarting the API also resets it. See [Admin auth throttle](operation.md#admin-auth-throttle).
+
 ## 405 and 413
 
 - `method not allowed`: the `Allow` header names the methods of the path. `POST` on `/results`, `GET` and `POST` on `/heartbeat/<id>`, `POST` on `/admin/<section>`, `PUT` and `DELETE` on `/admin/<section>/<id>`, and `GET` on the reads.

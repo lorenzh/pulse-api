@@ -37,6 +37,8 @@ export interface Metrics {
   ): void;
   /** Count one failed admin authentication; `route` is a route pattern, never a raw path. */
   recordAdminAuthFailure(route: string, status: 401 | 403): void;
+  /** Count one admin request refused with 429 by the auth throttle; `route` is a route pattern. */
+  recordAdminAuthThrottled(route: string): void;
   /** Prometheus text exposition. Only check ids, locations, states and route patterns appear. */
   render(): string;
 }
@@ -114,6 +116,11 @@ export function createMetrics({
     "pulse_api_admin_auth_failures_total",
     "Failed admin authentications, by route pattern and status.",
   );
+  // No series before the first 429, like the failure counter.
+  const adminAuthThrottled = registry.counter(
+    "pulse_api_admin_auth_throttled_total",
+    "Admin requests refused with 429 by the auth throttle, by route pattern.",
+  );
   for (const result of CONFIG_RELOAD_RESULTS) configReloads.inc({ result }, 0);
   for (const kind of CONFIG_WRITE_KINDS) {
     for (const action of CONFIG_WRITE_ACTIONS) {
@@ -177,6 +184,9 @@ export function createMetrics({
     },
     recordAdminAuthFailure(route, status) {
       adminAuthFailures.inc({ route, status: String(status) });
+    },
+    recordAdminAuthThrottled(route) {
+      adminAuthThrottled.inc({ route });
     },
     render: () => registry.render(),
   };

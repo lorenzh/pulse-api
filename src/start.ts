@@ -11,6 +11,7 @@ import {
   StartupError,
 } from "@lorenzh/pulse-kit";
 import { createAdminAuthFailures } from "./admin-auth-failures.ts";
+import { createAdminAuthThrottle } from "./admin-auth-throttle.ts";
 import { createAdminHandler } from "./admin-routes.ts";
 import type { AdminToken } from "./admin-tokens.ts";
 import { createAuditLog, createPendingAudit } from "./audit-log.ts";
@@ -326,6 +327,14 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     logger.warn(message, fields);
   // One recorder for /admin/* and the manual-incident writes: one rate limit, one counter.
   const authFailures = createAdminAuthFailures({ now: deps.now, warn, metrics });
+  // One throttle for both auth sites, so all admin routes draw from one budget per client.
+  const authThrottle = createAdminAuthThrottle({
+    tokens: tokenStore,
+    authFailures,
+    now: deps.now,
+    warn,
+    metrics,
+  });
   const adminHandler = createAdminHandler({
     writer,
     metrics,
@@ -335,6 +344,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     info,
     warn,
     authFailures,
+    authThrottle,
   });
 
   let isShuttingDown = false;
@@ -346,6 +356,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     manualIncidents,
     ...(isAdminEnabled ? { admin: adminHandler } : {}),
     adminAuthFailures: authFailures,
+    adminAuthThrottle: authThrottle,
     info,
     warn,
     now: deps.now,

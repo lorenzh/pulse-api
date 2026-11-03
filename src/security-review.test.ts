@@ -179,6 +179,14 @@ afterAll(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+// Each request comes from its own loopback address, so the many denials of these tests never
+// exhaust one client's admin auth budget (10 failures per 60 s). Linux routes all of 127/8.
+let peer = 0;
+function nextPeer(): string {
+  peer += 1;
+  return `127.0.${Math.floor(peer / 250) % 250}.${(peer % 250) + 2}`;
+}
+
 function call(
   method: string,
   path: string,
@@ -191,6 +199,7 @@ function call(
       {
         hostname: "127.0.0.1",
         port: api.port,
+        localAddress: nextPeer(),
         method,
         path,
         headers: {

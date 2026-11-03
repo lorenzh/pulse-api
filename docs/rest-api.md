@@ -28,6 +28,7 @@ General rules:
 
 - Errors have the body `{"error": "<message>"}` (`ErrorResponse`).
 - A request target that is not a valid URL path (for example `//[`) gives `400` with `invalid request target`, on every path and method, before auth. The body never repeats the target, and nothing is logged.
+- Admin routes (`/admin/*` and the manual-incident writes) give `429` with `too many requests` and `Retry-After` when the client failed admin authentication too often. See [Admin auth throttle](#admin-auth-throttle).
 - An unknown path gives `404` with `not found`. Another method on a known path gives `405` with `method not allowed` and the header `Allow` with the allowed methods (for example `Allow: GET`).
 - A request body over 1,000,000 bytes gives `413` with `request body too large`.
 - An unexpected failure gives `500` with `internal error`. The cause is written to stderr.
@@ -352,7 +353,17 @@ Tokens are stored in the database as SHA-256 digests only. Each token has one or
 | `POST /admin/tokens`, `.../rotate`, `.../revoke`                                 | `admin`, plus the grant rule |
 | `GET /admin/audit`, `GET /admin/audit/export`                                    | `admin`                      |
 
-Statuses on admin routes: `404` before the first admin import, then `401` `{"error":"unauthorized"}` with `WWW-Authenticate: Bearer` for a missing, unknown, expired, revoked or rotated-out token (the body never says which), then `403` `{"error":"forbidden"}` for a probe token, then `401` `{"error":"unauthorized"}` with `WWW-Authenticate: Bearer` for an admin-side secret shorter than 32 characters (the failure log says `token` `short`), then `403` `{"error":"forbidden"}` for a valid token without the scope, then the route's own statuses.
+Statuses on admin routes: `404` before the first admin import, then `401` `{"error":"unauthorized"}` with `WWW-Authenticate: Bearer` for a missing, unknown, expired, revoked or rotated-out token (the body never says which), then `403` `{"error":"forbidden"}` for a probe token, then `401` `{"error":"unauthorized"}` with `WWW-Authenticate: Bearer` for an admin-side secret shorter than 32 characters (the failure log says `token` `short`), then `403` `{"error":"forbidden"}` for a valid token without the scope, then the route's own statuses. The throttle check comes before all auth statuses: a blocked client gets `429` before its token is read.
+
+### Admin auth throttle
+
+The config, token and audit routes under `/admin/*` and the manual-incident writes (`POST /manual-incidents`, `/manual-incidents/:id/updates`, `/manual-incidents/:id/resolve`, `DELETE /manual-incidents/:id`) share one budget per client:
+
+- 10 failed authentications (every `401` and `403` above, also `short` and a missing scope) per client in a fixed window of 60 s that starts at the client's first failure. A success does not count and does not reset the window.
+- After the 10th failure every request of that client to these routes answers `429` `{"error":"too many requests"}` with `Retry-After: <seconds>` (rounded up, 1 to 60) until the window ends, also with a valid token. The token is not checked, no body is read and nothing is written. Blocked requests do not extend the window. There is no `WWW-Authenticate` header; token and audit routes keep `Cache-Control: no-store`.
+- The client is the TCP peer address: an IPv4 address (an IPv4-mapped IPv6 address counts as IPv4), or the `/64` prefix of an IPv6 address. `Forwarded`, `X-Forwarded-For` and other headers are ignored, so clients behind one proxy or NAT share a budget.
+- Answers that come before auth are not throttled or counted: `404` before the first admin import, unknown `/admin/*` paths, `405`, a bad manual-incident id. Public reads, ops, probe and heartbeat routes are never throttled.
+- Every `429` is counted in `pulse_api_admin_auth_throttled_total{route}`, not in `pulse_api_admin_auth_failures_total`. Limits and overflow: see [Operation](operation.md#admin-auth-throttle).
 
 **Grant rule:** a caller may create, rotate or revoke a token only when it holds every scope of that token, where `probe` counts as `checks` (a probe token reads check headers and bodies). Otherwise `403`.
 
@@ -428,5 +439,6 @@ Prometheus text format, no authentication. Counters live in memory and reset at 
 | `pulse_heartbeat_pings_total`                      | counter   | `check`. Accepted pings. Failed pings are only in the request counter, with code 401.                                                                                                                                      |
 | `pulse_heartbeat_missed_total`                     | counter   | `check`. One per `period` elapsed after the deadline `period + grace`.                                                                                                                                                     |
 | `pulse_api_admin_auth_failures_total`              | counter   | `route` (pattern), `status` (`401`, `403`). Failed admin authentications on `/admin/*` and the manual-incident writes. A series appears at its first failure; alert with `increase(...) > 0` and `or vector(0)` as needed. |
+| `pulse_api_admin_auth_throttled_total`             | counter   | `route` (pattern). Admin requests refused with `429` by the auth throttle. A series appears at its first `429`.                                                                                                            |
 
 The labels hold check ids and locations only. Check URLs, hosts, keywords, reasons and tokens never appear. The check ids are still configuration, so do not publish `/metrics` on a public network: scrape it from the private network, as with the read routes above.
