@@ -352,7 +352,7 @@ Tokens are stored in the database as SHA-256 digests only. Each token has one or
 | `POST /admin/tokens`, `.../rotate`, `.../revoke`                                 | `admin`, plus the grant rule |
 | `GET /admin/audit`, `GET /admin/audit/export`                                    | `admin`                      |
 
-Statuses on admin routes: `404` before the first admin import, then `401` `{"error":"unauthorized"}` with `WWW-Authenticate: Bearer` for a missing, unknown, expired, revoked or rotated-out token (the body never says which), then `403` `{"error":"forbidden"}` for a valid token without the scope, then the route's own statuses.
+Statuses on admin routes: `404` before the first admin import, then `401` `{"error":"unauthorized"}` with `WWW-Authenticate: Bearer` for a missing, unknown, expired, revoked or rotated-out token (the body never says which), then `403` `{"error":"forbidden"}` for a probe token, then `401` `{"error":"unauthorized"}` with `WWW-Authenticate: Bearer` for an admin-side secret shorter than 32 characters (the failure log says `token` `short`), then `403` `{"error":"forbidden"}` for a valid token without the scope, then the route's own statuses.
 
 **Grant rule:** a caller may create, rotate or revoke a token only when it holds every scope of that token, where `probe` counts as `checks` (a probe token reads check headers and bodies). Otherwise `403`.
 

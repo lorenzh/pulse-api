@@ -26,7 +26,7 @@ import { openDb } from "./db.ts";
 import { type RunningApi, type StartDeps, startApi } from "./start.ts";
 
 const PROBE = "probe-token-0123456789abcdef";
-const ADMIN = "admin-token-0123456789abcdef";
+const ADMIN = "admin-token-0123456789abcdef0123456789abcdef";
 const NOW = Date.parse("2026-10-28T12:00:00Z");
 const RELOAD_MS = 2000;
 const SENTINEL_HEADER = "sentinel-header-value-7731";

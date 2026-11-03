@@ -11,9 +11,9 @@ import { type StartDeps, startApi } from "./start.ts";
 const NOW = Date.parse("2030-01-10T12:00:00Z");
 const EU_1 = "probe-eu-one-0123456789abcdef";
 const EU_2 = "probe-eu-two-0123456789abcdef";
-const US = "probe-us-one-0123456789abcdef";
-const OPS = "admin-ops-0123456789abcdef";
-const ONCALL = "admin-oncall-0123456789abcdef";
+const US = "probe-us-one-0123456789abcdef0123456789";
+const OPS = "admin-ops-0123456789abcdef0123456789abcdef";
+const ONCALL = "admin-oncall-0123456789abcdef0123456789abcdef";
 const LATE = "probe-late-0123456789abcdef";
 const FIXTURE = join(import.meta.dir, "..", "test", "fixtures", "pulse-v3.db");
 const IGNORED = "PULSE_TOKENS_FILE ignored: tokens are stored in the database";
@@ -250,4 +250,95 @@ test("a fresh database with a missing probe file fails the start with no bootstr
   assert.ok(message.startsWith(`cannot read tokens file ${missing}`), message);
   assert.ok(message.endsWith(`(PULSE_TOKENS_FILE=${missing})`), message);
   assert.deepEqual(counts(), { tokens: 0, bootstrap: 0, imports: 0 });
+});
+
+const SHORT_ADMIN = "short-admin-0123456789abcdef012"; // 31 characters
+const ADMIN_32 = "admin-thirty-two-0123456789abcde"; // 32 characters
+
+function rowCounts(): { tokens: number; secrets: number; audit: number; bootstrap: number } {
+  const db = new Database(dbPath);
+  try {
+    const count = (sql: string): number => (db.query(sql).get() as { n: number }).n;
+    return {
+      tokens: count("SELECT COUNT(*) AS n FROM api_tokens"),
+      secrets: count("SELECT COUNT(*) AS n FROM token_secrets"),
+      audit: count("SELECT COUNT(*) AS n FROM audit_log"),
+      bootstrap: count("SELECT COUNT(*) AS n FROM token_bootstrap"),
+    };
+  } finally {
+    db.close();
+  }
+}
+
+function assertShortRefused(message: string): void {
+  assert.ok(message.includes("tokens[0]"), message);
+  assert.ok(message.includes("at least 32 characters"), message);
+  assert.ok(message.includes(`(PULSE_API_ADMIN_TOKENS_FILE=${adminFile})`), message);
+  assert.ok(!message.includes(SHORT_ADMIN), "the message must not contain the token");
+}
+
+test("a pending 31-character admin token fails the first start and imports nothing", async () => {
+  assert.equal(ADMIN_32.length, 32);
+  assert.equal(SHORT_ADMIN.length, 31);
+  writeFileSync(adminFile, JSON.stringify({ tokens: [{ name: "ops", token: SHORT_ADMIN }] }));
+  assertShortRefused(await startFails(BOTH()));
+  assert.deepEqual(rowCounts(), { tokens: 0, secrets: 0, audit: 0, bootstrap: 0 });
+
+  writeFileSync(adminFile, JSON.stringify({ tokens: [{ name: "ops", token: ADMIN_32 }] }));
+  const api = await boot(BOTH());
+  try {
+    assert.equal(await api.get("/admin/config", ADMIN_32), 200);
+  } finally {
+    await api.close();
+  }
+});
+
+test("a 31-character admin token after a probe-only import leaves the probe rows unchanged", async () => {
+  const probeOnly = await boot({ PULSE_TOKENS_FILE: tokensFile });
+  await probeOnly.close();
+  const before = rowCounts();
+  assert.deepEqual(before, { tokens: 3, secrets: 3, audit: 3, bootstrap: 1 });
+  writeFileSync(adminFile, JSON.stringify({ tokens: [{ name: "ops", token: SHORT_ADMIN }] }));
+  assertShortRefused(await startFails(BOTH()));
+  assert.deepEqual(rowCounts(), before);
+});
+
+test("a completed admin import ignores a short admin tokens file", async () => {
+  const first = await boot(BOTH());
+  await first.close();
+  writeFileSync(adminFile, JSON.stringify({ tokens: [{ name: "ops", token: "a".repeat(20) }] }));
+  const again = await boot(BOTH());
+  try {
+    assert.equal(await again.get("/admin/config", OPS), 200);
+    assert.ok(
+      again.lines.some((l) =>
+        l.includes("PULSE_API_ADMIN_TOKENS_FILE ignored: tokens are stored in the database"),
+      ),
+    );
+  } finally {
+    await again.close();
+  }
+});
+
+test("v0.1.0 upgrade: a short admin file fails after migration, a fixed file then imports", async () => {
+  copyFileSync(FIXTURE, dbPath);
+  writeFileSync(adminFile, JSON.stringify({ tokens: [{ name: "ops", token: SHORT_ADMIN }] }));
+  assertShortRefused(await startFails(BOTH()));
+  const db = new Database(dbPath);
+  try {
+    assert.deepEqual(db.query("PRAGMA user_version").get(), { user_version: 5 });
+  } finally {
+    db.close();
+  }
+  assert.deepEqual(rowCounts(), { tokens: 0, secrets: 0, audit: 0, bootstrap: 0 });
+
+  writeFileSync(adminFile, JSON.stringify({ tokens: [{ name: "ops", token: ADMIN_32 }] }));
+  const api = await boot(BOTH());
+  try {
+    assert.equal(await api.get("/admin/config", ADMIN_32), 200);
+    assert.equal(await api.get("/probe/checks", EU_1), 200);
+  } finally {
+    await api.close();
+  }
+  assert.deepEqual(rowCounts(), { tokens: 4, secrets: 4, audit: 4, bootstrap: 2 });
 });

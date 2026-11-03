@@ -13,7 +13,7 @@ import { type RunningApi, startApi } from "./start.ts";
 
 const NOW = Date.parse("2026-10-31T12:00:00Z");
 const PROBE = "security-probe-0123456789abcdef";
-const ADMIN = "security-admin-0123456789abcdef";
+const ADMIN = "security-admin-0123456789abcdef0123456789abcdef";
 const SECRET = "SECURITY-HEARTBEAT-SECRET-0123456789";
 const HEADER = "SECURITY-HEADER-SENTINEL-0123456789";
 const BODY = "SECURITY-BODY-SENTINEL-0123456789";

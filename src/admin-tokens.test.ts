@@ -2,10 +2,10 @@ import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { assertDistinctDigests, parseAdminTokens } from "./admin-tokens.ts";
-import { EXAMPLE_TOKENS, TokensError } from "./tokens.ts";
+import { EXAMPLE_TOKENS, parseTokens, TokensError } from "./tokens.ts";
 
-const A = "admin-a-0123456789abcdef";
-const B = "admin-b-0123456789abcdef";
+const A = "admin-a-0123456789abcdef0123456789abcdef";
+const B = "admin-b-0123456789abcdef0123456789abcdef";
 
 function rejects(data: unknown, pattern: RegExp): void {
   assert.throws(
@@ -23,11 +23,11 @@ test("parseAdminTokens: accepts entries and trims the name", () => {
 test("parseAdminTokens: refuses bad shapes, short, placeholder, example and repeated tokens", () => {
   rejects(null, /"tokens" array/);
   rejects({ tokens: [] }, /at least one/);
-  rejects({ tokens: [{ name: "ops", token: "short" }] }, /at least 16/);
+  rejects({ tokens: [{ name: "ops", token: "short" }] }, /at least 32/);
   rejects({ tokens: [{ name: "", token: A }] }, /non-empty/);
   rejects({ tokens: [{ name: "ops", token: "replace-with-openssl-rand-hex-32" }] }, /placeholder/);
-  rejects({ tokens: [{ name: "ops", token: EXAMPLE_TOKENS[0] }] }, /public example/);
-  rejects({ tokens: [{ name: "ops", token: "has white space 0123456789" }] }, /whitespace/);
+  rejects({ tokens: [{ name: "ops", token: EXAMPLE_TOKENS[0] }] }, /at least 32 characters/);
+  rejects({ tokens: [{ name: "ops", token: "has white space 0123456789abcdef" }] }, /whitespace/);
   rejects(
     {
       tokens: [
@@ -40,7 +40,7 @@ test("parseAdminTokens: refuses bad shapes, short, placeholder, example and repe
 });
 
 test("error messages never contain a token", () => {
-  const secret = "replace-with-secret-0123456789";
+  const secret = "replace-with-secret-0123456789abcdef";
   assert.throws(
     () => parseAdminTokens({ tokens: [{ name: "ops", token: secret }] }),
     (err: Error) => !err.message.includes(secret),
@@ -66,4 +66,22 @@ test("assertDistinctDigests: a probe or stored digest refuses without the token"
     "admin tokens[0] is also a probe token: use a separate token",
   );
   refuses(new Set(), new Set([digestA]), "admin tokens[0] repeats a stored token");
+});
+
+test("parseAdminTokens: the admin minimum is 32 characters, probe tokens keep 16", () => {
+  const short = "a".repeat(31);
+  assert.throws(
+    () => parseAdminTokens({ tokens: [{ name: "ops", token: short }] }),
+    (error: unknown) =>
+      error instanceof TokensError &&
+      error.message.includes("tokens[0]") &&
+      error.message.includes("at least 32 characters") &&
+      !error.message.includes(short),
+  );
+  assert.deepEqual(parseAdminTokens({ tokens: [{ name: "ops", token: "b".repeat(32) }] }), [
+    { name: "ops", token: "b".repeat(32) },
+  ]);
+  assert.deepEqual(parseTokens({ tokens: [{ location: "eu", token: "c".repeat(16) }] }), [
+    { location: "eu", token: "c".repeat(16) },
+  ]);
 });

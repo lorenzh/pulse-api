@@ -8,6 +8,10 @@ Each entry quotes a message from the code.
 
 Full text: `pulse-api: tokens[0] (location "<name>") token must be a string of at least 16 characters`. The token is too short or empty. With a [pulse-deploy](https://github.com/lorenzh/pulse-deploy) setup, `secrets/probe-token` is missing or empty. Write a token into it, for example with `openssl rand -hex 32`.
 
+### `token must be a string of at least 32 characters`
+
+Full text: `pulse-api: tokens[0].token token must be a string of at least 32 characters (PULSE_API_ADMIN_TOKENS_FILE=<path>)`. An admin token is shorter than 32 characters. Nothing was imported. Replace it, for example with `openssl rand -hex 32`, and start again. See [Upgrades](operation.md#upgrades).
+
 ### `still has the example placeholder token`
 
 A token starts with `replace-with-`. You copied `tokens.example.json` without editing it. Replace every token, for example with `openssl rand -hex 32`.

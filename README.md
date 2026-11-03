@@ -55,7 +55,7 @@ Operators post incidents with timed updates through `POST /manual-incidents`, `/
 
 ## Tokens and audit
 
-Probe and admin tokens are stored in the database as SHA-256 digests, with scopes (`read`, `checks`, `incidents`, `admin`, `probe`), an optional expiry and a last-used time. `tokens.json` and the admin tokens file are imported once at the first start and then ignored. Admins create, list, rotate (10-minute overlap) and revoke tokens through `/admin/tokens`. Every admin write is stored as a secret-free audit entry, served by `GET /admin/audit` and `GET /admin/audit/export` (JSON lines). See [REST API](docs/rest-api.md#tokens), [Configuration](docs/configuration.md#token-import) and [Operation](docs/operation.md#token-rotation).
+Probe and admin tokens are stored in the database as SHA-256 digests, with scopes (`read`, `checks`, `incidents`, `admin`, `probe`), an optional expiry and a last-used time. `tokens.json` and the admin tokens file are imported once at the first start and then ignored. Admin-side secrets need at least 32 characters, probe tokens at least 16. Admins create, list, rotate (10-minute overlap) and revoke tokens through `/admin/tokens`. Every admin write is stored as a secret-free audit entry, served by `GET /admin/audit` and `GET /admin/audit/export` (JSON lines). See [REST API](docs/rest-api.md#tokens), [Configuration](docs/configuration.md#token-import) and [Operation](docs/operation.md#token-rotation).
 
 ## Health and metrics
 

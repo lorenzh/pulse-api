@@ -10,7 +10,7 @@ import { type RunningApi, type StartDeps, startApi } from "./start.ts";
 
 const NOW = Date.parse("2030-01-10T12:00:00Z");
 const PROBE = "probe-scopes-0123456789abcdef";
-const ADMIN = "admin-scopes-0123456789abcdef";
+const ADMIN = "admin-scopes-0123456789abcdef0123456789abcdef";
 const UNKNOWN = "unknown-scopes-0123456789abcdef";
 
 let dir = "";

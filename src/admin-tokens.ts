@@ -5,6 +5,15 @@ import { TokensError, tokenSchema } from "./tokens.ts";
 
 export type AdminToken = { name: string; token: string };
 
+/** Admin-side secrets need more strength than probe tokens (MIN_TOKEN_LENGTH). */
+export const ADMIN_MIN_TOKEN_LENGTH = 32;
+const ADMIN_LENGTH_TEXT = `token must be a string of at least ${ADMIN_MIN_TOKEN_LENGTH} characters`;
+// The length check runs first, so a short token gets the admin message; the shared rules follow.
+const ADMIN_TOKEN_SCHEMA = z
+  .string({ error: ADMIN_LENGTH_TEXT })
+  .min(ADMIN_MIN_TOKEN_LENGTH, { error: ADMIN_LENGTH_TEXT, abort: true })
+  .pipe(tokenSchema);
+
 const SHAPE = 'admin tokens file must be an object with a "tokens" array';
 const NAME_TEXT = "must be a non-empty string";
 
@@ -15,7 +24,7 @@ const ADMIN_SCHEMA = z.object(
         z.object(
           {
             name: z.string({ error: NAME_TEXT }).refine((v) => v.trim() !== "", NAME_TEXT),
-            token: tokenSchema,
+            token: ADMIN_TOKEN_SCHEMA,
           },
           { error: "must be an object" },
         ),

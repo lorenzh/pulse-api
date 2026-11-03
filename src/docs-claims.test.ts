@@ -77,5 +77,14 @@ test("operation: rotation overlap, lockout restore, audit growth, EXTRA and orph
   assert.match(doc, /The table only grows/);
   assert.match(doc, /`synchronous = EXTRA`/);
   assert.match(doc, /Delete it while the API is stopped/);
-  assert.match(doc, /Rotate them once after the upgrade/);
+  assert.match(doc, /Rotate imported tokens once/);
+  assert.match(
+    doc,
+    /An admin-side secret \(a token without the `probe` scope\) must have 32 or more/,
+  );
+  assert.doesNotMatch(doc, /Do not open a database file of an older version/);
+  assert.match(
+    doc,
+    /Going back without restoring the backup works only to a release with the same/,
+  );
 });

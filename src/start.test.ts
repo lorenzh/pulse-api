@@ -462,7 +462,7 @@ test("a token validation error names the tokens file path and the setting", asyn
   assert.ok(!message.includes('"short"'), message);
 });
 
-const ADMIN_TOKEN = "admin-token-0123456789abcdef";
+const ADMIN_TOKEN = "admin-token-0123456789abcdef0123456789abcdef";
 
 test("admin tokens: the file enables writes; the token never reaches the logs", async () => {
   const adminFile = join(dir, "admin.json");
@@ -510,7 +510,7 @@ test("admin token startup errors name the setting and never print a token", asyn
   const example = join(dir, "admin-example.json");
   writeFileSync(
     example,
-    JSON.stringify({ tokens: [{ name: "ops", token: "replace-with-x-0123456789" }] }),
+    JSON.stringify({ tokens: [{ name: "ops", token: "replace-with-x-0123456789abcdef0123" }] }),
   );
   assert.match(await startupMessage({ PULSE_API_ADMIN_TOKENS_FILE: example }), /placeholder/);
 });

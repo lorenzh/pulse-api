@@ -1,3 +1,4 @@
+import { ADMIN_MIN_TOKEN_LENGTH } from "./admin-tokens.ts";
 import type { Metrics } from "./metrics.ts";
 import { canUse, type Permission } from "./token-scopes.ts";
 import type { AuthenticatedToken, TokenStore } from "./token-store.ts";
@@ -5,9 +6,10 @@ import { bearerSecret } from "./tokens.ts";
 
 /**
  * Why an admin-side authentication failed (D2): no Bearer header, a credential nobody knows, an
- * expired, revoked or retired one, a probe token, or an admin-side token without the scope.
+ * expired, revoked or retired one, a probe token, an admin-side secret shorter than
+ * ADMIN_MIN_TOKEN_LENGTH, or an admin-side token without the scope.
  */
-export type AdminAuthTokenKind = "missing" | "unknown" | "inactive" | "probe" | "scope";
+export type AdminAuthTokenKind = "missing" | "unknown" | "inactive" | "probe" | "short" | "scope";
 
 export type AdminAccess =
   | { kind: "ok"; token: AuthenticatedToken }
@@ -24,6 +26,9 @@ export function adminAccess(
   const auth = store.authenticate(secret);
   if (auth.kind !== "ok") return { kind: "denied", status: 401, token: auth.kind };
   if (auth.token.scopes.includes("probe")) return { kind: "denied", status: 403, token: "probe" };
+  // Stored digests carry no length, so the rule runs on the presented secret, after the probe check.
+  if (secret.length < ADMIN_MIN_TOKEN_LENGTH)
+    return { kind: "denied", status: 401, token: "short" };
   if (!canUse(auth.token.scopes, permission)) {
     return { kind: "denied", status: 403, token: "scope" };
   }
@@ -47,7 +52,7 @@ export interface AdminAuthFailuresDeps {
 /**
  * Count every failure and log at most one line per (route, status, token) key and window. The
  * line carries the number of failures dropped for its key since that key's previous line. Keys are
- * route patterns, so the map stays small (at most 12 routes x 2 statuses x 5 kinds).
+ * route patterns, so the map stays small (at most 12 routes x 2 statuses x 6 kinds).
  */
 export function createAdminAuthFailures(deps: AdminAuthFailuresDeps): AdminAuthFailures {
   const keys = new Map<string, { lastLoggedAt: number; suppressed: number }>();

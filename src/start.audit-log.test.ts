@@ -7,7 +7,7 @@ import type { LogLevel } from "@lorenzh/pulse-kit";
 import { openDb } from "./db.ts";
 import { type RunningApi, startApi } from "./start.ts";
 
-const ADMIN = "admin-sentinel-0123456789abcdef";
+const ADMIN = "admin-sentinel-0123456789abcdef0123456789abcdef";
 const PROBE = "probe-sentinel-0123456789abcdef";
 const SECRET = "s3cr3t-sentinel-0123456789";
 const PLACEHOLDER = "replace-with-a-random-secret";

@@ -85,7 +85,23 @@ Upgrade to the version that binds header secrets to hosts: prepare before the AP
 
 Served results now carry integer `latencyMs` (stored fractions are rounded) and a `reason` of at most 1000 characters (longer stored ones end in `…`). Stored rows are not rewritten.
 
-Do not open a database file of an older version with this version. Restore the backup to go back (see [Backup and restore](#backup-and-restore)).
+Downgrades are not supported: an older release refuses a database file with a higher schema version (exit 2, `downgrades are not supported`). Going back without restoring the backup works only to a release with the same `SCHEMA_VERSION`; otherwise restore the backup (see [Backup and restore](#backup-and-restore)).
+
+#### Upgrade to 32-character admin secrets
+
+This version accepts an admin-side secret (any token without the `probe` scope) only with 32 or more characters. A shorter one fails the import, and a shorter stored one answers `401` at every admin route. Probe tokens keep the 16-character minimum. This version adds no schema step: `SCHEMA_VERSION` stays 5. The path depends on the version you run now.
+
+From `v0.1.0` (tokens read from files, schema version 3):
+
+- Before: on `v0.1.0`, give every entry of the admin tokens file a token of 32 or more characters by file rotation (add the new one, restart, remove the old one, restart). Then back up the database with `bun run backup`.
+- If the start fails or no admin token works: a start that fails with exit 2 and `at least 32 characters` imported nothing, but it already migrated the file to schema version 5. Fix the admin tokens file and start this version again; the import is still pending, so it reads the file again.
+- Going back: `v0.1.0` refuses the migrated file with exit 2 (`downgrades are not supported`). Restore the backup to run `v0.1.0` again.
+
+From a build with the token store (schema version 5):
+
+- Before: on that build, rotate every admin-side token with `source` `file` whose secret is shorter than 32 characters with `POST /admin/tokens/<id>/rotate` (see [Token rotation](#token-rotation)). Give clients the new 49-character secret within the 10-minute overlap. Editing the imported admin tokens file changes nothing.
+- If no admin token works: after the upgrade a short secret answers `401`, also during a rotation overlap. Run the previous build again (same schema version 5, no step to undo), rotate there, and upgrade again.
+- Going back: without a backup only to a build with the same `SCHEMA_VERSION` (5). Restoring the backup also works.
 
 A checks file whose heartbeat `secret` still starts with `replace-with-` (the example placeholder) stops the start with `checks[<i>].secret still has the example placeholder secret` and exit code 2. Replace the secret with `openssl rand -hex 32` and update the job that pings, or remove the check. An API that is already running rejects such a reload and keeps its config.
 
@@ -154,7 +170,7 @@ Tokens are managed over HTTP with a token that has `admin` (see [Tokens](rest-ap
 
 A new location gets its own token: `POST /admin/tokens` with `{"name":"probe eu","scopes":["probe"],"location":"eu"}`. Changing a probe's location means a new token for the new location; the probe's `PULSE_LOCATION` and the token's `location` must be equal, or every result gets `403`.
 
-Imported tokens keep the secret from the old file, with that secret's own strength. Rotate them once after the upgrade, so every secret in use is a generated 256-bit one.
+An admin-side secret (a token without the `probe` scope) must have 32 or more characters, also an imported one; a shorter one answers `401`. Imported probe tokens keep the secret from the old file with at least 16 characters. Rotate imported tokens once, so every secret in use is a generated 256-bit one.
 
 **Lockout.** Revoking the last active admin token is refused, but expiry can still leave no admin. There is no recovery command: restore a [backup](#backup-and-restore) taken while an admin token was active. Keep at least one admin token without `expiresAt`.
 
