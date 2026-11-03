@@ -7,7 +7,7 @@ import { openDb } from "./db.ts";
 import { type RunningApi, startApi } from "./start.ts";
 
 const TOKEN = "test-token-east-0123456789abcdef";
-const ADMIN_TOKEN = "admin-token-0123456789abcdef";
+const ADMIN_TOKEN = "admin-token-0123456789abcdef0123456789abcdef";
 const NOW = Date.parse("2026-10-28T12:00:00Z");
 
 let dir: string;

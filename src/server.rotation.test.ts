@@ -6,15 +6,17 @@ import { join } from "node:path";
 import { type TokenSecretResponse, validateTokenSecretResponse } from "@lorenzh/pulse-contract";
 import { openDb } from "./db.ts";
 import { type RunningApi, type StartDeps, startApi } from "./start.ts";
+import { openTokenStore } from "./token-import.ts";
 
 const T = 1_800_000_000_000;
 const PROBE = "probe-rotation-0123456789abcdef";
-const ADMIN = "admin-rotation-0123456789abcdef";
+const ADMIN = "admin-rotation-0123456789abcdef0123456789abcdef";
 
 let dir = "";
 let dbPath = "";
 let clock = T;
 let api: RunningApi;
+const lines: string[] = [];
 
 function deps(): StartDeps {
   return {
@@ -29,7 +31,7 @@ function deps(): StartDeps {
     sleep: () => new Promise<void>(() => undefined),
     setTimeout: () => undefined,
     clearTimeout: () => undefined,
-    write: () => undefined,
+    write: (_level, line) => lines.push(line),
     openDb: (path) => openDb(path),
   };
 }
@@ -177,4 +179,61 @@ test("both tokens work during rotation and only the new one after the overlap", 
   await expiryCap();
   await repeatAndRevoke();
   await probeRoutes();
+});
+
+test("a short stored admin secret answers 401 short; its rotated secret works, the old one not", async () => {
+  const short = "legacy-admin-0123456"; // 20 characters, as an old import stored it
+  const probe16 = "probe-0123456789"; // 16 characters
+  await api.close();
+  const db = openDb(dbPath);
+  const store = openTokenStore({ db, now: () => clock }, { probe: undefined, admin: undefined });
+  const actor = { tokenId: null, name: "test" };
+  const legacy = store.create(
+    {
+      name: "legacy",
+      scopes: ["read", "checks", "incidents", "admin"],
+      location: null,
+      expiresAt: null,
+      source: "file",
+      secret: short,
+    },
+    actor,
+  );
+  store.create(
+    {
+      name: "p16",
+      scopes: ["probe"],
+      location: "eu",
+      expiresAt: null,
+      source: "file",
+      secret: probe16,
+    },
+    actor,
+  );
+  db.close();
+  clock = T;
+  lines.length = 0;
+  api = await startApi(deps());
+
+  const res = await fetch(`http://127.0.0.1:${api.port}/admin/config`, {
+    headers: { authorization: `Bearer ${short}` },
+  });
+  assert.equal(res.status, 401);
+  assert.equal(res.headers.get("www-authenticate"), "Bearer");
+  assert.equal(await res.text(), '{"error":"unauthorized"}');
+  const failure = lines.find((l) => l.includes("admin auth failed"));
+  assert.ok(failure?.includes("short"), String(failure));
+  assert.ok(lines.every((l) => !l.includes(short)));
+
+  const rotated = parsed(await call("POST", `/admin/tokens/${legacy.token.id}/rotate`, ADMIN));
+  assert.equal(rotated.secret.length, 49);
+  clock = T + 1;
+  assert.deepEqual([await config(short), await config(rotated.secret)], [401, 200]);
+
+  const incident = { componentId: null, title: "t", status: "investigating", message: "m" };
+  assert.equal((await call("POST", "/manual-incidents", probe16, incident)).status, 403);
+  assert.ok(
+    lines.some((l) => l.includes("/manual-incidents") && l.includes("probe")),
+    lines.join("\n"),
+  );
 });

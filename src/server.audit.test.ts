@@ -21,7 +21,7 @@ const auditLogModule = () => import("./audit-log.ts");
 
 const T = 1_800_000_000_000;
 const PROBE = "probe-audit-0123456789abcdef";
-const ADMIN = "admin-audit-0123456789abcdef";
+const ADMIN = "admin-audit-0123456789abcdef0123456789abcdef";
 const SENTINELS = [
   "audit-sentinel-header-0001",
   "audit-sentinel-body-0002",

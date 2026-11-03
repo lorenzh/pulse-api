@@ -26,7 +26,8 @@ const TOKENS_SHAPE = 'tokens file must be an object with a "tokens" array';
 /** The rules for one token value; the admin tokens file shares them. */
 export const tokenSchema = z
   .string({ error: TOKEN_LENGTH_TEXT })
-  .min(MIN_TOKEN_LENGTH, TOKEN_LENGTH_TEXT)
+  // Zod's .min counts code points; the rule is JavaScript string length (UTF-16 code units).
+  .refine((v) => v.length >= MIN_TOKEN_LENGTH, { error: TOKEN_LENGTH_TEXT, abort: true })
   .refine((v) => !v.startsWith(PLACEHOLDER_PREFIX), "still has the example placeholder token")
   .refine((v) => !/\s/.test(v), "token must not contain whitespace")
   .refine((v) => !EXAMPLE_TOKENS.includes(v), "uses a public example token: generate your own");

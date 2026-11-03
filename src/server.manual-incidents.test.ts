@@ -17,7 +17,7 @@ import { createApiServer } from "./server.ts";
 import { createService } from "./service.ts";
 import { openTokenStore } from "./token-import.ts";
 
-const ADMIN = "admin-token-0123456789abcdef";
+const ADMIN = "admin-token-0123456789abcdef0123456789abcdef";
 const PROBE = "probe-token-0123456789abcdef";
 const DAY = 86_400_000;
 let clock = Date.parse("2030-01-10T12:00:00Z");

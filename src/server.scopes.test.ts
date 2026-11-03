@@ -10,8 +10,12 @@ import { type RunningApi, type StartDeps, startApi } from "./start.ts";
 
 const NOW = Date.parse("2030-01-10T12:00:00Z");
 const PROBE = "probe-scopes-0123456789abcdef";
-const ADMIN = "admin-scopes-0123456789abcdef";
+const ADMIN = "admin-scopes-0123456789abcdef0123456789abcdef";
 const UNKNOWN = "unknown-scopes-0123456789abcdef";
+
+// The admin auth throttle allows 10 failures per client and 60 s window; tests that deny more
+// often move this clock to a fresh window instead of disabling the throttle.
+let clock = NOW;
 
 let dir = "";
 let checksFile = "";
@@ -23,7 +27,7 @@ const secrets = new Map<string, string>();
 function deps(dbPath: string, env: Record<string, string>): StartDeps {
   return {
     env: { PORT: "0", PULSE_DB: dbPath, PULSE_CHECKS_FILE: checksFile, ...env },
-    now: () => NOW,
+    now: () => clock,
     sleep: () => new Promise<void>(() => undefined),
     setTimeout: () => undefined,
     clearTimeout: () => undefined,
@@ -157,6 +161,7 @@ test("the D1 matrix on the existing routes", async () => {
     ["revoked", "GET", "/admin/tokens", 401],
   ];
   for (const [name, method, path, status, body] of rows) {
+    clock += 60_000;
     const r = await call(method, path, secretOf(name), {
       ifMatch: etag,
       ...(body === undefined ? {} : { body }),
@@ -166,6 +171,7 @@ test("the D1 matrix on the existing routes", async () => {
 });
 
 test("a revoked token answers 401 with the same body as an unknown one", async () => {
+  clock += 60_000;
   const revoked = await call("GET", "/admin/config", secretOf("revoked"));
   const unknown = await call("GET", "/admin/config", UNKNOWN);
   assert.equal(revoked.status, 401);

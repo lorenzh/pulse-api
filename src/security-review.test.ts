@@ -13,7 +13,7 @@ import { type RunningApi, startApi } from "./start.ts";
 
 const NOW = Date.parse("2026-10-31T12:00:00Z");
 const PROBE = "security-probe-0123456789abcdef";
-const ADMIN = "security-admin-0123456789abcdef";
+const ADMIN = "security-admin-0123456789abcdef0123456789abcdef";
 const SECRET = "SECURITY-HEARTBEAT-SECRET-0123456789";
 const HEADER = "SECURITY-HEADER-SENTINEL-0123456789";
 const BODY = "SECURITY-BODY-SENTINEL-0123456789";
@@ -179,6 +179,14 @@ afterAll(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+// Each request comes from its own loopback address, so the many denials of these tests never
+// exhaust one client's admin auth budget (10 failures per 60 s). Linux routes all of 127/8.
+let peer = 0;
+function nextPeer(): string {
+  peer += 1;
+  return `127.0.${Math.floor(peer / 250) % 250}.${(peer % 250) + 2}`;
+}
+
 function call(
   method: string,
   path: string,
@@ -191,6 +199,7 @@ function call(
       {
         hostname: "127.0.0.1",
         port: api.port,
+        localAddress: nextPeer(),
         method,
         path,
         headers: {

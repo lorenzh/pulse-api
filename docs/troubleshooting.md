@@ -8,6 +8,10 @@ Each entry quotes a message from the code.
 
 Full text: `pulse-api: tokens[0] (location "<name>") token must be a string of at least 16 characters`. The token is too short or empty. With a [pulse-deploy](https://github.com/lorenzh/pulse-deploy) setup, `secrets/probe-token` is missing or empty. Write a token into it, for example with `openssl rand -hex 32`.
 
+### `token must be a string of at least 32 characters`
+
+Full text: `pulse-api: tokens[0].token token must be a string of at least 32 characters (PULSE_API_ADMIN_TOKENS_FILE=<path>)`. An admin token is shorter than 32 characters. Nothing was imported. Replace it, for example with `openssl rand -hex 32`, and start again. See [Upgrades](operation.md#upgrades).
+
 ### `still has the example placeholder token`
 
 A token starts with `replace-with-`. You copied `tokens.example.json` without editing it. Replace every token, for example with `openssl rand -hex 32`.
@@ -108,6 +112,14 @@ The body is invalid. The message names the field. `body is not valid JSON` comes
 - `limit must be a positive integer` on `/checks/:id/results`.
 - `status must be "open" or "resolved"` on `/incidents`.
 - `bad check id` on `/checks/:id/results`: the id has a malformed percent escape.
+
+## 400 `invalid request target`
+
+The request target cannot be parsed as a URL path, for example `//[` or `//%zz`. The client sent a broken request line; fix the client. The API answers before auth and logs nothing; `/metrics` counts it as `pulse_api_http_requests_total{route="unmatched",code="400"}`.
+
+## 429 `too many requests` on admin routes
+
+The client failed admin authentication 10 times within 60 s (wrong, missing, short or under-scoped tokens), so every admin request from its address answers `429` until `Retry-After` seconds have passed, also with a valid token. Fix the client's token, wait, and retry. Clients behind one proxy or NAT share the budget, so one broken script there blocks the others. Restarting the API also resets it. See [Admin auth throttle](operation.md#admin-auth-throttle).
 
 ## 405 and 413
 

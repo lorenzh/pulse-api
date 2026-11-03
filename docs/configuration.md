@@ -253,13 +253,13 @@ A token must not contain whitespace, must not start with `replace-with-` and mus
 
 Optional, read once (see [Token import](#token-import)). Set `PULSE_API_ADMIN_TOKENS_FILE` to enable `POST`, `DELETE` on `/manual-incidents`. The file is `{"tokens": [{"name": "ops", "token": "<secret>"}]}`. Copy `admin-tokens.example.json` as a start and keep the file out of git.
 
-| Field    | Rule                                                                                                        |
-| -------- | ----------------------------------------------------------------------------------------------------------- |
-| `tokens` | Array with at least one entry.                                                                              |
-| `name`   | Non-empty string; only for your own bookkeeping.                                                            |
-| `token`  | The same rules as a probe token: 16 or more characters, no whitespace, not a placeholder or public example. |
+| Field    | Rule                                                                       |
+| -------- | -------------------------------------------------------------------------- |
+| `tokens` | Array with at least one entry.                                             |
+| `name`   | Non-empty string; only for your own bookkeeping.                           |
+| `token`  | 32 or more characters, no whitespace, not a placeholder or public example. |
 
-An admin token must differ from every probe token and every stored token, and tokens must not repeat (`admin tokens[<i>] is also a probe token: use a separate token`, `admin tokens[<i>] repeats a stored token`). Either error stops the start with `pulse-api: <message> (PULSE_API_ADMIN_TOKENS_FILE=<path>)` and exit code 2. Messages never print token values and the start log only counts tokens. Before the first admin import the manual incidents feature is off: the write routes answer `404`, `GET /manual-incidents` answers `200` with an empty list and `GET /manual-incidents/<id>` answers `404`, even when the database holds incidents. The stored incidents come back after the admin import. A presented token is hashed and its digest is confirmed in constant time.
+A shorter token stops the start with `pulse-api: tokens[<i>].token token must be a string of at least 32 characters (PULSE_API_ADMIN_TOKENS_FILE=<path>)` and exit code 2; nothing is imported. A completed admin import never reads the file again, so a short, missing or broken file then only logs `PULSE_API_ADMIN_TOKENS_FILE ignored: tokens are stored in the database`. An admin token must differ from every probe token and every stored token, and tokens must not repeat (`admin tokens[<i>] is also a probe token: use a separate token`, `admin tokens[<i>] repeats a stored token`). Either error stops the start with `pulse-api: <message> (PULSE_API_ADMIN_TOKENS_FILE=<path>)` and exit code 2. Messages never print token values and the start log only counts tokens. Before the first admin import the manual incidents feature is off: the write routes answer `404`, `GET /manual-incidents` answers `200` with an empty list and `GET /manual-incidents/<id>` answers `404`, even when the database holds incidents. The stored incidents come back after the admin import. A presented token is hashed and its digest is confirmed in constant time.
 
 ## Compose variables
 

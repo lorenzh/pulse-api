@@ -18,7 +18,7 @@ import { type RunningApi, type StartDeps, startApi } from "./start.ts";
 
 const T = 1_800_000_000_000;
 const PROBE = "probe-tokens-0123456789abcdef";
-const ADMIN = "admin-tokens-0123456789abcdef";
+const ADMIN = "admin-tokens-0123456789abcdef0123456789abcdef";
 
 let dir = "";
 let checksFile = "";

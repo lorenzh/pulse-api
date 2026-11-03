@@ -13,11 +13,8 @@ import {
   WIRE_VERSION_HEADER,
 } from "@lorenzh/pulse-contract";
 import { BodyError, handleOps, readBody, readJsonBody, sendJson } from "@lorenzh/pulse-kit";
-import {
-  type AdminAuthFailures,
-  adminAccess,
-  createAdminAuthFailures,
-} from "./admin-auth-failures.ts";
+import { type AdminAuthFailures, createAdminAuthFailures } from "./admin-auth-failures.ts";
+import { type AdminAuthThrottle, createAdminAuthThrottle } from "./admin-auth-throttle.ts";
 import { auditPathOf, auditRouteOf } from "./audit-routes.ts";
 import { componentsUptime, componentsWithState } from "./components.ts";
 import { MAX_LOCATION_LENGTH } from "./location-limits.ts";
@@ -254,7 +251,7 @@ type Ops = {
   tokens: Pick<TokenStore, "authenticate">;
   /** False before the admin bootstrap: the manual-incident writes answer 404. */
   isAdminEnabled: boolean;
-  authFailures: AdminAuthFailures;
+  authThrottle: AdminAuthThrottle;
   info: LogFn;
   warn: LogFn;
   /** Handles `/admin/*`; undefined when the config writes are off. */
@@ -432,9 +429,18 @@ function manualId(idText: string | undefined): number | undefined {
 function requireAdmin(ops: Ops, req: IncomingMessage, route: string): Actor {
   // Before the admin bootstrap the feature is off and the write routes do not exist.
   if (!ops.isAdminEnabled) throw new HttpError(404, "not found");
-  const access = adminAccess(ops.tokens, req.headers.authorization, "incident-write");
+  const access = ops.authThrottle.authorize({
+    remoteAddress: req.socket.remoteAddress,
+    authorization: req.headers.authorization,
+    route,
+    permission: "incident-write",
+  });
   if (access.kind === "ok") return { tokenId: access.token.id, name: access.token.name };
-  ops.authFailures.record(route, access.status, access.token);
+  if (access.kind === "throttled") {
+    throw new HttpError(429, "too many requests", {
+      "retry-after": String(access.retryAfterSeconds),
+    });
+  }
   if (access.status === 403) throw new HttpError(403, "forbidden");
   throw new HttpError(401, "unauthorized", { "www-authenticate": "Bearer" });
 }
@@ -573,13 +579,23 @@ function isReadPath(path: string): boolean {
   return PLAIN_READS.has(path) || RESULTS_PATH.test(path) || LATENCY_PATH.test(path);
 }
 
+/** Parse the request target; only a `URL` failure becomes a quiet 400 without request data. */
+function parseTarget(target: string | undefined): URL {
+  try {
+    return new URL(target ?? "/", "http://localhost");
+  } catch {
+    // The URL error text holds the target, so it is not kept.
+    throw new HttpError(400, "invalid request target");
+  }
+}
+
 async function handle(
   ops: Ops,
   now: () => number,
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
-  const url = new URL(req.url ?? "/", "http://localhost");
+  const url = parseTarget(req.url);
   const path = url.pathname;
   const method = req.method ?? "GET";
   if (serveOps(ops, req, res)) return;
@@ -747,6 +763,8 @@ export type ApiServerOptions = {
   manualIncidents?: ManualIncidentStore;
   /** Logs and counts failed admin authentications; defaults to one that only counts in `metrics`. */
   adminAuthFailures?: AdminAuthFailures;
+  /** Throttles failed admin authentications; defaults to an instance of its own. */
+  adminAuthThrottle?: AdminAuthThrottle;
   /** Receives the manual-incident write lines. */
   info?: LogFn;
   /** Receives the failed manual-incident write lines. */
@@ -778,6 +796,7 @@ export function createApiServer(service: Service, options: ApiServerOptions): Se
   const ignore: LogFn = () => {
     // No logger given: the lines are dropped on purpose.
   };
+  const tokens = options.tokenStore ?? { authenticate: () => ({ kind: "unknown" as const }) };
   const ops: Ops = {
     service,
     metrics,
@@ -785,13 +804,21 @@ export function createApiServer(service: Service, options: ApiServerOptions): Se
     heartbeatSecrets: options.heartbeatSecrets ?? (() => new Map()),
     components: options.components ?? (() => []),
     // Before the admin bootstrap the feature is off: every read is empty, even with stored incidents.
+    tokens,
     manualIncidents: isAdminEnabled
       ? (options.manualIncidents ?? emptyManualIncidents())
       : emptyManualIncidents(),
-    tokens: options.tokenStore ?? { authenticate: () => ({ kind: "unknown" }) },
     isAdminEnabled,
-    authFailures:
-      options.adminAuthFailures ?? createAdminAuthFailures({ now, warn: ignore, metrics }),
+    authThrottle:
+      options.adminAuthThrottle ??
+      createAdminAuthThrottle({
+        tokens,
+        authFailures:
+          options.adminAuthFailures ?? createAdminAuthFailures({ now, warn: ignore, metrics }),
+        now,
+        warn: options.warn ?? ignore,
+        metrics,
+      }),
     info: options.info ?? ignore,
     warn: options.warn ?? ignore,
     admin: options.admin,

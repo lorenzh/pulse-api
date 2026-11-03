@@ -85,7 +85,23 @@ Upgrade to the version that binds header secrets to hosts: prepare before the AP
 
 Served results now carry integer `latencyMs` (stored fractions are rounded) and a `reason` of at most 1000 characters (longer stored ones end in `…`). Stored rows are not rewritten.
 
-Do not open a database file of an older version with this version. Restore the backup to go back (see [Backup and restore](#backup-and-restore)).
+Downgrades are not supported: an older release refuses a database file with a higher schema version (exit 2, `downgrades are not supported`). Going back without restoring the backup works only to a release with the same `SCHEMA_VERSION`; otherwise restore the backup (see [Backup and restore](#backup-and-restore)).
+
+#### Upgrade to 32-character admin secrets
+
+This version accepts an admin-side secret (any token without the `probe` scope) only with 32 or more characters. A shorter one fails the import, and a shorter stored one answers `401` at every admin route. Probe tokens keep the 16-character minimum. This version adds no schema step: `SCHEMA_VERSION` stays 5. The path depends on the version you run now.
+
+From `v0.1.0` (tokens read from files, schema version 3):
+
+- Before: on `v0.1.0`, give every entry of the admin tokens file a token of 32 or more characters by file rotation (add the new one, restart, remove the old one, restart). Then back up the database with `bun run backup`.
+- If the start fails or no admin token works: a start that fails with exit 2 and `at least 32 characters` imported nothing, but it already migrated the file to schema version 5. Fix the admin tokens file and start this version again; the import is still pending, so it reads the file again.
+- Going back: `v0.1.0` refuses the migrated file with exit 2 (`downgrades are not supported`). Restore the backup to run `v0.1.0` again.
+
+From a build with the token store (schema version 5):
+
+- Before: on that build, rotate every admin-side token with `source` `file` whose secret is shorter than 32 characters with `POST /admin/tokens/<id>/rotate` (see [Token rotation](#token-rotation)). Give clients the new 49-character secret within the 10-minute overlap. Editing the imported admin tokens file changes nothing.
+- If no admin token works: after the upgrade a short secret answers `401`, also during a rotation overlap. Run the previous build again (same schema version 5, no step to undo), rotate there, and upgrade again.
+- Going back: without a backup only to a build with the same `SCHEMA_VERSION` (5). Restoring the backup also works.
 
 A checks file whose heartbeat `secret` still starts with `replace-with-` (the example placeholder) stops the start with `checks[<i>].secret still has the example placeholder secret` and exit code 2. Replace the secret with `openssl rand -hex 32` and update the job that pings, or remove the check. An API that is already running rejects such a reload and keeps its config.
 
@@ -154,7 +170,7 @@ Tokens are managed over HTTP with a token that has `admin` (see [Tokens](rest-ap
 
 A new location gets its own token: `POST /admin/tokens` with `{"name":"probe eu","scopes":["probe"],"location":"eu"}`. Changing a probe's location means a new token for the new location; the probe's `PULSE_LOCATION` and the token's `location` must be equal, or every result gets `403`.
 
-Imported tokens keep the secret from the old file, with that secret's own strength. Rotate them once after the upgrade, so every secret in use is a generated 256-bit one.
+An admin-side secret (a token without the `probe` scope) must have 32 or more characters, also an imported one; a shorter one answers `401`. Imported probe tokens keep the secret from the old file with at least 16 characters. Rotate imported tokens once, so every secret in use is a generated 256-bit one.
 
 **Lockout.** Revoking the last active admin token is refused, but expiry can still leave no admin. There is no recovery command: restore a [backup](#backup-and-restore) taken while an admin token was active. Keep at least one admin token without `expiresAt`.
 
@@ -249,7 +265,8 @@ The API writes JSON lines: `{"time":"<ISO 8601>","level":"info","msg":"...", ...
 - `stopped` (info): The shutdown is done.
 - `startup failed` (error): An unexpected failure at start. The process exits with code 1.
 - `shutting down` (info): A signal arrived. Field: `signal`.
-- `admin auth failed` (warn): A request to `/admin/*` or a manual-incident write had no valid admin token (`401` or `403`). Fields: `route` (the route pattern, such as `/admin/checks/:id`), `status`, `token` (`missing` without a Bearer header, `unknown` for an unknown token, `inactive` for an expired, revoked or rotated-out one, `probe` for a probe token, `scope` for a token without the needed scope) and `suppressed`. One line per route, status and kind per minute; `suppressed` counts the failures of that key dropped since its previous line. A dropped count shows only in the next line of the same key; with no later failure it is only in `pulse_api_admin_auth_failures_total`, which counts every failure.
+- `admin auth failed` (warn): A request to `/admin/*` or a manual-incident write had no valid admin token (`401` or `403`). Fields: `route` (the route pattern, such as `/admin/checks/:id`), `status`, `token` (`missing` without a Bearer header, `unknown` for an unknown token, `inactive` for an expired, revoked or rotated-out one, `probe` for a probe token, `short` for an admin-side secret shorter than 32 characters, `scope` for a token without the needed scope) and `suppressed`. One line per route, status and kind per minute; `suppressed` counts the failures of that key dropped since its previous line. A dropped count shows only in the next line of the same key; with no later failure it is only in `pulse_api_admin_auth_failures_total`, which counts every failure.
+- `admin auth throttled` (warn): The auth throttle answered `429`. Fields: `route` (the route pattern) and `suppressed` (the `429`s of that route not logged since its previous line). At most one line per route per minute. No client address or token data. See [Admin auth throttle](#admin-auth-throttle).
 - `manual incident write` (info): A manual-incident write succeeded. Fields: `token` (the admin token name), `action` (`create`, `update`, `resolve`, `delete`) and `id`.
 - `token write` (info): A token was created, rotated or revoked. Fields: `token` (the caller's name), `action` and `id` (the target token id). Never the secret or the target's name.
 - `<setting> ignored: tokens are stored in the database` (info): A token file setting is set after its import.
@@ -272,7 +289,17 @@ A probe that could not reach the API keeps its results in a bounded buffer and r
 
 ## Health and metrics
 
-`GET /healthz` is liveness: `200 ok`, no database access, also while the API shuts down (it used to answer `503` then). `GET /readyz` is readiness: `200 ok` when `SELECT 1` works and the API is not shutting down, else `503` with a short text and no database error. The image `HEALTHCHECK` and every gate on the API use `/readyz`. `GET /metrics` returns Prometheus text (content type `text/plain; version=0.0.4; charset=utf-8`, with `# HELP` lines). A wrong method on these three paths (also `HEAD`) answers `405` with the JSON body `{"error":"method not allowed"}` and the header `Allow: GET`. Every other API route also sends `Allow` with its methods on a `405`. None needs a token. See [GET /healthz](rest-api.md#get-healthz) and [GET /metrics](rest-api.md#get-metrics). `/metrics` lists check ids: keep it on a private network.
+`GET /healthz` is liveness: `200 ok`, no database access, also while the API shuts down (it used to answer `503` then). `GET /readyz` is readiness: `200 ok` when `SELECT 1` works and the API is not shutting down, else `503` with a short text and no database error. The image `HEALTHCHECK` and every gate on the API use `/readyz`. `GET /metrics` returns Prometheus text (content type `text/plain; version=0.0.4; charset=utf-8`, with `# HELP` lines). A wrong method on these three paths (also `HEAD`) answers `405` with the JSON body `{"error":"method not allowed"}` and the header `Allow: GET`. Every other API route also sends `Allow` with its methods on a `405`. None needs a token. See [GET /healthz](rest-api.md#get-healthz) and [GET /metrics](rest-api.md#get-metrics). `/metrics` lists check ids: keep it on a private network. `pulse_api_admin_auth_throttled_total{route}` counts admin requests refused with `429` by the [admin auth throttle](#admin-auth-throttle); alert with `increase(pulse_api_admin_auth_throttled_total[5m]) > 0`.
+
+### Admin auth throttle
+
+The API throttles failed admin authentications per client: 10 failures per 60 s window from the first failure, then `429` with `Retry-After` until the window ends (see [REST API](rest-api.md#admin-auth-throttle)). The limits are fixed; there is no setting.
+
+- The state is per process and resets on restart. Several API processes each keep their own budget.
+- The client is the peer address (IPv4, or the IPv6 `/64`); forwarding headers are ignored. Clients behind one NAT or reverse proxy share one budget, so a broken script there can block a person for up to 60 s.
+- At most 10 000 clients have their own window. A client without its own live window shares one overflow budget (10 failures per overflow window) while the table is full **or** the overflow window is live. This also holds for a client whose own window just ended. It gets its own window again only after the overflow window has ended and a slot is free. An attacker with more than 10 000 addresses or `/64` prefixes in one minute can use up the overflow budget; then such clients get `429` for up to 60 s. Clients with a live own window and the public routes are not affected. Recovery: wait for the overflow window to end, or restart the API.
+- Bound: at most 10 evaluated failures per window and at most 10 001 live windows. Fixed windows can follow each other directly, so in any 60 000 ms one process evaluates at most `2 × (10 000 + 1) × 10 = 200 020` admin auth failures (factor 2), not 100 010.
+- Alert on throttling with `increase(pulse_api_admin_auth_throttled_total[5m]) > 0`.
 
 ## Shutdown
 

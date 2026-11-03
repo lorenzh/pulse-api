@@ -11,7 +11,7 @@ import { createApiServer } from "./server.ts";
 import { createService } from "./service.ts";
 import { openTokenStore } from "./token-import.ts";
 
-const ADMIN = "admin-sentinel-0123456789abcdef";
+const ADMIN = "admin-sentinel-0123456789abcdef0123456789abcdef";
 const PROBE = "probe-sentinel-0123456789abcdef";
 const UNKNOWN = "not-a-real-token-123456";
 const TITLE = "title-sentinel";

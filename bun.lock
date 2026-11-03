@@ -6,7 +6,7 @@
       "name": "@lorenzh/pulse-api",
       "dependencies": {
         "@lorenzh/pulse-contract": "github:lorenzh/pulse-contract#7ce23aaf3fa3e038f65ecfed755188b83bde143f",
-        "@lorenzh/pulse-kit": "github:lorenzh/pulse-kit#236df214f9df8658f2992dd6f7c100952c07102b",
+        "@lorenzh/pulse-kit": "github:lorenzh/pulse-kit#c6d2cba7d90c981b884dcac2a9288dd9eccad8b5",
         "zod": "4.6.7",
       },
       "devDependencies": {
@@ -78,7 +78,7 @@
 
     "@lorenzh/pulse-contract": ["@lorenzh/pulse-contract@github:lorenzh/pulse-contract#7ce23aa", { "dependencies": { "zod": "4.6.7" } }, "lorenzh-pulse-contract-7ce23aa", "sha512-ovfoIzoOwQCAa3E6v8hDPSzbmwk+T1/OzLeA6fAyCZoVd3JVz3zbBWB4DjmhFVjzH68jkMxTjy2AqSuJPh9y5A=="],
 
-    "@lorenzh/pulse-kit": ["@lorenzh/pulse-kit@github:lorenzh/pulse-kit#236df21", {}, "lorenzh-pulse-kit-236df21", "sha512-ys0EUPPEcW0mPgFXmVuh7FTpET4gOBZWpI/PNl78kk0SPV/HH2JTs9mFgJ095lD76U7/j3h1od+QY7qi8WvIiA=="],
+    "@lorenzh/pulse-kit": ["@lorenzh/pulse-kit@github:lorenzh/pulse-kit#c6d2cba", {}, "lorenzh-pulse-kit-c6d2cba", "sha512-o1oIlJPuj4GAxQIrvU3ToR5ZPNMzhR0iRWuGbNunY+FyEfpdkpxtMsowjQWFiLCUnf8n6ehS2Lq/Q9rNq8oUgw=="],
 
     "@sonarsource/analyzer-commons-configurations": ["@sonarsource/analyzer-commons-configurations@2.31.0-5284", "", {}, "sha512-ruk3blMs9BE9RNSp9LPpWZAIjxJmq4Cp00E3cELIHz7Kym3WxdWGRlKOMYLRQ5tJg/de7jN5AtEElY3bGIfTcw=="],
 

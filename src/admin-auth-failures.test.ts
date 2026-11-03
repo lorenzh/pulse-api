@@ -1,6 +1,7 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import type { TokenScope } from "@lorenzh/pulse-contract";
 import {
   ADMIN_AUTH_LOG_WINDOW_MS,
   adminAccess,
@@ -9,6 +10,7 @@ import {
 import { openDb } from "./db.ts";
 import { createMetrics } from "./metrics.ts";
 import { openTokenStore } from "./token-import.ts";
+import type { Permission } from "./token-scopes.ts";
 
 function setup() {
   let t = 0;
@@ -86,7 +88,7 @@ test("the same route pattern is one key, and no metric series exists before a fa
 });
 
 const PROBE = "probe-token-0123456789abcdef";
-const ADMIN = "admin-token-0123456789abcdef";
+const ADMIN = "admin-token-0123456789abcdef0123456789abcdef";
 
 function storeAt(clock: { t: number }) {
   const store = openTokenStore(
@@ -101,7 +103,7 @@ function storeAt(clock: { t: number }) {
   return { store, reader };
 }
 
-test("adminAccess: the D2 kinds missing, unknown, inactive, probe and scope", () => {
+test("adminAccess: the D2 kinds missing, unknown, inactive, probe, short and scope", () => {
   const clock = { t: 0 };
   const { store, reader } = storeAt(clock);
   const kind = (header: string | undefined) => {
@@ -144,4 +146,40 @@ test("no auth-failure line holds a token, its digest, its id or its name", () =>
   for (const word of [reader.token.id, reader.token.name, probeId, "probe eu #1"]) {
     assert.ok(!text.includes(word), word);
   }
+});
+
+test("adminAccess: a short admin-side secret is 401 short for every non-probe scope, after probe", () => {
+  const store = openTokenStore({ db: openDb(":memory:"), now: () => 0 }, { probe: [], admin: [] });
+  const actor = { tokenId: null, name: "test" };
+  const make = (name: string, scopes: TokenScope[], secret: string) =>
+    store.create(
+      {
+        name,
+        scopes,
+        location: scopes.includes("probe") ? "eu" : null,
+        expiresAt: null,
+        source: "file",
+        secret,
+      },
+      actor,
+    );
+  make("probe16", ["probe"], "p".repeat(16));
+  const scopes: TokenScope[][] = [["read"], ["checks"], ["incidents"], ["admin"]];
+  for (const [i, s] of scopes.entries()) make(`short-${i}`, s, `${i}`.repeat(31));
+  make("long-read", ["read"], "r".repeat(32));
+  const kind = (secret: string, permission: Permission) => {
+    const access = adminAccess(store, `Bearer ${secret}`, permission);
+    return access.kind === "ok" ? "ok" : `${access.status} ${access.token}`;
+  };
+  assert.equal(kind("p".repeat(16), "incident-write"), "403 probe");
+  for (const permission of [
+    "config-read",
+    "config-write",
+    "incident-write",
+    "token-admin",
+  ] as const) {
+    for (const i of scopes.keys()) assert.equal(kind(`${i}`.repeat(31), permission), "401 short");
+  }
+  assert.equal(kind("r".repeat(32), "config-read"), "ok");
+  assert.equal(kind("r".repeat(32), "config-write"), "403 scope");
 });

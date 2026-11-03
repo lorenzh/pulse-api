@@ -6,7 +6,8 @@ import {
   isAdminRevision,
 } from "@lorenzh/pulse-contract";
 import { BodyError, readBody, readJsonBody, sendJson } from "@lorenzh/pulse-kit";
-import { type AdminAuthFailures, adminAccess } from "./admin-auth-failures.ts";
+import type { AdminAuthFailures } from "./admin-auth-failures.ts";
+import { type AdminAuthThrottle, createAdminAuthThrottle } from "./admin-auth-throttle.ts";
 import type { AuditLog } from "./audit-log.ts";
 import {
   type AuditPath,
@@ -34,6 +35,8 @@ export interface AdminRoutesDeps {
   warn: (message: string, fields: Record<string, string>) => void;
   /** Logs and counts a failed authentication; shared with the manual-incident routes. */
   authFailures: AdminAuthFailures;
+  /** Shared with the manual-incident routes; defaults to an instance of its own. */
+  authThrottle?: AdminAuthThrottle;
 }
 
 const ADMIN_PATH = /^\/admin\/(config|checks|components|maintenance)(?:\/([^/]+))?$/;
@@ -155,14 +158,32 @@ interface Target {
 export function createAdminHandler(
   deps: AdminRoutesDeps,
 ): (req: IncomingMessage, res: ServerResponse) => Promise<boolean> {
+  const throttle =
+    deps.authThrottle ??
+    createAdminAuthThrottle({
+      tokens: deps.tokens,
+      authFailures: deps.authFailures,
+      now: deps.now,
+      warn: deps.warn,
+      metrics: { recordAdminAuthThrottled: () => undefined },
+    });
   const authorize = (
     req: IncomingMessage,
     route: string,
     permission: Permission,
   ): AuthenticatedToken => {
-    const access = adminAccess(deps.tokens, req.headers.authorization, permission);
+    const access = throttle.authorize({
+      remoteAddress: req.socket.remoteAddress,
+      authorization: req.headers.authorization,
+      route,
+      permission,
+    });
     if (access.kind === "ok") return access.token;
-    deps.authFailures.record(route, access.status, access.token);
+    if (access.kind === "throttled") {
+      throw new RouteError(429, "too many requests", {
+        "retry-after": String(access.retryAfterSeconds),
+      });
+    }
     if (access.status === 403) throw new RouteError(403, "forbidden");
     throw new RouteError(401, "unauthorized", { "www-authenticate": "Bearer" });
   };
