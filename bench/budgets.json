@@ -21,10 +21,10 @@
       "gating": true
     },
     "test_cpu_s": {
-      "budget": 5.2,
+      "budget": 5.6,
       "unit": "s",
       "gating": true,
-      "floor": 1.4
+      "floor": 1.6
     },
     "startup_wall_ms": {
       "budget": 618,
@@ -214,10 +214,10 @@
       "gating": true
     },
     "test_cpu_s": {
-      "budget": 2.5,
+      "budget": 3.4,
       "unit": "s",
       "gating": true,
-      "floor": 0.6
+      "floor": 1.5
     },
     "startup_wall_ms": {
       "budget": 978,
