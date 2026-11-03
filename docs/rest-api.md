@@ -27,6 +27,7 @@ The API serves JSON over HTTP. The types come from [pulse-contract](https://gith
 General rules:
 
 - Errors have the body `{"error": "<message>"}` (`ErrorResponse`).
+- A request target that is not a valid URL path (for example `//[`) gives `400` with `invalid request target`, on every path and method, before auth. The body never repeats the target, and nothing is logged.
 - An unknown path gives `404` with `not found`. Another method on a known path gives `405` with `method not allowed` and the header `Allow` with the allowed methods (for example `Allow: GET`).
 - A request body over 1,000,000 bytes gives `413` with `request body too large`.
 - An unexpected failure gives `500` with `internal error`. The cause is written to stderr.

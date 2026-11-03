@@ -109,6 +109,10 @@ The body is invalid. The message names the field. `body is not valid JSON` comes
 - `status must be "open" or "resolved"` on `/incidents`.
 - `bad check id` on `/checks/:id/results`: the id has a malformed percent escape.
 
+## 400 `invalid request target`
+
+The request target cannot be parsed as a URL path, for example `//[` or `//%zz`. The client sent a broken request line; fix the client. The API answers before auth and logs nothing; `/metrics` counts it as `pulse_api_http_requests_total{route="unmatched",code="400"}`.
+
 ## 405 and 413
 
 - `method not allowed`: the `Allow` header names the methods of the path. `POST` on `/results`, `GET` and `POST` on `/heartbeat/<id>`, `POST` on `/admin/<section>`, `PUT` and `DELETE` on `/admin/<section>/<id>`, and `GET` on the reads.

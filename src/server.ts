@@ -573,13 +573,23 @@ function isReadPath(path: string): boolean {
   return PLAIN_READS.has(path) || RESULTS_PATH.test(path) || LATENCY_PATH.test(path);
 }
 
+/** Parse the request target; only a `URL` failure becomes a quiet 400 without request data. */
+function parseTarget(target: string | undefined): URL {
+  try {
+    return new URL(target ?? "/", "http://localhost");
+  } catch {
+    // The URL error text holds the target, so it is not kept.
+    throw new HttpError(400, "invalid request target");
+  }
+}
+
 async function handle(
   ops: Ops,
   now: () => number,
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
-  const url = new URL(req.url ?? "/", "http://localhost");
+  const url = parseTarget(req.url);
   const path = url.pathname;
   const method = req.method ?? "GET";
   if (serveOps(ops, req, res)) return;
