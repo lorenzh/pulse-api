@@ -85,3 +85,36 @@ test("parseAdminTokens: the admin minimum is 32 characters, probe tokens keep 16
     { location: "eu", token: "c".repeat(16) },
   ]);
 });
+
+test("token length counts UTF-16 code units at every minimum", () => {
+  // Each emoji is 2 UTF-16 code units but 1 code point.
+  const cases = [
+    {
+      site: "admin",
+      accept: `${"a".repeat(16)}${"😀".repeat(8)}`,
+      refuse: `${"a".repeat(15)}${"😀".repeat(8)}`,
+      units: 32,
+    },
+    {
+      site: "probe",
+      accept: `${"b".repeat(8)}${"😀".repeat(4)}`,
+      refuse: `${"b".repeat(7)}${"😀".repeat(4)}`,
+      units: 16,
+    },
+  ];
+  const parse = (site: string, token: string): unknown =>
+    site === "admin"
+      ? parseAdminTokens({ tokens: [{ name: "ops", token }] })
+      : parseTokens({ tokens: [{ location: "eu", token }] });
+  for (const { site, accept, refuse, units } of cases) {
+    assert.equal(accept.length, units, site);
+    assert.equal(refuse.length, units - 1, site);
+    assert.doesNotThrow(() => parse(site, accept), site);
+    assert.throws(
+      () => parse(site, refuse),
+      (e: unknown) =>
+        e instanceof TokensError && e.message.includes(`at least ${units} characters`),
+      site,
+    );
+  }
+});

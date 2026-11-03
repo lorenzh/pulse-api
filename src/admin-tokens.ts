@@ -11,7 +11,8 @@ const ADMIN_LENGTH_TEXT = `token must be a string of at least ${ADMIN_MIN_TOKEN_
 // The length check runs first, so a short token gets the admin message; the shared rules follow.
 const ADMIN_TOKEN_SCHEMA = z
   .string({ error: ADMIN_LENGTH_TEXT })
-  .min(ADMIN_MIN_TOKEN_LENGTH, { error: ADMIN_LENGTH_TEXT, abort: true })
+  // Zod's .min counts code points; the rule is JavaScript string length (UTF-16 code units).
+  .refine((v) => v.length >= ADMIN_MIN_TOKEN_LENGTH, { error: ADMIN_LENGTH_TEXT, abort: true })
   .pipe(tokenSchema);
 
 const SHAPE = 'admin tokens file must be an object with a "tokens" array';
