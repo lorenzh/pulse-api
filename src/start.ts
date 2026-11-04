@@ -16,6 +16,7 @@ import { createAdminHandler } from "./admin-routes.ts";
 import type { AdminToken } from "./admin-tokens.ts";
 import { createAuditLog, createPendingAudit } from "./audit-log.ts";
 import { createCheckStore } from "./check-store.ts";
+import { createCheckWriter } from "./check-write.ts";
 import { componentBudgets } from "./components.ts";
 import { ConfigError, loadAdminTokens, loadTokens } from "./config.ts";
 import { nodeConfigFs } from "./config-fs.ts";
@@ -37,6 +38,7 @@ import { isActive } from "./token-scopes.ts";
 import { generateSecret, generateTokenId, type TokenStore } from "./token-store.ts";
 import { type ProbeToken, TokensError } from "./tokens.ts";
 import { startUptimeRollup } from "./uptime-rollup.ts";
+import { createWriteLock } from "./write-lock.ts";
 
 export const SHUTDOWN_TIMEOUT_MS = 5000;
 
@@ -208,8 +210,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
   const reloadIntervalMs = readReloadIntervalMs(env);
   const configFs = deps.configFs ?? nodeConfigFs;
   const initial = loadInitialConfig(configFs, checksFile);
-  const holder = createConfigHolder(initial.config);
-  const { checks, maintenance, components } = initial.config;
+  const { maintenance, components } = initial.config;
   let db: Database;
   try {
     db = deps.openDb(dbPath, (line) => logger.info(line));
@@ -219,6 +220,10 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     });
   }
   onDb(db);
+  const checkStore = createCheckStore({ db, now: deps.now });
+  // The file is applied first; the stored database checks join it in the effective set.
+  const holder = createConfigHolder(initial.config, checkStore.list());
+  const { checks } = holder.get();
   const { store: tokenStore, isAdminEnabled } = bootstrapTokens(
     deps,
     db,
@@ -256,7 +261,6 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     onIncident: (event) => metrics.recordIncident(event),
   });
   service.upsertChecks(checks);
-  const checkStore = createCheckStore({ db, now: deps.now });
   const auditLog = createAuditLog(db);
   const manualIncidents = createManualIncidentStore(db, {
     now: deps.now,
@@ -294,7 +298,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
       fs: configFs,
       onApply: (next) => {
         // SQLite first, in one transaction: a failed update leaves the holder and revision as they were.
-        service.upsertChecks(next.checks);
+        service.upsertChecks(holder.checksWith(next));
         holder.set(next);
       },
       log: (line) => logger.warn(line),
@@ -310,7 +314,9 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     log: (line) => logger.warn(line),
   });
   const removeSignal = deps.onSignal?.("SIGHUP", () => reloader.reloadNow());
+  const writeLock = createWriteLock();
   const writer = createConfigWriter({
+    lock: writeLock,
     path: checksFile,
     fs: configFs,
     holder,
@@ -338,8 +344,19 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     warn,
     metrics,
   });
+  const checkWriter = createCheckWriter({
+    db,
+    store: checkStore,
+    service,
+    holder,
+    fileRevision: () => reloader.revision(),
+    audit: auditLog,
+    lock: writeLock,
+    now: deps.now,
+  });
   const adminHandler = createAdminHandler({
     writer,
+    checks: checkWriter,
     metrics,
     tokens: tokenStore,
     audit: auditLog,

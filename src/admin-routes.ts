@@ -16,7 +16,15 @@ import {
   auditRouteOf,
   serveAudit,
 } from "./audit-routes.ts";
-import type { ConfigEdit, ConfigKind, ConfigWriter, WriteFailure } from "./config-write.ts";
+import type { CheckEdit, CheckWriter } from "./check-write.ts";
+import type {
+  ConfigEdit,
+  ConfigKind,
+  ConfigWriter,
+  WriteActor,
+  WriteFailure,
+  WriteOutcome,
+} from "./config-write.ts";
 import { ConfigWriteError } from "./config-write.ts";
 import type { ConfigWriteAction, ConfigWriteResult, Metrics } from "./metrics.ts";
 import { handleTokenRoute, type TokenPath, tokenPathOf, tokenRouteOf } from "./token-routes.ts";
@@ -25,6 +33,8 @@ import type { AuthenticatedToken, TokenStore } from "./token-store.ts";
 
 export interface AdminRoutesDeps {
   writer: ConfigWriter;
+  /** Writes of `/admin/checks`: database checks, never the checks file. */
+  checks: CheckWriter;
   metrics: Pick<Metrics, "recordConfigWrite">;
   /** Authenticates the Bearer credential and serves `/admin/tokens*`. */
   tokens: TokenStore;
@@ -148,10 +158,13 @@ function sendError(res: ServerResponse, status: number, error: string, headers =
   sendJson(res, status, body, headers);
 }
 
+/** A check or component id, or a window index. */
+type Ref = string | number;
+
 interface Target {
   kind: ConfigKind;
   /** Undefined on the collection path. */
-  ref: string | number | undefined;
+  ref: Ref | undefined;
 }
 
 /** Handle `/admin/*`. Returns false for a path that is not an admin route. */
@@ -188,6 +201,24 @@ export function createAdminHandler(
     throw new RouteError(401, "unauthorized", { "www-authenticate": "Bearer" });
   };
 
+  const applyWrite = (
+    kind: ConfigKind,
+    action: ConfigWriteAction,
+    ref: Ref | undefined,
+    body: unknown,
+    ifMatch: string,
+    actor: WriteActor,
+  ): Promise<WriteOutcome> => {
+    // A database check write never touches the file, so it needs no writable directory.
+    if (kind === "check") return deps.checks.apply(checkEditOf(action, ref, body), ifMatch, actor);
+    try {
+      deps.writer.assertWritable();
+    } catch (err) {
+      throw err instanceof ConfigWriteError ? err : new RouteError(503, "checks file not writable");
+    }
+    return deps.writer.apply(editOf(kind, action, ref, body), ifMatch, actor);
+  };
+
   const write = async (
     req: IncomingMessage,
     res: ServerResponse,
@@ -202,16 +233,8 @@ export function createAdminHandler(
       throw new RouteError(400, "body id must equal the id in the path");
     }
     if (ifMatch === undefined) throw new RouteError(428, "If-Match is required");
-    try {
-      deps.writer.assertWritable();
-    } catch (err) {
-      throw err instanceof ConfigWriteError ? err : new RouteError(503, "checks file not writable");
-    }
-    const edit = editOf(kind, action, ref, body);
-    const outcome = await deps.writer.apply(edit, ifMatch, {
-      tokenId: caller.id,
-      name: caller.name,
-    });
+    const actor = { tokenId: caller.id, name: caller.name };
+    const outcome = await applyWrite(kind, action, ref, body, ifMatch, actor);
     deps.metrics.recordConfigWrite(kind, action, "ok");
     const created = kind === "maintenance" ? (outcome.index ?? 0) : bodyId(body);
     const id = String((action === "create" ? created : ref) ?? "");
@@ -373,4 +396,10 @@ function editOf(
   if (action === "create") return { kind, action, body };
   if (ref === undefined) throw new RouteError(405, "method not allowed", { Allow: "POST" });
   return action === "replace" ? { kind, action, ref, body } : { kind, action, ref };
+}
+
+function checkEditOf(action: ConfigWriteAction, ref: Ref | undefined, body: unknown): CheckEdit {
+  if (action === "create") return { action, body };
+  if (ref === undefined) throw new RouteError(405, "method not allowed", { Allow: "POST" });
+  return action === "replace" ? { action, ref: String(ref), body } : { action, ref: String(ref) };
 }

@@ -9,9 +9,12 @@ import type {
 } from "@lorenzh/pulse-contract";
 import { isRecord } from "@lorenzh/pulse-kit";
 import type { AuditRecord, PendingAudit } from "./audit-log.ts";
+import type { CheckDefinition } from "./check-store.ts";
 import { type Config, ConfigError, parseConfig } from "./config.ts";
 import type { ConfigHolder } from "./config-holder.ts";
 import { adminRevision, type ConfigReloader, revisionOf } from "./config-reload.ts";
+import { effectiveChecks } from "./effective-checks.ts";
+import { createWriteLock, type WriteLock } from "./write-lock.ts";
 
 export type ConfigKind = "check" | "component" | "maintenance";
 export type ConfigAction = "create" | "replace" | "delete";
@@ -73,6 +76,8 @@ export interface WriterDeps {
   now: () => number;
   /** Warn lines name an error code only, never a path. */
   warn: (line: string) => void;
+  /** Shared with the database check writer; defaults to a lock of its own. */
+  lock?: WriteLock;
   /** Test only: called after each named step of the write protocol. */
   fault?: (point: string) => void;
 }
@@ -159,10 +164,16 @@ export function checkView(check: Check, source: CheckSource): AdminCheckView {
   }
 }
 
-export function configView(config: Config, revision: string): AdminConfigResponse {
+/** The admin view: applied file checks first, then the database checks the file does not shadow. */
+export function configView(
+  config: Config,
+  revision: string,
+  definitions: readonly CheckDefinition[] = [],
+): AdminConfigResponse {
+  const merged = effectiveChecks({ checks: config.checks, secretDigests: new Map() }, definitions);
   return {
     revision,
-    checks: config.checks.map((check) => checkView(check, "file")),
+    checks: merged.checks.map((check) => checkView(check, merged.sources.get(check.id) ?? "file")),
     shadowed: [],
     components: config.components.map((c) => ({ ...c })),
     maintenance: config.maintenance.map((w, index) => ({ ...w, index })),
@@ -393,7 +404,7 @@ export function createConfigWriter(deps: WriterDeps): ConfigWriter {
   const { path, fs, pending } = deps;
   const dir = dirname(path);
   const fault = deps.fault ?? (() => undefined);
-  let tail: Promise<unknown> = Promise.resolve();
+  const lock = deps.lock ?? createWriteLock();
 
   const readBytes = (): Buffer => {
     try {
@@ -575,7 +586,11 @@ export function createConfigWriter(deps: WriterDeps): ConfigWriter {
 
   return {
     view: () =>
-      configView(deps.holder.get(), adminRevision(deps.reloader.revision(), deps.generation())),
+      configView(
+        deps.holder.file(),
+        adminRevision(deps.reloader.revision(), deps.generation()),
+        deps.holder.definitions(),
+      ),
     assertWritable() {
       try {
         fs.assertWritable(dir);
@@ -584,10 +599,7 @@ export function createConfigWriter(deps: WriterDeps): ConfigWriter {
       }
     },
     apply(edit, ifMatch, actor) {
-      const result = tail.then(() => run(edit, ifMatch, actor));
-      // The chain goes on after a failure.
-      tail = result.catch(() => undefined);
-      return result;
+      return lock.run(() => run(edit, ifMatch, actor));
     },
     resolvePending,
   };

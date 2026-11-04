@@ -34,7 +34,6 @@ const SENTINEL_HEADER = "sentinel-header-value-7731";
 const SENTINEL_ENV = "PULSE_HEADER_SENTINEL_ENV_NAME_7731";
 const SENTINEL_BODY = "sentinel-body-text-7731";
 const SECRET = "sentinel-secret-7731-abcdef";
-const SECRET2 = "rotated-secret-7731-abcdefgh";
 
 const BASE_FILE = {
   checks: [
@@ -167,6 +166,13 @@ function writeExternal(content: unknown): void {
 }
 
 const NEW_CHECK = { id: "new", name: "New", url: "https://new.example/", intervalMs: 60000 };
+/** A component write: the file protocol runs for components and windows, not for checks. */
+const NEW_COMPONENT = { id: "db", name: "DB", checkIds: ["api"] };
+
+async function componentIds(b: Booted): Promise<string[]> {
+  const view = (await (await b.call("GET", "/admin/config")).json()) as AdminConfigResponse;
+  return view.components.map((c) => c.id);
+}
 
 const hex = (data: string | Buffer): string => createHash("sha256").update(data).digest("hex");
 /** The admin revision from its formula, independent of the code: file revision, newline, generation. */
@@ -192,7 +198,10 @@ test("admin: the revision combines the applied file revision with database gener
 
 test("admin: a write answers the combined revision of the stored file", async () => {
   const b = await boot();
-  const r = await b.call("POST", "/admin/checks", { body: NEW_CHECK, ifMatch: await b.revision() });
+  const r = await b.call("POST", "/admin/components", {
+    body: NEW_COMPONENT,
+    ifMatch: await b.revision(),
+  });
   assert.equal(r.status, 201);
   assert.equal(r.headers.get("etag"), adminRev(readFileSync(file), 0));
   assert.equal(await b.revision(), adminRev(readFileSync(file), 0));
@@ -396,10 +405,16 @@ test("admin: a read-only directory answers 503 before the revision is compared",
   };
   const b = await boot(BASE_FILE, { configFs });
   const stale = `"sha256-${"0".repeat(64)}"`;
-  const r = await b.call("POST", "/admin/checks", { body: NEW_CHECK, ifMatch: stale });
+  const r = await b.call("POST", "/admin/components", { body: NEW_COMPONENT, ifMatch: stale });
   assert.equal(r.status, 503);
   assert.match(((await r.json()) as { error: string }).error, /read-only \(EROFS\)/);
-  assert.match(await b.metrics(), /action="create",result="readonly"\} 1/);
+  assert.match(await b.metrics(), /kind="component",action="create",result="readonly"\} 1/);
+  // A database check write never needs the directory (counterexample 24).
+  const check = await b.call("POST", "/admin/checks", {
+    body: NEW_CHECK,
+    ifMatch: await b.revision(),
+  });
+  assert.equal(check.status, 201);
 });
 
 // ---- happy paths ----
@@ -501,15 +516,23 @@ test("admin: components and maintenance windows", async () => {
   assert.equal(config.components.length, 1);
 });
 
-test("admin: delete is refused with 409 naming the component or the window", async () => {
+test("admin: a check of the checks file cannot be replaced or deleted over HTTP", async () => {
   const b = await boot();
   const rev = await b.revision();
+  const before = readFileSync(file);
   const web = await b.call("DELETE", "/admin/checks/web", { ifMatch: rev });
   assert.equal(web.status, 409);
-  assert.match(((await web.json()) as { error: string }).error, /component "site"/);
-  const api = await b.call("DELETE", "/admin/checks/api", { ifMatch: rev });
-  assert.equal(api.status, 409);
-  assert.match(((await api.json()) as { error: string }).error, /maintenance\[0\]/);
+  assert.equal(
+    ((await web.json()) as ErrorResponse).error,
+    'check "web" is defined in the checks file',
+  );
+  const put = await b.call("PUT", "/admin/checks/api", {
+    body: { ...BASE_FILE.checks[1], name: "x" },
+    ifMatch: rev,
+  });
+  assert.equal(put.status, 409);
+  assert.deepEqual(readFileSync(file), before);
+  assert.equal(await b.revision(), rev);
 });
 
 test("admin: a component named by an unresolved manual incident cannot be deleted", async () => {
@@ -543,10 +566,7 @@ test("admin: a hand edit makes the old revision stale", async () => {
   const b = await boot();
   const rev = await b.revision();
   writeExternal({ checks: [...BASE_FILE.checks, NEW_CHECK] });
-  const r = await b.call("POST", "/admin/checks", {
-    body: { ...NEW_CHECK, id: "n2" },
-    ifMatch: rev,
-  });
+  const r = await b.call("POST", "/admin/components", { body: NEW_COMPONENT, ifMatch: rev });
   assert.equal(r.status, 412);
 });
 
@@ -555,7 +575,7 @@ test("admin: the file keeps its mode and the format has 2 spaces and a final new
   chmodSync(file, 0o640);
   const rev = await b.revision();
   assert.equal(
-    (await b.call("POST", "/admin/checks", { body: NEW_CHECK, ifMatch: rev })).status,
+    (await b.call("POST", "/admin/components", { body: NEW_COMPONENT, ifMatch: rev })).status,
     201,
   );
   assert.equal(statSync(file).mode & 0o777, 0o640);
@@ -604,13 +624,13 @@ for (const step of ["fsync-temp", "rename", "fsync-dir"] as const) {
     const before = readFileSync(file, "utf8");
     const rev = await b.revision();
     isBroken = true;
-    const r = await b.call("POST", "/admin/checks", { body: NEW_CHECK, ifMatch: rev });
+    const r = await b.call("POST", "/admin/components", { body: NEW_COMPONENT, ifMatch: rev });
     assert.equal(r.status, 500);
     JSON.parse(readFileSync(file, "utf8"));
     if (step !== "fsync-dir") assert.equal(readFileSync(file, "utf8"), before);
     // Nothing is applied before the directory fsync succeeds.
     assert.equal(await b.revision(), rev);
-    assert.deepEqual(await checkIds(b), ["api", "web"]);
+    assert.deepEqual(await componentIds(b), ["site"]);
     assert.deepEqual(
       readdirSync(dir).filter((n) => n.endsWith(".tmp")),
       [],
@@ -627,7 +647,10 @@ test("admin: EXDEV on rename answers 503 naming the cause", async () => {
     },
   };
   const b = await boot(BASE_FILE, { configFs });
-  const r = await b.call("POST", "/admin/checks", { body: NEW_CHECK, ifMatch: await b.revision() });
+  const r = await b.call("POST", "/admin/components", {
+    body: NEW_COMPONENT,
+    ifMatch: await b.revision(),
+  });
   assert.equal(r.status, 503);
   assert.match(((await r.json()) as { error: string }).error, /\(EXDEV\)/);
   assert.deepEqual(
@@ -652,7 +675,7 @@ test("admin: a hand edit between the temp file and the rename answers 412 and ke
   const b = await boot(BASE_FILE, { configFs });
   const rev = await b.revision();
   isArmed = true;
-  const r = await b.call("POST", "/admin/checks", { body: NEW_CHECK, ifMatch: rev });
+  const r = await b.call("POST", "/admin/components", { body: NEW_COMPONENT, ifMatch: rev });
   assert.equal(r.status, 412);
   assert.equal(readFileSync(file, "utf8"), edited);
   assert.deepEqual(
@@ -708,15 +731,18 @@ test("review fix: an apply failure after the rename syncs the directory and keep
   });
   const before = await (await b.call("GET", "/admin/config")).json();
   db().prepare(FAIL_UPSERT).run();
-  const r = await b.call("POST", "/admin/checks", { body: NEW_CHECK, ifMatch: await b.revision() });
+  const r = await b.call("POST", "/admin/components", {
+    body: NEW_COMPONENT,
+    ifMatch: await b.revision(),
+  });
   assert.equal(r.status, 500);
   assert.match(((await r.json()) as { error: string }).error, /stored, but applying it failed/);
   assert.equal(dirSyncs, 2, "the temp name and the rename are synced before the apply");
-  assert.ok(readFileSync(file, "utf8").includes('"new"'), "the file is the source of truth");
+  assert.ok(readFileSync(file, "utf8").includes('"db"'), "the file is the source of truth");
   assert.deepEqual(await (await b.call("GET", "/admin/config")).json(), before);
   db().prepare("DROP TRIGGER fail_upsert").run();
   b.poll();
-  assert.ok((await checkIds(b)).includes("new"), "the next reload applies the stored file");
+  assert.ok((await componentIds(b)).includes("db"), "the next reload applies the stored file");
 });
 
 test("review fix: a DELETE body over the limit answers 413 and deletes nothing", async () => {
@@ -743,36 +769,27 @@ test("review fix: 400 and 428 come before an unknown id, in the spec order", asy
 
 // ---- heartbeat secrets ----
 
-test("admin: a heartbeat secret can be set, kept and rotated, and is never read back", async () => {
-  const b = await boot();
+test("admin: a database heartbeat stores only the digest of its secret and never reads it back", async () => {
+  const { b, db } = await bootWithDb();
   const hb = { id: "job", name: "Job", type: "heartbeat", period: 60000, grace: 0 };
-  let r = await b.call("POST", "/admin/checks", {
+  const r = await b.call("POST", "/admin/checks", {
     body: { ...hb, secret: SECRET },
     ifMatch: await b.revision(),
   });
   assert.equal(r.status, 201);
   const view = (await r.json()) as Record<string, unknown>;
   assert.equal(view.hasSecret, true);
+  assert.equal(view.source, "database");
   assert.ok(validateAdminCheckView(view).ok);
-  assert.equal((await fetch(`${b.base}/heartbeat/job/${SECRET}`)).status, 204);
-
-  r = await b.call("PUT", "/admin/checks/job", {
-    body: { ...hb, name: "Job 2" },
-    ifMatch: r.headers.get("etag") ?? "",
-  });
-  assert.equal(r.status, 200);
-  assert.equal((await fetch(`${b.base}/heartbeat/job/${SECRET}`)).status, 204);
-
-  r = await b.call("PUT", "/admin/checks/job", {
-    body: { ...hb, secret: SECRET2 },
-    ifMatch: r.headers.get("etag") ?? "",
-  });
-  assert.equal(r.status, 200);
-  assert.equal((await fetch(`${b.base}/heartbeat/job/${SECRET}`)).status, 401);
-  assert.equal((await fetch(`${b.base}/heartbeat/job/${SECRET2}`)).status, 204);
-
+  const row = db()
+    .query<{ check_json: string; secret_sha256: string }, []>(
+      "SELECT check_json, secret_sha256 FROM check_definitions WHERE id = 'job'",
+    )
+    .get();
+  assert.equal(row?.secret_sha256, hex(SECRET));
+  assert.ok(!row?.check_json.includes(SECRET));
   const all = await (await b.call("GET", "/admin/config")).text();
-  assert.ok(!all.includes(SECRET) && !all.includes(SECRET2));
+  assert.ok(!all.includes(SECRET));
   // a heartbeat without a secret on create is refused
   const bad = await b.call("POST", "/admin/checks", {
     body: { ...hb, id: "j2" },
@@ -892,4 +909,204 @@ test("admin writes: userinfo URL, warnDays 3651 and an unprefixed env name answe
     assert.equal(put.status, 422, JSON.stringify(body));
   }
   assert.equal(readFileSync(file, "utf8"), before);
+});
+
+// ---- database check writes ----
+
+/** The file operations of a read-only checks file: every write step fails with EROFS. */
+const READ_ONLY_FS: StartDeps["configFs"] = {
+  ...nodeConfigFs,
+  assertWritable: () => {
+    throw Object.assign(new Error("ro"), { code: "EROFS" });
+  },
+  writeTemp: () => {
+    throw Object.assign(new Error("ro"), { code: "EROFS" });
+  },
+  rename: () => {
+    throw Object.assign(new Error("ro"), { code: "EROFS" });
+  },
+};
+
+async function probeChecks(b: Booted): Promise<Record<string, unknown>[]> {
+  const r = await fetch(`${b.base}/probe/checks`, {
+    headers: { authorization: `Bearer ${PROBE}` },
+  });
+  assert.equal(r.status, 200);
+  return (await r.json()) as Record<string, unknown>[];
+}
+
+function generationOf(db: Db): number | undefined {
+  return db
+    .query<{ g: number }, []>("SELECT database_generation AS g FROM config_state WHERE id = 1")
+    .get()?.g;
+}
+
+test("check 1a: POST on a read-only file returns 201 and probes receive the literal definition", async () => {
+  const b = await boot(BASE_FILE, { configFs: READ_ONLY_FS });
+  const before = readFileSync(file);
+  const r = await b.call("POST", "/admin/checks", { body: NEW_CHECK, ifMatch: await b.revision() });
+  assert.equal(r.status, 201);
+  assert.equal(r.headers.get("location"), "/admin/checks/new");
+  assert.deepEqual(await r.json(), {
+    ...NEW_CHECK,
+    retries: 0,
+    retryDelayMs: 1000,
+    source: "database",
+  });
+  const probed = (await probeChecks(b)).find((c) => c.id === "new");
+  assert.equal(probed?.url, "https://new.example/");
+  assert.equal(probed?.name, "New");
+  assert.equal(probed?.intervalMs, 60000);
+  assert.deepEqual(readFileSync(file), before);
+});
+
+test("check 1d: broken bytes stay unchanged after POST 201 with the fresh revision", async () => {
+  const b = await boot();
+  const applied = readFileSync(file);
+  writeFileSync(file, "{ broken");
+  b.poll();
+  const rev = await b.revision();
+  assert.equal(rev, adminRev(applied, 0));
+  const r = await b.call("POST", "/admin/checks", { body: NEW_CHECK, ifMatch: rev });
+  assert.equal(r.status, 201);
+  assert.equal(r.headers.get("etag"), adminRev(applied, 1));
+  assert.equal(await b.revision(), adminRev(applied, 1));
+  assert.equal(readFileSync(file, "utf8"), "{ broken");
+});
+
+test("database checks: each committed write advances the generation by one", async () => {
+  const { b, db } = await bootWithDb();
+  const bytes = readFileSync(file);
+  let r = await b.call("POST", "/admin/checks", { body: NEW_CHECK, ifMatch: await b.revision() });
+  assert.equal(r.status, 201);
+  assert.equal(r.headers.get("etag"), adminRev(bytes, 1));
+  assert.equal(generationOf(db()), 1);
+  r = await b.call("PUT", "/admin/checks/new", {
+    body: { ...NEW_CHECK, name: "Renamed" },
+    ifMatch: r.headers.get("etag") ?? "",
+  });
+  assert.equal(r.status, 200);
+  assert.deepEqual(await r.json(), {
+    ...NEW_CHECK,
+    name: "Renamed",
+    retries: 0,
+    retryDelayMs: 1000,
+    source: "database",
+  });
+  assert.equal(r.headers.get("etag"), adminRev(bytes, 2));
+  const listed = (await (await fetch(`${b.base}/checks`)).json()) as CheckWithState[];
+  assert.equal(listed.find((c) => c.id === "new")?.name, "Renamed");
+  const view = (await (await b.call("GET", "/admin/config")).json()) as AdminConfigResponse;
+  assert.ok(validateAdminConfigResponse(view).ok);
+  assert.deepEqual(
+    view.checks.map((c) => [c.id, c.source]),
+    [
+      ["web", "file"],
+      ["api", "file"],
+      ["new", "database"],
+    ],
+  );
+  r = await b.call("DELETE", "/admin/checks/new", { ifMatch: r.headers.get("etag") ?? "" });
+  assert.equal(r.status, 204);
+  assert.equal(r.headers.get("etag"), adminRev(bytes, 3));
+  assert.equal(generationOf(db()), 3);
+  assert.deepEqual(await checkIds(b), ["api", "web"]);
+  assert.deepEqual(readFileSync(file), bytes);
+  const audit = db()
+    .query<{ action: string; target_id: string }, []>(
+      "SELECT action, target_id FROM audit_log WHERE action LIKE 'check.%' ORDER BY id",
+    )
+    .all();
+  assert.deepEqual(
+    audit.map((a) => `${a.action} ${a.target_id}`),
+    ["check.create new", "check.replace new", "check.delete new"],
+  );
+  assert.match(await b.metrics(), /kind="check",action="replace",result="ok"\} 1/);
+});
+
+test("database checks: absent ids 404, a source field 422, a keep marker 422, a stored id 409", async () => {
+  const { b, db } = await bootWithDb();
+  const rev = await b.revision();
+  const ghost = { ...NEW_CHECK, id: "ghost" };
+  assert.equal(
+    (await b.call("PUT", "/admin/checks/ghost", { body: ghost, ifMatch: rev })).status,
+    404,
+  );
+  assert.equal((await b.call("DELETE", "/admin/checks/ghost", { ifMatch: rev })).status, 404);
+  const source = await b.call("POST", "/admin/checks", {
+    body: { ...NEW_CHECK, source: "database" },
+    ifMatch: rev,
+  });
+  assert.equal(source.status, 422);
+  assert.equal(((await source.json()) as ErrorResponse).error, "check.source is set by the server");
+  const marker = await b.call("POST", "/admin/checks", {
+    body: { ...NEW_CHECK, headers: { "x-a": { keep: true } } },
+    ifMatch: rev,
+  });
+  assert.equal(marker.status, 422);
+  assert.equal(generationOf(db()), 0);
+  assert.equal(await b.revision(), rev);
+  const created = await b.call("POST", "/admin/checks", { body: NEW_CHECK, ifMatch: rev });
+  assert.equal(created.status, 201);
+  const again = await b.call("POST", "/admin/checks", {
+    body: NEW_CHECK,
+    ifMatch: created.headers.get("etag") ?? "",
+  });
+  assert.equal(again.status, 409);
+  // the revision before the write is stale now
+  assert.equal((await b.call("DELETE", "/admin/checks/new", { ifMatch: rev })).status, 412);
+});
+
+test("database checks: of two PUTs with one If-Match the first is 200 and the second 412", async () => {
+  const b = await boot();
+  const created = await b.call("POST", "/admin/checks", {
+    body: NEW_CHECK,
+    ifMatch: await b.revision(),
+  });
+  const rev = created.headers.get("etag") ?? "";
+  const [one, two] = await Promise.all([
+    b.call("PUT", "/admin/checks/new", { body: { ...NEW_CHECK, name: "A" }, ifMatch: rev }),
+    b.call("PUT", "/admin/checks/new", { body: { ...NEW_CHECK, name: "B" }, ifMatch: rev }),
+  ]);
+  assert.deepEqual([one.status, two.status], [200, 412]);
+  const listed = (await (await fetch(`${b.base}/checks`)).json()) as CheckWithState[];
+  assert.equal(listed.find((c) => c.id === "new")?.name, "A");
+});
+
+test("database checks: a failed audit insert is 500 and changes nothing", async () => {
+  const { b, db } = await bootWithDb();
+  const rev = await b.revision();
+  const audits = db().query<{ n: number }, []>("SELECT COUNT(*) AS n FROM audit_log").get()?.n;
+  db()
+    .prepare(
+      "CREATE TEMP TRIGGER fail_audit BEFORE INSERT ON audit_log BEGIN SELECT RAISE(ABORT, 'full'); END",
+    )
+    .run();
+  const r = await b.call("POST", "/admin/checks", { body: NEW_CHECK, ifMatch: rev });
+  assert.equal(r.status, 500);
+  assert.equal(((await r.json()) as ErrorResponse).error, "audit log could not be written");
+  const count = (sql: string): number | undefined => db().query<{ n: number }, []>(sql).get()?.n;
+  assert.equal(count("SELECT COUNT(*) AS n FROM check_definitions"), 0);
+  assert.equal(count("SELECT COUNT(*) AS n FROM checks WHERE id = 'new'"), 0);
+  assert.equal(count("SELECT COUNT(*) AS n FROM audit_log"), audits);
+  assert.equal(generationOf(db()), 0);
+  assert.equal(await b.revision(), rev);
+  assert.deepEqual(await checkIds(b), ["api", "web"]);
+  assert.ok(!(await probeChecks(b)).some((c) => c.id === "new"));
+  assert.match(await b.metrics(), /kind="check",action="create",result="error"\} 1/);
+});
+
+test("database checks: a restart loads the stored definitions after the file", async () => {
+  const dbPath = join(dir, "pulse.db");
+  const first = await boot(BASE_FILE, {}, { PULSE_DB: dbPath });
+  const created = await first.call("POST", "/admin/checks", {
+    body: NEW_CHECK,
+    ifMatch: await first.revision(),
+  });
+  assert.equal(created.status, 201);
+  await first.api.close();
+  const second = await boot(BASE_FILE, {}, { PULSE_DB: dbPath });
+  assert.deepEqual(await checkIds(second), ["api", "new", "web"]);
+  assert.equal(await second.revision(), adminRev(readFileSync(file), 1));
+  assert.ok((await probeChecks(second)).some((c) => c.id === "new"));
 });
