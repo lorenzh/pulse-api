@@ -161,3 +161,7 @@ The cleanup threw an error, for example because the disk is full or the file is 
 ## 412 `the checks file on disk differs from the applied one`
 
 A component or maintenance window write found a checks file on disk that is not the applied one: a broken hand edit (`invalid`), a missing file (`unreadable`) or a valid edit not applied yet (`written-not-applied`). The write changes nothing. Fix the file, or send `SIGHUP`, then read `GET /admin/config` again and retry. Database check writes are not affected.
+
+## `unknown key "redacted"` when loading an export
+
+An export from `GET /admin/config/export` lists in `redacted` the literal header values, bodies and heartbeat secrets it left out. Put each listed value back in its check (a new secret for each heartbeat check), remove `redacted`, then install the file. See [Export the checks](operation.md#export-the-checks).

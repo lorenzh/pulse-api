@@ -258,6 +258,15 @@ A component or maintenance window write needs a checks file that the API can rep
 
 Each successful write logs one `info` line `config write` with the token name, kind, action and id; a failed write logs one `warn` line with the status and kind. Metrics: `pulse_api_config_writes_total{kind,action,result}`.
 
+### Export the checks
+
+`GET /admin/config/export` returns the effective checks with the file's components and windows as one checks file (see [GET /admin/config/export](rest-api.md#get-adminconfigexport)). Literal header values, bodies and heartbeat secrets are left out and listed in `redacted`. Such an export cannot be loaded as a checks file until you put the listed values back (new heartbeat secrets) and remove `redacted`. To move database checks into the file:
+
+```sh
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:3000/admin/config/export > export.json
+jq '.redacted' export.json   # the values to fill in by hand
+```
+
 ## Heartbeat checks
 
 Configure a [heartbeat check](configuration.md#heartbeat-checks) and let the job ping it. Add the probe change first: a probe that does not know the type would run it as HTTP. Example for cron, every 5 minutes (use `period` 300000):

@@ -329,6 +329,7 @@ Operators change checks, components and maintenance windows through the API. A c
 | Route                                                               | Answer                                                                              |
 | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
 | `GET /admin/config`                                                 | `200` `{revision, checks, shadowed, components, maintenance, file}`, with an `ETag` |
+| `GET /admin/config/export`                                          | `200` the effective checks as a checks file (`AdminConfigExport`), see below        |
 | `POST /admin/checks`                                                | `201`, the check view, a `Location` header; an id in the file or stored `409`       |
 | `PUT /admin/checks/:id`                                             | `200`, full replace of a database check; file or shadowed id `409`; unknown `404`   |
 | `DELETE /admin/checks/:id`                                          | `204` for a database check, also a shadowed one; a file-only id `409`               |
@@ -344,6 +345,12 @@ Bodies are validated by the same parsers as the file, so unknown keys, limits an
 `GET /probe/checks` and `POST /results` need a probe token. An admin-side token gets `403` there.
 
 Every successful write adds one [audit entry](#audit-log) with the new revision. A check write stores its definition, the generation and the audit entry in one transaction; a failure answers `500` and changes nothing. A component or window write follows the file protocol below. The entry is first stored as pending, durably, before the file is renamed, and is confirmed after the rename is on disk. If the pending entry cannot be stored, the file stays unchanged and the answer is `500 {"error":"audit log could not be written"}`. If the file was stored but the confirmation failed, the answer is `500 {"error":"checks file stored; its audit entry is pending and is resolved at the next write or restart"}`. See [Audit durability](operation.md#audit-durability).
+
+### GET /admin/config/export
+
+Needs `read` or `checks`, like `GET /admin/config`; a probe token gets `403`. The answer is `200` with `content-type: application/json; charset=utf-8`, `content-disposition: attachment; filename="checks.json"`, `cache-control: no-store` and the admin revision as `ETag`. The body is `AdminConfigExport`, JSON with two spaces and a final newline: `checks` is the effective set in effective order (a file check wins over the database check with the same id; a shadowed database check is never exported), `components` and `maintenance` are those of the applied file, with window times as ISO 8601 UTC strings. `{"env": NAME}` headers stay. Literal header values, bodies and heartbeat secrets are left out, and a top-level `redacted` list of `{checkId, field}` (`headers.<name>`, `body` or `secret`, in check order) names each one. `redacted` is absent when nothing was left out. Any query parameter answers `400`; another method answers `405` with `Allow: GET`.
+
+An export with `redacted` cannot be loaded as a checks file: the file parser refuses the unknown `redacted` key. Put the listed values back (choose a new secret for each heartbeat check, since the old one is stored only as a digest), then remove `redacted`. There is no import route: the export is for a person to edit and install as the checks file.
 
 ## Scopes
 

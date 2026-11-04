@@ -368,7 +368,7 @@ test("security HTTP: admin rejects control characters, wrong types and unknown k
   }
 });
 
-// ---- Where values may appear (spec #565, check 4; the export cells come with the export) ----
+// ---- Where values may appear (spec #565, check 4) ----
 
 const LIT_DB = "lit-db-sentinel-1";
 const LIT_FILE = "lit-file-sentinel-1";
@@ -501,6 +501,7 @@ async function sentinelSession(work: string): Promise<{ texts: Map<string, strin
     );
     texts.set("probe", await get("/probe/checks", PROBE));
     texts.set("admin view", await get("/admin/config", ADMIN));
+    texts.set("export", await get("/admin/config/export", ADMIN));
     texts.set("audit", await get("/admin/audit", ADMIN));
     texts.set("metrics", await get("/metrics"));
     // A broken file that holds the literal values: file.message must not quote them.
@@ -542,6 +543,11 @@ function assertResponses(texts: Map<string, string>): void {
     assert.deepEqual(check.headers["x-lit"], { keep: true }, id);
     assert.deepEqual(check.body, { keep: true }, id);
   }
+  const exported = text("export");
+  assertAbsent("export", exported, [...LITERALS, ...SECRETS, '"keep"']);
+  for (const digest of SECRETS.map(sha256Hex))
+    assert.ok(!exported.includes(digest), "export has no heartbeat digest");
+  for (const env of ENVS) assert.ok(exported.includes(env), `export has ${env}`);
   const probe = text("probe");
   for (const value of [...LITERALS, ...ENVS])
     assert.ok(probe.includes(value), `probe has ${value}`);
@@ -604,7 +610,7 @@ function assertStorage(work: string): void {
   }
 }
 
-test("security sentinels: every non-export cell of the table of where values may appear", async () => {
+test("security sentinels: every cell of the table of where values may appear", async () => {
   const work = mkdtempSync(join(tmpdir(), "pulse-sentinel-"));
   try {
     writeFileSync(join(work, "checks.json"), JSON.stringify(SENTINEL_FILE));

@@ -8,7 +8,7 @@ It depends on [pulse-contract](https://github.com/lorenzh/pulse-contract) for th
 
 pulse is built by Paragon Factory agents from the issues in [pulse-meta](https://github.com/lorenzh/pulse-meta).
 
-Checks come from the checks file and from the database: admin check writes are stored in the database, a file check wins over a database check with the same id, and a broken checks file no longer blocks a restart once a file was applied. Components and maintenance windows stay in the file. See [Changing checks](docs/operation.md#changing-checks).
+Checks come from the checks file and from the database: admin check writes are stored in the database, a file check wins over a database check with the same id, and a broken checks file no longer blocks a restart once a file was applied. Components and maintenance windows stay in the file. `GET /admin/config/export` returns the effective checks as one checks file, with env names and without literal header values, bodies or heartbeat secrets; a non-empty `redacted` list names what was left out, and such an export loads as a checks file only after those values are put back and `redacted` is removed. There is no import. See [Changing checks](docs/operation.md#changing-checks).
 
 Contributing: see [AGENTS.md](AGENTS.md) and [docs/development.md](docs/development.md).
 

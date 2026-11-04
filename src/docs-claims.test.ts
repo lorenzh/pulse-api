@@ -111,3 +111,17 @@ test("docs: checks come from the file and the database; a snapshot lets a broken
   assert.match(read("docs/troubleshooting.md"), /no snapshot of an applied file/);
   assert.match(read("docs/configuration.md"), /reference only checks of the file/);
 });
+
+test("docs: the export is documented with redacted, restoration with new secrets and no import", () => {
+  const rest = read("docs/rest-api.md");
+  assert.match(rest, /### GET \/admin\/config\/export/);
+  assert.match(rest, /An export with `redacted` cannot be loaded as a checks file/);
+  assert.match(rest, /There is no import route/);
+  assert.match(read("docs/operation.md"), /### Export the checks/);
+  assert.match(
+    read("docs/configuration.md"),
+    /an export with a `redacted` key is refused by this parser/,
+  );
+  assert.match(read("docs/troubleshooting.md"), /unknown key "redacted"/);
+  assert.match(read("README.md"), /There is no import\./);
+});

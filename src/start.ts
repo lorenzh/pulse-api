@@ -455,6 +455,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
   });
   const adminHandler = createAdminHandler({
     writer,
+    config: () => holder.get(),
     checks: checkWriter,
     metrics,
     tokens: tokenStore,

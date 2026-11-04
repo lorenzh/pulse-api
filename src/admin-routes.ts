@@ -17,6 +17,8 @@ import {
   serveAudit,
 } from "./audit-routes.ts";
 import type { CheckEdit, CheckWriter } from "./check-write.ts";
+import type { Config } from "./config.ts";
+import { configExport, exportBytes } from "./config-export.ts";
 import type {
   ConfigEdit,
   ConfigKind,
@@ -33,6 +35,8 @@ import type { AuthenticatedToken, TokenStore } from "./token-store.ts";
 
 export interface AdminRoutesDeps {
   writer: ConfigWriter;
+  /** The configuration in use: the applied file with the effective checks; read by the export. */
+  config: () => Omit<Config, "secrets">;
   /** Writes of `/admin/checks`: database checks, never the checks file. */
   checks: CheckWriter;
   metrics: Pick<Metrics, "recordConfigWrite">;
@@ -336,6 +340,31 @@ export function createAdminHandler(
     return true;
   };
 
+  const serveConfig = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+    url: URL,
+    sub: string | undefined,
+  ): Promise<void> => {
+    if (sub !== undefined && sub !== "export") throw new RouteError(404, "not found");
+    if (req.method !== "GET") throw new RouteError(405, "method not allowed", { Allow: "GET" });
+    await discardBody(req);
+    const view = deps.writer.view();
+    if (sub === undefined) {
+      sendJson(res, 200, view, etag(view.revision));
+      return;
+    }
+    if (url.search !== "") throw new RouteError(400, "export takes no query parameters");
+    res
+      .writeHead(200, {
+        "content-type": "application/json; charset=utf-8",
+        "content-disposition": 'attachment; filename="checks.json"',
+        "cache-control": "no-store",
+        ...etag(view.revision),
+      })
+      .end(exportBytes(configExport(deps.config())));
+  };
+
   return async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (await otherRoute(req, res, url)) return true;
@@ -348,11 +377,7 @@ export function createAdminHandler(
     try {
       const caller = authorize(req, ...routeAccess(section, match[2]));
       if (section === "config") {
-        if (match[2] !== undefined) throw new RouteError(404, "not found");
-        if (method !== "GET") throw new RouteError(405, "method not allowed", { Allow: "GET" });
-        await discardBody(req);
-        const view = deps.writer.view();
-        sendJson(res, 200, view, etag(view.revision));
+        await serveConfig(req, res, url, match[2]);
         return true;
       }
       const kind = KINDS[section];
