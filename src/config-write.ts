@@ -174,7 +174,7 @@ export function configView(
   return {
     revision,
     checks: merged.checks.map((check) => checkView(check, merged.sources.get(check.id) ?? "file")),
-    shadowed: [],
+    shadowed: merged.shadowed.map((d) => checkView(d.check, "database")),
     components: config.components.map((c) => ({ ...c })),
     maintenance: config.maintenance.map((w, index) => ({ ...w, index })),
     file: { state: "ok", message: null, lastAppliedAt: 0 },

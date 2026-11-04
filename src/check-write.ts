@@ -170,18 +170,34 @@ export function createCheckWriter(deps: CheckWriterDeps): CheckWriter {
 
   const isFileCheck = (id: string): boolean => holder.file().checks.some((c) => c.id === id);
 
-  /** 409 for an id the file owns or a create of a stored id, 404 for an unknown database id. */
+  /**
+   * 409 for a create of an id that the applied file or the store has, for a file-only id, and for
+   * a PUT of a shadowed id; 404 for an id in neither. A shadowed id may only be deleted.
+   */
   const assertTarget = (action: ConfigAction, id: string): void => {
-    if (isFileCheck(id)) {
-      throw new ConfigWriteError("conflict", `check "${id}" is defined in the checks file`);
-    }
+    const isFile = isFileCheck(id);
     const isStored = store.get(id) !== null;
-    if (action === "create" && isStored) {
-      throw new ConfigWriteError("conflict", `check "${id}" already exists`);
+    if (action === "create") {
+      if (isFile || isStored)
+        throw new ConfigWriteError("conflict", `check "${id}" already exists`);
+      return;
     }
-    if (action !== "create" && !isStored) {
-      throw new ConfigWriteError("not-found", `unknown check "${id}"`);
+    if (isStored) {
+      if (action === "replace" && isFile) {
+        throw new ConfigWriteError(
+          "conflict",
+          `check "${id}" is shadowed by the checks file; only delete is allowed`,
+        );
+      }
+      return;
     }
+    if (isFile) {
+      throw new ConfigWriteError(
+        "conflict",
+        `check "${id}" comes from the checks file; edit the file`,
+      );
+    }
+    throw new ConfigWriteError("not-found", `unknown check "${id}"`);
   };
 
   const storeEdit = (edit: CheckEdit, parsed: ReturnType<typeof parsedBody> | undefined): void => {

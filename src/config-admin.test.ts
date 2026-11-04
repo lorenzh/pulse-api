@@ -19,6 +19,7 @@ import {
   validateAdminCheckView,
   validateAdminComponent,
   validateAdminConfigResponse,
+  validateAdminConfigSummary,
   validateAdminMaintenanceView,
 } from "@lorenzh/pulse-contract";
 import type { LogLevel } from "@lorenzh/pulse-kit";
@@ -524,7 +525,7 @@ test("admin: a check of the checks file cannot be replaced or deleted over HTTP"
   assert.equal(web.status, 409);
   assert.equal(
     ((await web.json()) as ErrorResponse).error,
-    'check "web" is defined in the checks file',
+    'check "web" comes from the checks file; edit the file',
   );
   const put = await b.call("PUT", "/admin/checks/api", {
     body: { ...BASE_FILE.checks[1], name: "x" },
@@ -1360,4 +1361,188 @@ test("heartbeat secrets: a PUT keeps the digest, a new secret rotates it, a type
   });
   assert.equal(change.status, 422);
   assert.match(((await change.json()) as ErrorResponse).error, /secret/);
+});
+
+// ---- precedence: the applied file wins over a database definition with the same id ----
+
+const DB_D = { id: "d", name: "db", url: "https://d.example/", intervalMs: 60000 };
+const FILE_D = { id: "d", name: "file", url: "https://d.example/", intervalMs: 60000 };
+
+/** GET /admin/config, checked with the strict response validator and the console's summary one. */
+async function adminConfig(b: Booted): Promise<AdminConfigResponse> {
+  const body: unknown = await (await b.call("GET", "/admin/config")).json();
+  const strict = validateAdminConfigResponse(body);
+  assert.ok(strict.ok, strict.ok ? "" : strict.error);
+  const summary = validateAdminConfigSummary(body);
+  assert.ok(summary.ok, summary.ok ? "" : summary.error);
+  return strict.value;
+}
+
+async function publicName(b: Booted, id: string): Promise<string | undefined> {
+  const list = (await (await fetch(`${b.base}/checks`)).json()) as CheckWithState[];
+  return list.find((c) => c.id === id)?.name;
+}
+
+async function bootShadowed(): Promise<Booted> {
+  const b = await boot();
+  const r = await b.call("POST", "/admin/checks", { body: DB_D, ifMatch: await b.revision() });
+  assert.equal(r.status, 201);
+  writeExternal({ ...BASE_FILE, checks: [...BASE_FILE.checks, FILE_D] });
+  b.hup();
+  return b;
+}
+
+test("check 1b: the file version wins at public and probe reads, shadowed reports the database copy", async () => {
+  const b = await bootShadowed();
+  assert.equal(await publicName(b, "d"), "file");
+  assert.equal((await probed(b, "d"))?.name, "file");
+  const view = await adminConfig(b);
+  assert.deepEqual(
+    view.checks.map((c) => [c.id, c.source]),
+    [
+      ["web", "file"],
+      ["api", "file"],
+      ["d", "file"],
+    ],
+  );
+  assert.deepEqual(view.shadowed, [
+    { ...DB_D, retries: 0, retryDelayMs: 1000, source: "database" },
+  ]);
+});
+
+test("precedence: unshadowing keeps the runtime row active and resolves no incident", async () => {
+  const b = await bootShadowed();
+  writeExternal(BASE_FILE);
+  b.hup();
+  assert.equal(await publicName(b, "d"), "db");
+  assert.ok(!b.lines.some((l) => l.line.includes("removed from the configuration")));
+  const view = await adminConfig(b);
+  assert.deepEqual(view.shadowed, []);
+  assert.equal(view.checks.find((c) => c.id === "d")?.source, "database");
+});
+
+test("precedence: a create of an applied file id is 409, of an id only on disk 201 and shadowed after the apply", async () => {
+  const b = await boot();
+  const taken = await b.call("POST", "/admin/checks", {
+    body: { ...NEW_CHECK, id: "web" },
+    ifMatch: await b.revision(),
+  });
+  assert.equal(taken.status, 409);
+  writeExternal({ ...BASE_FILE, checks: [...BASE_FILE.checks, FILE_D] });
+  const onDisk = await b.call("POST", "/admin/checks", { body: DB_D, ifMatch: await b.revision() });
+  assert.equal(onDisk.status, 201);
+  b.poll();
+  const view = await adminConfig(b);
+  assert.deepEqual(
+    view.shadowed.map((c) => c.name),
+    ["db"],
+  );
+  assert.equal(await publicName(b, "d"), "file");
+});
+
+test("precedence: file-only PUT and DELETE are 409 with unchanged bytes; shadowed PUT 409, DELETE 204", async () => {
+  const b = await bootShadowed();
+  const bytes = readFileSync(file);
+  const rev = await b.revision();
+  const cases: { method: "PUT" | "DELETE"; id: string; status: number; error?: string }[] = [
+    {
+      method: "PUT",
+      id: "web",
+      status: 409,
+      error: 'check "web" comes from the checks file; edit the file',
+    },
+    {
+      method: "DELETE",
+      id: "web",
+      status: 409,
+      error: 'check "web" comes from the checks file; edit the file',
+    },
+    {
+      method: "PUT",
+      id: "d",
+      status: 409,
+      error: 'check "d" is shadowed by the checks file; only delete is allowed',
+    },
+    { method: "DELETE", id: "nope", status: 404 },
+  ];
+  for (const c of cases) {
+    const body = c.method === "PUT" ? { ...BASE_FILE.checks[0], id: c.id, name: "x" } : undefined;
+    const r = await b.call(c.method, `/admin/checks/${c.id}`, { body, ifMatch: rev });
+    assert.equal(r.status, c.status, `${c.method} ${c.id}`);
+    if (c.error !== undefined) assert.equal(((await r.json()) as ErrorResponse).error, c.error);
+  }
+  assert.deepEqual(readFileSync(file), bytes);
+  assert.equal(await b.revision(), rev);
+  const del = await b.call("DELETE", "/admin/checks/d", { ifMatch: rev });
+  assert.equal(del.status, 204);
+  assert.equal(await publicName(b, "d"), "file");
+  const view = await adminConfig(b);
+  assert.deepEqual(view.shadowed, []);
+  assert.equal(view.checks.find((c) => c.id === "d")?.source, "file");
+  assert.deepEqual(readFileSync(file), bytes);
+});
+
+test("precedence: a keep marker resolves against the database definition, never the file value", async () => {
+  const b = await boot();
+  const { etag } = await createRoundTrip(b);
+  const fileRt = { ...ROUND_TRIP, headers: { "X-Token": "F1" }, body: "F2" };
+  writeExternal({ ...BASE_FILE, checks: [...BASE_FILE.checks, fileRt] });
+  b.hup();
+  assert.deepEqual((await probed(b, "rt"))?.headers, { "X-Token": "F1" });
+  writeExternal(BASE_FILE);
+  b.hup();
+  const rev = await b.revision();
+  assert.notEqual(rev, etag);
+  const r = await b.call("PUT", "/admin/checks/rt", {
+    body: { ...ROUND_TRIP, headers: { "X-Token": { keep: true } }, body: { keep: true } },
+    ifMatch: rev,
+  });
+  assert.equal(r.status, 200);
+  const p = await probed(b, "rt");
+  assert.deepEqual(p?.headers, { "X-Token": "S1" });
+  assert.equal(p?.body, "B1");
+});
+
+test("precedence: a broken hand edit keeps the revision; a stale revision after a file apply is 412", async () => {
+  const b = await bootShadowed();
+  const rev = await b.revision();
+  const applied = readFileSync(file);
+  writeFileSync(file, "{ broken");
+  b.poll();
+  assert.equal(await b.revision(), rev);
+  assert.equal(rev, adminRev(applied, 1));
+  assert.equal((await adminConfig(b)).shadowed.length, 1);
+  writeExternal(BASE_FILE);
+  b.poll();
+  const stale = await b.call("POST", "/admin/checks", { body: NEW_CHECK, ifMatch: rev });
+  assert.equal(stale.status, 412);
+});
+
+test("precedence: database checks survive SIGHUP, a file without them and a restart", async () => {
+  const dbPath = join(dir, "pulse.db");
+  const first = await boot(BASE_FILE, {}, { PULSE_DB: dbPath });
+  const r = await first.call("POST", "/admin/checks", {
+    body: DB_D,
+    ifMatch: await first.revision(),
+  });
+  assert.equal(r.status, 201);
+  writeExternal({ ...BASE_FILE, checks: [BASE_FILE.checks[0]], components: [], maintenance: [] });
+  first.hup();
+  assert.deepEqual(await checkIds(first), ["d", "web"]);
+  await first.api.close();
+  const second = await boot(
+    { ...BASE_FILE, checks: [...BASE_FILE.checks, FILE_D] },
+    {},
+    { PULSE_DB: dbPath },
+  );
+  assert.equal(await publicName(second, "d"), "file");
+  const view = await adminConfig(second);
+  assert.deepEqual(
+    view.checks.map((c) => c.id),
+    ["web", "api", "d"],
+  );
+  assert.deepEqual(
+    view.shadowed.map((c) => c.name),
+    ["db"],
+  );
 });
