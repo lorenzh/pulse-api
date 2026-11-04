@@ -147,7 +147,12 @@ export interface HeartbeatInfo {
 }
 
 export interface Service {
-  upsertChecks(checks: Check[]): void;
+  /**
+   * Reconciles the runtime rows with the effective checks. Inside an open transaction it joins it
+   * and returns the effects to run after the caller's commit; otherwise it commits and publishes
+   * itself and returns a no-op.
+   */
+  upsertChecks(checks: Check[]): () => void;
   /**
    * Store a result. Idempotent on (check, location, timestamp): a repeat changes nothing and
    * returns false; a new result returns true. `isGenerated` marks a sample the api made itself (a
@@ -1001,23 +1006,34 @@ export function createService(
 
   return {
     upsertChecks(checks) {
-      let resolved = 0;
-      invalidate();
-      transaction(() => {
-        // Clear first, then upsert: checks removed from the file lose their keyword and request options without a long NOT IN list.
+      // Inside a caller's transaction: join it, and publish only after its commit (the caller runs
+      // the returned function then). A rollback so leaves the cache and the counters as they were.
+      const isJoined = db.inTransaction;
+      let closing: { id: string }[] = [];
+      const work = (): void => {
+        // Clear first, then upsert: removed checks lose their keyword and request options without a long NOT IN list.
         clearOptions.run();
         deactivateAll.run();
         for (const c of checks) upsert.run(...columnsOf(c));
         // Removed checks keep their rows and history, but no incident stays open and no stale state survives.
-        const closing = openInactive.all() as unknown as { id: string }[];
+        closing = openInactive.all() as unknown as { id: string }[];
         resolveInactiveIncidents.run(now());
         resetInactiveState.run();
+      };
+      const publish = (): void => {
+        invalidate();
         for (const { id } of closing) {
-          log(`check "${id}" removed from the checks file: incident resolved`);
-          resolved += 1;
+          log(`check "${id}" removed from the configuration: incident resolved`);
+          onIncident("resolved");
         }
-      });
-      for (let i = 0; i < resolved; i++) onIncident("resolved");
+      };
+      if (isJoined) {
+        work();
+        return publish;
+      }
+      transaction(work);
+      publish();
+      return () => undefined;
     },
 
     ingest(result, isGenerated = false) {

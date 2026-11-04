@@ -267,7 +267,7 @@ The API writes JSON lines: `{"time":"<ISO 8601>","level":"info","msg":"...", ...
 - `listening` (info): The API is ready. Fields: `port`, `checks`, `maintenanceWindows`, `checksFile`, `db`, `retentionDays`, `probeTokens` and `locations` (active probe tokens in the database), `adminTokens` (active admin-side tokens), `tokensFile`, `tokenStore` (`database`).
 - `retention: deleted <n> results` (info): A cleanup deleted rows (results and resolved manual incidents). Silent when it deletes none.
 - `retention failed: <message>` (warn): A cleanup failed. The next run is still scheduled.
-- `check "<id>" removed from the checks file: incident resolved` (info): One line per incident resolved at start.
+- `check "<id>" removed from the configuration: incident resolved` (info): One line per incident resolved when its check leaves the configuration.
 - `request failed` (error): An unexpected failure in a request (`500`). The field `error` holds the stack.
 - `shutdown bound reached: closing open connections` (warn): The shutdown took longer than 5 s.
 - `stopped` (info): The shutdown is done.

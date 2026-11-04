@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, test } from "bun:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   mkdtempSync,
@@ -166,6 +167,36 @@ function writeExternal(content: unknown): void {
 }
 
 const NEW_CHECK = { id: "new", name: "New", url: "https://new.example/", intervalMs: 60000 };
+
+const hex = (data: string | Buffer): string => createHash("sha256").update(data).digest("hex");
+/** The admin revision from its formula, independent of the code: file revision, newline, generation. */
+const adminRev = (bytes: Buffer, generation: number): string =>
+  `"sha256-${hex("sha256-" + hex(bytes) + "\n" + String(generation))}"`;
+
+test("admin: the revision combines the applied file revision with database generation 0", async () => {
+  const b = await boot();
+  const rev = await b.revision();
+  assert.equal(rev, adminRev(readFileSync(file), 0));
+  assert.notEqual(rev, `"sha256-${hex(readFileSync(file))}"`);
+  // a rejected file does not change the revision
+  writeFileSync(file, "{ not json");
+  b.poll();
+  assert.equal(await b.revision(), rev);
+  // the bare file revision is stale
+  const stale = await b.call("POST", "/admin/maintenance", {
+    body: { checkId: "web", start: 1, end: 2 },
+    ifMatch: `"sha256-${hex(readFileSync(file))}"`,
+  });
+  assert.equal(stale.status, 412);
+});
+
+test("admin: a write answers the combined revision of the stored file", async () => {
+  const b = await boot();
+  const r = await b.call("POST", "/admin/checks", { body: NEW_CHECK, ifMatch: await b.revision() });
+  assert.equal(r.status, 201);
+  assert.equal(r.headers.get("etag"), adminRev(readFileSync(file), 0));
+  assert.equal(await b.revision(), adminRev(readFileSync(file), 0));
+});
 
 // ---- reload ----
 

@@ -40,6 +40,14 @@ export function revisionOf(bytes: Uint8Array): string {
   return `${ADMIN_REVISION_PREFIX}${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
+/**
+ * The admin revision: one value for the applied file and the database check definitions.
+ * `sha256-` + hex SHA-256 of `<applied file revision>\n<database generation>`.
+ */
+export function adminRevision(fileRevision: string, generation: number): string {
+  return revisionOf(Buffer.from(`${fileRevision}\n${generation}`, "utf8"));
+}
+
 function stampKey(stamp: FileStamp): string {
   return `${stamp.mtimeMs}:${stamp.size}:${stamp.ino}`;
 }

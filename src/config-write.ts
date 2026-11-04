@@ -11,7 +11,7 @@ import { isRecord } from "@lorenzh/pulse-kit";
 import type { AuditRecord, PendingAudit } from "./audit-log.ts";
 import { type Config, ConfigError, parseConfig } from "./config.ts";
 import type { ConfigHolder } from "./config-holder.ts";
-import { type ConfigReloader, revisionOf } from "./config-reload.ts";
+import { adminRevision, type ConfigReloader, revisionOf } from "./config-reload.ts";
 
 export type ConfigKind = "check" | "component" | "maintenance";
 export type ConfigAction = "create" | "replace" | "delete";
@@ -62,6 +62,8 @@ export interface WriterDeps {
   fs: WriteFs;
   holder: ConfigHolder;
   reloader: Pick<ConfigReloader, "revision" | "adopt">;
+  /** The database generation; with the applied file revision it makes the admin revision. */
+  generation: () => number;
   /** A unique file name part for the temp file. */
   tempSuffix: () => string;
   /** True when an unresolved manual incident names the component. */
@@ -403,7 +405,7 @@ export function createConfigWriter(deps: WriterDeps): ConfigWriter {
 
   const assertCurrent = (ifMatch: string): Buffer => {
     const bytes = readBytes();
-    if (revisionOf(bytes) !== ifMatch) {
+    if (adminRevision(revisionOf(bytes), deps.generation()) !== ifMatch) {
       throw new ConfigWriteError("stale", "the checks file changed: reload it and retry");
     }
     return bytes;
@@ -560,7 +562,7 @@ export function createConfigWriter(deps: WriterDeps): ConfigWriter {
     const { index } = applyEdit(edit, doc, deps.hasOpenIncidentFor);
     const config = validated(doc);
     const data = Buffer.from(`${JSON.stringify(doc, null, 2)}\n`, "utf8");
-    const revision = revisionOf(data);
+    const revision = adminRevision(revisionOf(data), deps.generation());
     store(data, ifMatch, config, {
       at: deps.now(),
       actor,
@@ -572,7 +574,8 @@ export function createConfigWriter(deps: WriterDeps): ConfigWriter {
   };
 
   return {
-    view: () => configView(deps.holder.get(), deps.reloader.revision()),
+    view: () =>
+      configView(deps.holder.get(), adminRevision(deps.reloader.revision(), deps.generation())),
     assertWritable() {
       try {
         fs.assertWritable(dir);

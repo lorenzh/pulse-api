@@ -18,8 +18,9 @@ const FILE_A = `${JSON.stringify({ checks: [{ id: "a", name: "A", url: "https://
 const STORED_MSG =
   "checks file stored; its audit entry is pending and is resolved at the next write or restart";
 
-const sha = (bytes: string | Buffer): string =>
-  `sha256-${createHash("sha256").update(bytes).digest("hex")}`;
+const hex = (bytes: string | Buffer): string => createHash("sha256").update(bytes).digest("hex");
+// The admin revision, computed here from its formula: the file revision, a newline, generation 0.
+const sha = (bytes: string | Buffer): string => `sha256-${hex("sha256-" + hex(bytes) + "\n0")}`;
 
 const checkEdit = (id: string) =>
   ({
@@ -173,6 +174,7 @@ function harness(fs = new MemFs(), pending = new FakePending(fs), warns: string[
     tempSuffix: () => `t${++suffix}`,
     hasOpenIncidentFor: () => false,
     pending,
+    generation: () => 0,
     now: () => 1000,
     warn: (line) => warns.push(line),
   });
@@ -483,6 +485,7 @@ test("a pending row from another working directory is recovered by its absolute 
       tempSuffix: () => "crash",
       hasOpenIncidentFor: () => false,
       pending: createPendingAudit(db),
+      generation: () => 0,
       now: () => 1000,
       warn: () => undefined,
       ...(fault === undefined ? {} : { fault }),
@@ -527,6 +530,7 @@ test("the real store records the entry of a write in audit_log", async () => {
     tempSuffix: () => "s",
     hasOpenIncidentFor: () => false,
     pending: createPendingAudit(real),
+    generation: () => 0,
     now: () => 5,
     warn: () => undefined,
   });

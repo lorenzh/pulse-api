@@ -14,6 +14,8 @@ import {
 import { ConfigError, parseCheck } from "./config.ts";
 import { openDb } from "./db.ts";
 import { effectiveChecks } from "./effective-checks.ts";
+import { res } from "./service.test.ts";
+import { createService } from "./service.ts";
 
 let dir: string;
 let path: string;
@@ -263,4 +265,77 @@ test("parseCheck applies the file entry rules to one check", () => {
   ]) {
     expect(() => parseCheck(bad)).toThrow(ConfigError);
   }
+});
+
+class InjectedFailure extends Error {
+  override name = "InjectedFailure";
+}
+
+/** A service with one open incident on "b", and spies on its effects. */
+function reconcileFixture() {
+  const lines: string[] = [];
+  const events: string[] = [];
+  const s = createService(db, {
+    now: () => 5_000,
+    log: (l) => lines.push(l),
+    onIncident: (e) => events.push(e),
+  });
+  s.upsertChecks([http("a", "A"), http("b", "B")]);
+  for (let t = 1; t <= 3; t++) s.ingest({ ...res(t, "down"), checkId: "b" });
+  lines.length = 0;
+  events.length = 0;
+  const rows = (): unknown =>
+    ["checks", "incidents", "results", "audit_log", "check_definitions", "config_state"].map((t) =>
+      db.query(`SELECT * FROM ${t} ORDER BY rowid`).all(),
+    );
+  return { s, lines, events, rows };
+}
+
+test("reconcile joined to a caller transaction that rolls back changes no row and no state", () => {
+  const { s, lines, events, rows } = reconcileFixture();
+  const listedBefore = s.listChecks();
+  const before = rows();
+  let publish: (() => void) | undefined;
+  expect(() =>
+    db.transaction(() => {
+      store.create(http("d", "Db"), null);
+      store.bumpGeneration();
+      publish = s.upsertChecks([http("a", "A")]);
+      throw new InjectedFailure("after the reconcile");
+    })(),
+  ).toThrow(InjectedFailure);
+  expect(publish).toBeDefined();
+  expect(rows()).toEqual(before);
+  expect(store.generation()).toBe(0);
+  expect(s.listChecks()).toEqual(listedBefore);
+  expect(s.listChecks().map((c) => c.id)).toEqual(["a", "b"]);
+  expect(s.listIncidents("open").map((i) => i.checkId)).toEqual(["b"]);
+  expect(lines).toEqual([]);
+  expect(events).toEqual([]);
+});
+
+test("reconcile joined to a committed transaction publishes after the commit", () => {
+  const { s, lines, events } = reconcileFixture();
+  expect(s.listChecks().map((c) => c.id)).toEqual(["a", "b"]);
+  const publish = db.transaction(() => {
+    store.bumpGeneration();
+    return s.upsertChecks([http("a", "A")]);
+  })();
+  expect(lines).toEqual([]);
+  expect(events).toEqual([]);
+  publish();
+  expect(store.generation()).toBe(1);
+  expect(s.listChecks().map((c) => c.id)).toEqual(["a"]);
+  expect(s.listIncidents("open")).toEqual([]);
+  expect(lines).toEqual(['check "b" removed from the configuration: incident resolved']);
+  expect(events).toEqual(["resolved"]);
+});
+
+test("reconcile without a caller transaction commits and publishes itself", () => {
+  const { s, lines, events } = reconcileFixture();
+  s.upsertChecks([http("a", "A")]);
+  expect(db.inTransaction).toBe(false);
+  expect(s.listChecks().map((c) => c.id)).toEqual(["a"]);
+  expect(lines).toEqual(['check "b" removed from the configuration: incident resolved']);
+  expect(events).toEqual(["resolved"]);
 });

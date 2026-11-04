@@ -15,6 +15,7 @@ import { createAdminAuthThrottle } from "./admin-auth-throttle.ts";
 import { createAdminHandler } from "./admin-routes.ts";
 import type { AdminToken } from "./admin-tokens.ts";
 import { createAuditLog, createPendingAudit } from "./audit-log.ts";
+import { createCheckStore } from "./check-store.ts";
 import { componentBudgets } from "./components.ts";
 import { ConfigError, loadAdminTokens, loadTokens } from "./config.ts";
 import { nodeConfigFs } from "./config-fs.ts";
@@ -255,6 +256,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     onIncident: (event) => metrics.recordIncident(event),
   });
   service.upsertChecks(checks);
+  const checkStore = createCheckStore({ db, now: deps.now });
   const auditLog = createAuditLog(db);
   const manualIncidents = createManualIncidentStore(db, {
     now: deps.now,
@@ -316,6 +318,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     tempSuffix: deps.tempSuffix ?? (() => `${process.pid}-${randomBytes(6).toString("hex")}`),
     hasOpenIncidentFor: (id) => manualIncidents.hasOpenIncidentFor(id),
     pending: createPendingAudit(db),
+    generation: () => checkStore.generation(),
     now: deps.now,
     warn: (line) => logger.warn(line),
   });

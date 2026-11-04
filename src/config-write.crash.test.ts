@@ -18,7 +18,9 @@ const check = (id: string) => ({
 });
 const FILE_A = `${JSON.stringify({ checks: [check("a")] }, null, 2)}\n`;
 const FILE_B = `${JSON.stringify({ checks: [check("a"), check("b")] }, null, 2)}\n`;
-const sha = (s: string): string => `sha256-${createHash("sha256").update(s).digest("hex")}`;
+const hex = (bytes: string | Buffer): string => createHash("sha256").update(bytes).digest("hex");
+// The admin revision, computed here from its formula: the file revision, a newline, generation 0.
+const sha = (bytes: string | Buffer): string => `sha256-${hex("sha256-" + hex(bytes) + "\n0")}`;
 const REV_A = sha(FILE_A);
 const REV_B = sha(FILE_B);
 const ACTOR = { tokenId: "tok_1", name: "ops" };
@@ -210,6 +212,7 @@ function world(journal: Journal, durableLevel: number): World {
         tempSuffix: () => `${name}-${++n}`,
         hasOpenIncidentFor: () => false,
         pending: db,
+        generation: () => 0,
         now: () => 1,
         warn: () => undefined,
         fault: (point) => {
