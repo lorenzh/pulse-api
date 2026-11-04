@@ -120,6 +120,25 @@ CREATE TABLE audit_pending (
 `,
   // 5: token metadata looks up rotation credentials by token id for every listed token.
   `CREATE INDEX token_secrets_by_token_id ON token_secrets (token_id);`,
+  // 6: checks created over the admin api, apart from the runtime table `checks`, and the state of
+  // the applied checks file. Runtime rows are never copied into check_definitions.
+  `
+CREATE TABLE check_definitions (
+  id TEXT PRIMARY KEY,
+  check_json TEXT NOT NULL,
+  secret_sha256 TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE config_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  database_generation INTEGER NOT NULL,
+  file_revision TEXT,
+  file_applied_at INTEGER,
+  file_snapshot_json TEXT
+);
+INSERT INTO config_state (id, database_generation) VALUES (1, 0);
+`,
 ];
 
 /** The step that adds the unique sample index; `openDb` counts the duplicates it removes. */

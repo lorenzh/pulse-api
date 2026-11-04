@@ -175,7 +175,7 @@ test("migration 4: a version 5 file is refused", () => {
 test("migration 5: token listing uses the token id index after upgrading version 4", () => {
   const path = join(dir, "v4.db");
   openDb(path, MIGRATIONS.slice(0, 4)).close();
-  const db = openDb(path);
+  const db = openDb(path, MIGRATIONS.slice(0, 5));
   try {
     const plan = db
       .query<{ detail: string }, [string, number]>(
@@ -186,6 +186,37 @@ test("migration 5: token listing uses the token id index after upgrading version
       "USING INDEX token_secrets_by_token_id (token_id=?)",
     );
     expect(version(db)).toBe(5);
+  } finally {
+    db.close();
+  }
+});
+
+test("migration 6: a version 5 file gets empty check definitions and keeps its history", () => {
+  const path = join(dir, "v5-rows.db");
+  makeV0(path);
+  openDb(path, MIGRATIONS.slice(0, 5)).close();
+  const before = new Database(path);
+  const history = dump(before);
+  before.close();
+  const db = openDb(path, MIGRATIONS.slice(0, 6));
+  try {
+    expect(version(db)).toBe(6);
+    expect(db.query("SELECT COUNT(*) AS n FROM check_definitions").get()).toEqual({ n: 0 });
+    expect(db.query("SELECT * FROM config_state").all()).toEqual([
+      {
+        id: 1,
+        database_generation: 0,
+        file_revision: null,
+        file_applied_at: null,
+        file_snapshot_json: null,
+      },
+    ]);
+    expect(dump(db)).toEqual(history);
+    expect(db.query("SELECT COUNT(*) AS n FROM results").get()).toEqual({ n: 2 });
+    expect(db.query("SELECT COUNT(*) AS n FROM incidents").get()).toEqual({ n: 1 });
+    expect(() =>
+      db.run("INSERT INTO config_state (id, database_generation) VALUES (2, 0)"),
+    ).toThrow();
   } finally {
     db.close();
   }
