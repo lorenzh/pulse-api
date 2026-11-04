@@ -526,6 +526,8 @@ function assertResponses(texts: Map<string, string>): void {
   const text = (k: string): string => texts.get(k) ?? "";
   for (const surface of ["public", "audit", "logs", "metrics", "error body", "file.message"]) {
     assertAbsent(surface, text(surface), [...LITERALS, ...ENVS, ...SECRETS, "keep"]);
+    for (const digest of SECRETS.map(sha256Hex))
+      assert.ok(!text(surface).includes(digest), `${surface} has no heartbeat digest`);
   }
   for (const surface of ["admin view", "admin writes"]) {
     assertAbsent(surface, text(surface), [...LITERALS, ...SECRETS]);
@@ -544,6 +546,8 @@ function assertResponses(texts: Map<string, string>): void {
   for (const value of [...LITERALS, ...ENVS])
     assert.ok(probe.includes(value), `probe has ${value}`);
   assertAbsent("probe", probe, [...SECRETS, '"keep"']);
+  for (const digest of SECRETS.map(sha256Hex))
+    assert.ok(!probe.includes(digest), "probe has no heartbeat digest");
 }
 
 type Row = Record<string, unknown>;
