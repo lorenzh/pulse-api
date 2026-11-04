@@ -1034,11 +1034,11 @@ test("database checks: absent ids 404, a source field 422, a keep marker 422, a 
   );
   assert.equal((await b.call("DELETE", "/admin/checks/ghost", { ifMatch: rev })).status, 404);
   const source = await b.call("POST", "/admin/checks", {
-    body: { ...NEW_CHECK, source: "database" },
+    body: { ...NEW_CHECK, source: "file" },
     ifMatch: rev,
   });
   assert.equal(source.status, 422);
-  assert.equal(((await source.json()) as ErrorResponse).error, "check.source is set by the server");
+  assert.equal(((await source.json()) as ErrorResponse).error, 'check.source must be "database"');
   const marker = await b.call("POST", "/admin/checks", {
     body: { ...NEW_CHECK, headers: { "x-a": { keep: true } } },
     ifMatch: rev,
@@ -1140,4 +1140,165 @@ test("database checks: a restart loads the stored definitions after the file", a
   assert.deepEqual(await checkIds(second), ["api", "new", "web"]);
   assert.equal(await second.revision(), adminRev(readFileSync(file), 1));
   assert.ok((await probeChecks(second)).some((c) => c.id === "new"));
+});
+
+// ---- keep markers (lossless save) ----
+
+const ROUND_TRIP = {
+  id: "rt",
+  name: "Round trip",
+  url: "https://rt.example/",
+  intervalMs: 60000,
+  method: "POST",
+  headers: { "X-Token": "S1", "x-env": { env: "PULSE_HEADER_A" } },
+  body: "B1",
+};
+
+async function createRoundTrip(
+  b: Booted,
+): Promise<{ view: Record<string, unknown>; etag: string }> {
+  const r = await b.call("POST", "/admin/checks", {
+    body: ROUND_TRIP,
+    ifMatch: await b.revision(),
+  });
+  assert.equal(r.status, 201);
+  const view = (await r.json()) as Record<string, unknown>;
+  assert.ok(validateAdminCheckView(view).ok);
+  return { view, etag: r.headers.get("etag") ?? "" };
+}
+
+async function probed(b: Booted, id: string): Promise<Record<string, unknown> | undefined> {
+  return (await probeChecks(b)).find((c) => c.id === id);
+}
+
+test("check 1c: a name-only GET-edit-PUT keeps the literal header and body", async () => {
+  const b = await boot();
+  const { etag } = await createRoundTrip(b);
+  const config = (await (await b.call("GET", "/admin/config")).json()) as AdminConfigResponse;
+  const view = config.checks.find((c) => c.id === "rt");
+  assert.ok(view !== undefined);
+  const r = await b.call("PUT", "/admin/checks/rt", {
+    body: { ...view, name: "Renamed" },
+    ifMatch: etag,
+  });
+  assert.equal(r.status, 200);
+  const p = await probed(b, "rt");
+  assert.equal(p?.name, "Renamed");
+  assert.deepEqual(p?.headers, { "X-Token": "S1", "x-env": { env: "PULSE_HEADER_A" } });
+  assert.equal(p?.body, "B1");
+});
+
+test("keep markers: lookup is case-insensitive, the sent name wins, no keep key reaches probes", async () => {
+  const b = await boot();
+  const { etag } = await createRoundTrip(b);
+  const r = await b.call("PUT", "/admin/checks/rt", {
+    body: { ...ROUND_TRIP, headers: { "x-token": { keep: true } }, body: { keep: true } },
+    ifMatch: etag,
+  });
+  assert.equal(r.status, 200);
+  const text = await (
+    await fetch(`${b.base}/probe/checks`, { headers: { authorization: `Bearer ${PROBE}` } })
+  ).text();
+  assert.ok(!text.includes('"keep"'));
+  const p = await probed(b, "rt");
+  assert.deepEqual(p?.headers, { "x-token": "S1" });
+  assert.equal(p?.body, "B1");
+});
+
+test("keep markers: refused without a stored value, in a bad shape, or failing the file rules", async () => {
+  const { b, db } = await bootWithDb();
+  const { etag } = await createRoundTrip(b);
+  const cases: { method: "POST" | "PUT"; body: Record<string, unknown>; error?: string }[] = [
+    {
+      method: "POST",
+      body: { ...ROUND_TRIP, id: "c2", headers: { "x-token": { keep: true } } },
+      error: "check.headers.x-token: has no stored value to keep",
+    },
+    {
+      method: "PUT",
+      body: { ...ROUND_TRIP, headers: { "x-env": { keep: true } } },
+      error: "check.headers.x-env: has no stored value to keep",
+    },
+    {
+      method: "PUT",
+      body: { ...ROUND_TRIP, headers: { "x-other": { keep: true } } },
+      error: "check.headers.x-other: has no stored value to keep",
+    },
+    {
+      method: "POST",
+      body: { ...ROUND_TRIP, id: "c3", body: { keep: true } },
+      error: "check.body: has no stored value to keep",
+    },
+    { method: "PUT", body: { ...ROUND_TRIP, headers: { "X-Token": { keep: true, x: 1 } } } },
+    { method: "PUT", body: { ...ROUND_TRIP, headers: { "X-Token": { keep: false } } } },
+    { method: "PUT", body: { ...ROUND_TRIP, headers: { "X-Token": { keep: "yes" } } } },
+    { method: "PUT", body: { ...ROUND_TRIP, body: { keep: true, x: 1 } } },
+    { method: "PUT", body: { ...ROUND_TRIP, method: "GET", body: { keep: true } } },
+  ];
+  for (const c of cases) {
+    const path = c.method === "POST" ? "/admin/checks" : "/admin/checks/rt";
+    const r = await b.call(c.method, path, { body: c.body, ifMatch: etag });
+    assert.equal(r.status, 422, JSON.stringify(c.body));
+    const { error } = (await r.json()) as ErrorResponse;
+    if (c.error !== undefined) assert.equal(error, c.error);
+    assert.ok(!error.includes("S1") && !error.includes("B1"));
+  }
+  assert.equal(generationOf(db()), 1);
+  const p = await probed(b, "rt");
+  assert.equal(p?.body, "B1");
+});
+
+test("keep markers: a PUT that omits a header or the body removes it", async () => {
+  const b = await boot();
+  const { etag } = await createRoundTrip(b);
+  const bare: Record<string, unknown> = { ...ROUND_TRIP };
+  delete bare.headers;
+  delete bare.body;
+  const r = await b.call("PUT", "/admin/checks/rt", {
+    body: { ...bare, method: "GET", headers: { "x-env": { env: "PULSE_HEADER_A" } } },
+    ifMatch: etag,
+  });
+  assert.equal(r.status, 200);
+  const p = await probed(b, "rt");
+  assert.deepEqual(p?.headers, { "x-env": { env: "PULSE_HEADER_A" } });
+  assert.equal(p?.body, undefined);
+});
+
+test("heartbeat secrets: a PUT keeps the digest, a new secret rotates it, a type change needs one", async () => {
+  const { b, db } = await bootWithDb();
+  const hb = { id: "job", name: "Job", type: "heartbeat", period: 60000, grace: 0 };
+  const digest = (): string | undefined =>
+    db()
+      .query<{ d: string }, []>("SELECT secret_sha256 AS d FROM check_definitions WHERE id = 'job'")
+      .get()?.d;
+  const created = await b.call("POST", "/admin/checks", {
+    body: { ...hb, secret: SECRET },
+    ifMatch: await b.revision(),
+  });
+  assert.equal(created.status, 201);
+  const view = (await created.json()) as Record<string, unknown>;
+  const kept = await b.call("PUT", "/admin/checks/job", {
+    body: { ...view, name: "Job 2" },
+    ifMatch: created.headers.get("etag") ?? "",
+  });
+  assert.equal(kept.status, 200);
+  assert.equal(digest(), hex(SECRET));
+  const rotated = "rotated-secret-0123456789";
+  const rot = await b.call("PUT", "/admin/checks/job", {
+    body: { ...hb, secret: rotated },
+    ifMatch: kept.headers.get("etag") ?? "",
+  });
+  assert.equal(rot.status, 200);
+  assert.equal(digest(), hex(rotated));
+  const http = await b.call("POST", "/admin/checks", {
+    body: NEW_CHECK,
+    ifMatch: rot.headers.get("etag") ?? "",
+  });
+  assert.equal(http.status, 201);
+  const change = await b.call("PUT", "/admin/checks/new", {
+    body: { ...hb, id: "new" },
+    ifMatch: http.headers.get("etag") ?? "",
+  });
+  assert.equal(change.status, 422);
+  assert.match(((await change.json()) as ErrorResponse).error, /secret/);
 });

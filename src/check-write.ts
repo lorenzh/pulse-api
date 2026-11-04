@@ -49,32 +49,88 @@ function invalid(message: string): ConfigWriteError {
 }
 
 /** A keep marker is exactly `{ "keep": true }`; a header or field named `keep` is not one. */
-function isKeepMarker(value: Record<string, unknown>): boolean {
+function isMarker(value: unknown): boolean {
+  if (!isRecord(value)) return false;
   const keys = Object.keys(value);
   return keys.length === 1 && keys[0] === "keep" && value.keep === true;
 }
 
-function isMarker(value: unknown): boolean {
-  return isRecord(value) && isKeepMarker(value);
+/** A stored literal header value whose name equals `name` case-insensitively. */
+function storedLiteral(stored: Check | undefined, name: string): string | undefined {
+  if (stored === undefined || (stored.type !== undefined && stored.type !== "http"))
+    return undefined;
+  const lower = name.toLowerCase();
+  for (const [key, value] of Object.entries(stored.headers ?? {})) {
+    if (key.toLowerCase() === lower && typeof value === "string") return value;
+  }
+  return undefined;
+}
+
+function storedBody(stored: Check | undefined): string | undefined {
+  if (stored === undefined || (stored.type !== undefined && stored.type !== "http"))
+    return undefined;
+  return stored.body;
 }
 
 /**
- * True when a field that the admin view redacts holds a keep marker: a header value, the body,
- * or the secret. Other fields (such as `jsonAssert` data) are literal JSON.
+ * Resolve keep markers in header values and the body against the stored definition with the same
+ * id; `stored` is undefined on create. Other fields (such as `jsonAssert` data) are literal JSON.
  */
-function hasKeepMarker(body: Record<string, unknown>): boolean {
-  const headers = body.headers;
-  if (isRecord(headers) && Object.values(headers).some(isMarker)) return true;
-  return isMarker(body.body) || isMarker(body.secret);
+function materialized(
+  body: Record<string, unknown>,
+  stored: Check | undefined,
+): Record<string, unknown> {
+  const rest: Record<string, unknown> = { ...body };
+  delete rest.source;
+  delete rest.hasSecret;
+  if (isMarker(rest.secret)) throw invalid("check.secret: has no stored value to keep");
+  const headers = rest.headers;
+  if (isRecord(headers)) {
+    const resolved: Record<string, unknown> = {};
+    for (const [name, value] of Object.entries(headers)) {
+      if (!isMarker(value)) {
+        resolved[name] = value;
+        continue;
+      }
+      const kept = storedLiteral(stored, name);
+      if (kept === undefined) throw invalid(`check.headers.${name}: has no stored value to keep`);
+      resolved[name] = kept;
+    }
+    rest.headers = resolved;
+  }
+  if (isMarker(rest.body)) {
+    const kept = storedBody(stored);
+    if (kept === undefined) throw invalid("check.body: has no stored value to keep");
+    rest.body = kept;
+  }
+  return rest;
 }
 
+/**
+ * Stands in for an omitted secret on a heartbeat PUT so that the file rules pass; the stored
+ * digest is kept and this value is never stored or compared.
+ */
+const KEPT_SECRET = "kept-stored-digest";
+
 /** Validate a body with the rules of a checks file entry. Messages never quote a value. */
-function parsedBody(body: unknown): { check: Check; secretSha256: string | null } {
+function parsedBody(
+  body: unknown,
+  stored: CheckDefinition | null,
+): { check: Check; secretSha256: string | null } {
   if (!isRecord(body)) throw invalid("check must be an object");
-  if (Object.hasOwn(body, "source")) throw invalid("check.source is set by the server");
-  if (hasKeepMarker(body)) throw invalid("check must not contain keep markers");
+  if (Object.hasOwn(body, "source") && body.source !== "database") {
+    throw invalid('check.source must be "database"');
+  }
+  const raw = materialized(body, stored?.check);
+  const keepsSecret =
+    raw.type === "heartbeat" &&
+    raw.secret === undefined &&
+    stored !== null &&
+    stored.secretSha256 !== null;
+  if (keepsSecret) raw.secret = KEPT_SECRET;
   try {
-    const { check, secret } = parseCheck(body, ["check"]);
+    const { check, secret } = parseCheck(raw, ["check"]);
+    if (keepsSecret) return { check, secretSha256: stored.secretSha256 };
     const secretSha256 = secret === null ? null : createHash("sha256").update(secret).digest("hex");
     return { check, secretSha256 };
   } catch (err) {
@@ -153,7 +209,8 @@ export function createCheckWriter(deps: CheckWriterDeps): CheckWriter {
     if (revision(store.generation()) !== ifMatch) {
       throw new ConfigWriteError("stale", "the configuration changed: reload it and retry");
     }
-    const parsed = edit.action === "delete" ? undefined : parsedBody(edit.body);
+    const stored = edit.action === "replace" ? store.get(edit.ref) : null;
+    const parsed = edit.action === "delete" ? undefined : parsedBody(edit.body, stored);
     const id = edit.action === "create" ? (parsed?.check.id ?? "") : edit.ref;
     assertTarget(edit.action, id);
     const { generation, definitions, publish } = commit(edit, id, parsed, actor);
