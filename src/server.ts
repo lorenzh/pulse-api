@@ -245,7 +245,7 @@ type Ops = {
   service: Service;
   metrics: Metrics;
   notReadyReason: () => string | undefined;
-  heartbeatSecrets: () => ReadonlyMap<string, string>;
+  heartbeatDigests: () => ReadonlyMap<string, string>;
   components: () => readonly Component[];
   manualIncidents: ManualIncidentStore;
   tokens: Pick<TokenStore, "authenticate">;
@@ -260,6 +260,13 @@ type Ops = {
 
 function digest(text: string): Buffer {
   return createHash("sha256").update(text).digest();
+}
+
+const NO_DIGEST = Buffer.alloc(32);
+
+/** A stored hex SHA-256 digest as bytes; anything else matches no secret. */
+function storedDigest(hex: string | undefined): Buffer | undefined {
+  return hex !== undefined && /^[0-9a-f]{64}$/.test(hex) ? Buffer.from(hex, "hex") : undefined;
 }
 
 /** The secret from the path form, else from the Bearer header; undefined when neither is sent. */
@@ -294,11 +301,11 @@ async function servePing(
     // A malformed escape cannot name a check: it answers like an unknown id.
     id = undefined;
   }
-  const expected = id === undefined ? undefined : ops.heartbeatSecrets().get(id);
+  const expected = id === undefined ? undefined : storedDigest(ops.heartbeatDigests().get(id));
   const given = pingSecret(match[2], req.headers.authorization);
-  // Digests of equal length keep the comparison constant-time; a missing side compares as empty.
+  // Digests of equal length keep the comparison constant-time; a missing side compares as zeros.
   const isValid =
-    timingSafeEqual(digest(expected ?? ""), digest(given ?? "")) &&
+    timingSafeEqual(expected ?? NO_DIGEST, digest(given ?? "")) &&
     expected !== undefined &&
     given !== undefined;
   if (!isValid || id === undefined) {
@@ -755,8 +762,8 @@ export type ApiServerOptions = {
   notReadyReason?: () => string | undefined;
   /** Receives unexpected request failures. */
   logError?: (message: string, err: unknown) => void;
-  /** Ping secret per heartbeat check id. Without it every ping is refused. */
-  heartbeatSecrets?: () => ReadonlyMap<string, string>;
+  /** Hex SHA-256 of the ping secret per heartbeat check id. Without it every ping is refused. */
+  heartbeatDigests?: () => ReadonlyMap<string, string>;
   /** The configured components, served by `/components` and `/components/uptime`. */
   components?: () => readonly Component[];
   /** Store behind `/manual-incidents`. Without it, or before the admin bootstrap, the reads are empty. */
@@ -801,7 +808,7 @@ export function createApiServer(service: Service, options: ApiServerOptions): Se
     service,
     metrics,
     notReadyReason: options.notReadyReason ?? (() => undefined),
-    heartbeatSecrets: options.heartbeatSecrets ?? (() => new Map()),
+    heartbeatDigests: options.heartbeatDigests ?? (() => new Map()),
     components: options.components ?? (() => []),
     // Before the admin bootstrap the feature is off: every read is empty, even with stored incidents.
     tokens,

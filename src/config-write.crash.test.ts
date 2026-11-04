@@ -208,7 +208,11 @@ function world(journal: Journal, durableLevel: number): World {
         path: PATH,
         fs,
         holder: createConfigHolder(parseConfig(JSON.parse(FILE_A))),
-        reloader: { revision: () => "", adopt: () => undefined },
+        reloader: {
+          revision: () => "",
+          adopt: () => undefined,
+          fileStatus: () => ({ state: "ok", message: null, lastAppliedAt: 0 }),
+        },
         tempSuffix: () => `${name}-${++n}`,
         hasOpenIncidentFor: () => false,
         pending: db,

@@ -15,14 +15,20 @@ import { createAdminAuthThrottle } from "./admin-auth-throttle.ts";
 import { createAdminHandler } from "./admin-routes.ts";
 import type { AdminToken } from "./admin-tokens.ts";
 import { createAuditLog, createPendingAudit } from "./audit-log.ts";
-import { createCheckStore } from "./check-store.ts";
+import { type CheckStore, createCheckStore, type FileSnapshot } from "./check-store.ts";
 import { createCheckWriter } from "./check-write.ts";
 import { componentBudgets } from "./components.ts";
-import { ConfigError, loadAdminTokens, loadTokens } from "./config.ts";
+import { type Config, ConfigError, loadAdminTokens, loadTokens } from "./config.ts";
 import { nodeConfigFs } from "./config-fs.ts";
-import { createConfigHolder } from "./config-holder.ts";
-import type { ReloadFs } from "./config-reload.ts";
-import { createConfigReloader, loadInitialConfig, startConfigPolling } from "./config-reload.ts";
+import { createConfigHolder, secretDigests } from "./config-holder.ts";
+import {
+  type AppliedFile,
+  createConfigReloader,
+  type InitialConfig,
+  type ReloadFs,
+  readInitialConfig,
+  startConfigPolling,
+} from "./config-reload.ts";
 import type { WriteFs } from "./config-write.ts";
 import { createConfigWriter } from "./config-write.ts";
 import { createHeartbeatEvaluator, startHeartbeatEvaluator } from "./heartbeat.ts";
@@ -179,6 +185,86 @@ function tokenCounts(store: TokenStore, at: number) {
   };
 }
 
+/** Run a reconcile and the snapshot write in one transaction; the effects run after the commit. */
+function reconcileFile(db: Database, work: () => () => void): void {
+  let after: () => void = () => undefined;
+  db.transaction(() => {
+    after = work();
+  })();
+  after();
+}
+
+/** The redacted snapshot of an applied file: digests of the heartbeat secrets, never the plaintext. */
+function snapshotOf(
+  config: Config,
+  digests: ReadonlyMap<string, string>,
+  applied: AppliedFile,
+): FileSnapshot {
+  return {
+    revision: applied.revision,
+    appliedAt: applied.appliedAt,
+    checks: config.checks,
+    secretDigests: Object.fromEntries(digests),
+    components: config.components,
+    maintenance: config.maintenance,
+  };
+}
+
+interface StartFile {
+  initial: InitialConfig;
+  digests: ReadonlyMap<string, string>;
+  /** The snapshot to store with the first reconcile; undefined when the stored one is current. */
+  snapshot: FileSnapshot | undefined;
+}
+
+/**
+ * The file set to start with, read after the database is open. A broken file falls back to the
+ * stored snapshot; without one the start fails with the file error (exit 2).
+ */
+function startFile(
+  fs: ReloadFs,
+  path: string,
+  store: CheckStore,
+  now: number,
+  warn: (line: string) => void,
+): StartFile {
+  const read = readInitialConfig(fs, path);
+  const stored = store.snapshot();
+  if (read.ok) {
+    const { initial } = read;
+    const digests = secretDigests(initial.config.secrets);
+    if (stored !== null && stored.revision === initial.revision) {
+      return { initial: { ...initial, appliedAt: stored.appliedAt }, digests, snapshot: undefined };
+    }
+    const applied = { revision: initial.revision, appliedAt: now };
+    return {
+      initial: { ...initial, appliedAt: now },
+      digests,
+      snapshot: snapshotOf(initial.config, digests, applied),
+    };
+  }
+  if (stored === null) throw read.error;
+  warn(
+    `config load rejected at start: ${read.message}; using the checks file applied at ${new Date(stored.appliedAt).toISOString()}`,
+  );
+  return {
+    initial: {
+      config: {
+        checks: stored.checks,
+        secrets: new Map(),
+        components: stored.components,
+        maintenance: stored.maintenance,
+      },
+      revision: stored.revision,
+      stampKey: read.stampKey,
+      appliedAt: stored.appliedAt,
+      status: { state: read.state, message: read.message },
+    },
+    digests: new Map(Object.entries(stored.secretDigests)),
+    snapshot: undefined,
+  };
+}
+
 /** Load the configuration, open the database and listen. Every configuration error is a StartupError. */
 export async function startApi(deps: StartDeps): Promise<RunningApi> {
   let db: Database | undefined;
@@ -209,8 +295,6 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
   const locationSilentMs = readLocationSilentMs(env);
   const reloadIntervalMs = readReloadIntervalMs(env);
   const configFs = deps.configFs ?? nodeConfigFs;
-  const initial = loadInitialConfig(configFs, checksFile);
-  const { maintenance, components } = initial.config;
   let db: Database;
   try {
     db = deps.openDb(dbPath, (line) => logger.info(line));
@@ -221,8 +305,13 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
   }
   onDb(db);
   const checkStore = createCheckStore({ db, now: deps.now });
-  // The file is applied first; the stored database checks join it in the effective set.
-  const holder = createConfigHolder(initial.config, checkStore.list());
+  // The database is open before the file is read: a broken file falls back to its snapshot.
+  const start = startFile(configFs, checksFile, checkStore, deps.now(), (line) =>
+    logger.warn(line),
+  );
+  const { initial } = start;
+  const { maintenance, components } = initial.config;
+  const holder = createConfigHolder(initial.config, checkStore.list(), start.digests);
   const { checks } = holder.get();
   const { store: tokenStore, isAdminEnabled } = bootstrapTokens(
     deps,
@@ -260,7 +349,11 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     log: (line) => logger.info(line),
     onIncident: (event) => metrics.recordIncident(event),
   });
-  service.upsertChecks(checks);
+  reconcileFile(db, () => {
+    const after = service.upsertChecks(checks);
+    if (start.snapshot !== undefined) checkStore.writeSnapshot(start.snapshot);
+    return after;
+  });
   const auditLog = createAuditLog(db);
   const manualIncidents = createManualIncidentStore(db, {
     now: deps.now,
@@ -296,11 +389,17 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     {
       path: checksFile,
       fs: configFs,
-      onApply: (next) => {
+      onApply: (next, applied) => {
         // SQLite first, in one transaction: a failed update leaves the holder and revision as they were.
-        service.upsertChecks(holder.checksWith(next));
-        holder.set(next);
+        const digests = secretDigests(next.secrets);
+        reconcileFile(db, () => {
+          const after = service.upsertChecks(holder.checksWith(next));
+          checkStore.writeSnapshot(snapshotOf(next, digests, applied));
+          return after;
+        });
+        holder.set(next, digests);
       },
+      now: deps.now,
       log: (line) => logger.warn(line),
       metrics,
     },
@@ -371,7 +470,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
   const server = createApiServer(service, {
     tokenStore,
     isAdminEnabled,
-    heartbeatSecrets: () => holder.get().secrets,
+    heartbeatDigests: () => holder.heartbeatDigests(),
     components: () => holder.get().components,
     manualIncidents,
     ...(isAdminEnabled ? { admin: adminHandler } : {}),
@@ -416,6 +515,8 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     locationSilentMs: locationSilentMs ?? "auto",
     reloadIntervalMs,
     configWrites: isAdminEnabled ? "on" : "off",
+    fileState: reloader.fileStatus().state,
+    databaseChecks: holder.definitions().length,
   });
 
   // Created only after listen: the backfill must not run inside the startup work.

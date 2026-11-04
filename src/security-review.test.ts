@@ -40,6 +40,7 @@ function failedReload(failure: unknown): string[] {
     {
       path: "/checks.json",
       fs: { stat: () => ({ mtimeMs: 2, size: BYTES.length, ino: 1 }), readFile: () => BYTES },
+      now: () => 0,
       onApply: () => {
         throw failure;
       },

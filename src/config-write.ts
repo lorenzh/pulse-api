@@ -3,6 +3,7 @@ import type {
   AdminCheckView,
   AdminComponent,
   AdminConfigResponse,
+  AdminFileStatus,
   AdminMaintenanceView,
   AdminWriteResponse,
   Check,
@@ -64,7 +65,7 @@ export interface WriterDeps {
   path: string;
   fs: WriteFs;
   holder: ConfigHolder;
-  reloader: Pick<ConfigReloader, "revision" | "adopt">;
+  reloader: Pick<ConfigReloader, "revision" | "adopt" | "fileStatus">;
   /** The database generation; with the applied file revision it makes the admin revision. */
   generation: () => number;
   /** A unique file name part for the temp file. */
@@ -168,7 +169,8 @@ export function checkView(check: Check, source: CheckSource): AdminCheckView {
 export function configView(
   config: Config,
   revision: string,
-  definitions: readonly CheckDefinition[] = [],
+  definitions: readonly CheckDefinition[],
+  file: AdminFileStatus,
 ): AdminConfigResponse {
   const merged = effectiveChecks({ checks: config.checks, secretDigests: new Map() }, definitions);
   return {
@@ -177,7 +179,7 @@ export function configView(
     shadowed: merged.shadowed.map((d) => checkView(d.check, "database")),
     components: config.components.map((c) => ({ ...c })),
     maintenance: config.maintenance.map((w, index) => ({ ...w, index })),
-    file: { state: "ok", message: null, lastAppliedAt: 0 },
+    file: { ...file },
   };
 }
 
@@ -590,6 +592,7 @@ export function createConfigWriter(deps: WriterDeps): ConfigWriter {
         deps.holder.file(),
         adminRevision(deps.reloader.revision(), deps.generation()),
         deps.holder.definitions(),
+        deps.reloader.fileStatus(),
       ),
     assertWritable() {
       try {

@@ -709,6 +709,13 @@ async function bootWithDb(extra: Partial<StartDeps> = {}): Promise<{ b: Booted; 
   };
 }
 
+/** Only the file state moved: the stored file is valid but not in use. */
+function assertNotApplied(before: unknown, after: AdminConfigResponse): void {
+  assert.equal(after.file.state, "written-not-applied");
+  assert.match(after.file.message ?? "", /^cannot apply the configuration: \w+/);
+  assert.deepEqual({ ...after, file: (before as AdminConfigResponse).file }, before);
+}
+
 test("review fix: a reload the database rejects keeps the running config and revision", async () => {
   const { b, db } = await bootWithDb();
   const before = await (await b.call("GET", "/admin/config")).json();
@@ -716,7 +723,10 @@ test("review fix: a reload the database rejects keeps the running config and rev
   writeExternal({ ...BASE_FILE, components: [{ id: "changed", name: "C", checkIds: ["web"] }] });
   b.poll();
   assert.ok(b.lines.some((l) => l.line.includes("config reload failed")));
-  assert.deepEqual(await (await b.call("GET", "/admin/config")).json(), before);
+  assertNotApplied(
+    before,
+    (await (await b.call("GET", "/admin/config")).json()) as AdminConfigResponse,
+  );
 });
 
 test("review fix: an apply failure after the rename syncs the directory and keeps memory consistent", async () => {
@@ -740,7 +750,10 @@ test("review fix: an apply failure after the rename syncs the directory and keep
   assert.match(((await r.json()) as { error: string }).error, /stored, but applying it failed/);
   assert.equal(dirSyncs, 2, "the temp name and the rename are synced before the apply");
   assert.ok(readFileSync(file, "utf8").includes('"db"'), "the file is the source of truth");
-  assert.deepEqual(await (await b.call("GET", "/admin/config")).json(), before);
+  assertNotApplied(
+    before,
+    (await (await b.call("GET", "/admin/config")).json()) as AdminConfigResponse,
+  );
   db().prepare("DROP TRIGGER fail_upsert").run();
   b.poll();
   assert.ok((await componentIds(b)).includes("db"), "the next reload applies the stored file");

@@ -70,6 +70,7 @@ function setup(opts: SetupOpts): Harness {
           return opts.bytes ?? VALID;
         },
       },
+      now: () => 0,
       onApply: (_config: Config) => {
         applies += 1;
         if (failures.length > 0) throw failures.shift();
