@@ -72,6 +72,14 @@ function storedBody(stored: Check | undefined): string | undefined {
   return stored.body;
 }
 
+/** `hasSecret` from a heartbeat view may come back, but only as `true` and only on a heartbeat. */
+function dropHasSecret(rest: Record<string, unknown>): void {
+  if (!Object.hasOwn(rest, "hasSecret")) return;
+  if (rest.type !== "heartbeat" || rest.hasSecret !== true)
+    throw invalid("check.hasSecret must be true and only on a heartbeat check");
+  delete rest.hasSecret;
+}
+
 /**
  * Resolve keep markers in header values and the body against the stored definition with the same
  * id; `stored` is undefined on create. Other fields (such as `jsonAssert` data) are literal JSON.
@@ -82,11 +90,7 @@ function materialized(
 ): Record<string, unknown> {
   const rest: Record<string, unknown> = { ...body };
   delete rest.source;
-  if (Object.hasOwn(rest, "hasSecret")) {
-    if (rest.type !== "heartbeat" || rest.hasSecret !== true)
-      throw invalid("check.hasSecret must be true and only on a heartbeat check");
-    delete rest.hasSecret;
-  }
+  dropHasSecret(rest);
   if (isMarker(rest.secret)) throw invalid("check.secret: has no stored value to keep");
   const headers = rest.headers;
   if (isRecord(headers)) {
