@@ -4,25 +4,31 @@ The API serves JSON over HTTP. The types come from [pulse-contract](https://gith
 
 ## Overview
 
-| Method        | Path                       | Auth             | Response                                               |
-| ------------- | -------------------------- | ---------------- | ------------------------------------------------------ |
-| `POST`        | `/results`                 | Bearer token     | `204`, no body                                         |
-| `GET`         | `/probe/checks`            | Bearer token     | `Check[]` (active checks as configured)                |
-| `GET`         | `/checks`                  | none             | `ChecksResponse` (`CheckWithState[]`)                  |
-| `GET`         | `/checks/:id/results`      | none             | `ResultsResponse` (`Result[]`)                         |
-| `GET`         | `/uptime`                  | none             | `UptimeResponse` (`CheckUptime[]`)                     |
-| `GET`         | `/latency`                 | none             | `LatencyResponse` (`CheckLatency[]`)                   |
-| `GET`         | `/checks/:id/latency`      | none             | `CheckLatency`                                         |
-| `GET`         | `/components`              | none             | `ComponentsResponse` (`ComponentWithState[]`)          |
-| `GET`         | `/components/uptime`       | none             | `ComponentsUptimeResponse` (`ComponentUptime[]`)       |
-| `GET`         | `/incidents`               | none             | `IncidentsResponse` (`Incident[]`)                     |
-| `GET`         | `/maintenance`             | none             | `MaintenanceResponse` (`MaintenanceWindow[]`)          |
-| `GET`, `POST` | `/heartbeat/:id[/:secret]` | Heartbeat secret | `204`, no body; `401` for a wrong secret or unknown id |
-| `GET`         | `/healthz`                 | none             | `200 ok` (liveness, `text/plain`)                      |
-| `GET`         | `/readyz`                  | none             | `200 ok` or `503` with a reason (`text/plain`)         |
-| `GET`         | `/metrics`                 | none             | Prometheus text                                        |
-| `GET`, `POST` | `/admin/tokens[/:id[/…]]`  | `admin`          | see [Tokens](#tokens)                                  |
-| `GET`         | `/admin/audit[/export]`    | `admin`          | see [Audit log](#audit-log)                            |
+| Method                  | Path                                                                                  | Auth                    | Response                                               |
+| ----------------------- | ------------------------------------------------------------------------------------- | ----------------------- | ------------------------------------------------------ |
+| `POST`                  | `/results`                                                                            | probe token             | `204`, no body                                         |
+| `GET`                   | `/probe/checks`                                                                       | probe token             | `Check[]` (active checks as configured)                |
+| `GET`                   | `/checks`                                                                             | none                    | `ChecksResponse` (`CheckWithState[]`)                  |
+| `GET`                   | `/checks/:id/results`                                                                 | none                    | `ResultsResponse` (`Result[]`)                         |
+| `GET`                   | `/uptime`                                                                             | none                    | `UptimeResponse` (`CheckUptime[]`)                     |
+| `GET`                   | `/latency`                                                                            | none                    | `LatencyResponse` (`CheckLatency[]`)                   |
+| `GET`                   | `/checks/:id/latency`                                                                 | none                    | `CheckLatency`                                         |
+| `GET`                   | `/components`                                                                         | none                    | `ComponentsResponse` (`ComponentWithState[]`)          |
+| `GET`                   | `/components/uptime`                                                                  | none                    | `ComponentsUptimeResponse` (`ComponentUptime[]`)       |
+| `GET`                   | `/incidents`                                                                          | none                    | `IncidentsResponse` (`Incident[]`)                     |
+| `GET`                   | `/maintenance`                                                                        | none                    | `MaintenanceResponse` (`MaintenanceWindow[]`)          |
+| `GET`                   | `/locations`                                                                          | none                    | see [GET /locations](#get-locations)                   |
+| `GET`                   | `/manual-incidents`, `/manual-incidents/:id`                                          | none                    | see [GET /manual-incidents](#get-manual-incidents)     |
+| `POST`                  | `/manual-incidents`, `/manual-incidents/:id/updates`, `/manual-incidents/:id/resolve` | `admin` and `incidents` | see [Write routes](#write-routes)                      |
+| `DELETE`                | `/manual-incidents/:id`                                                               | `admin` and `incidents` | see [Write routes](#write-routes)                      |
+| `GET`, `POST`           | `/heartbeat/:id[/:secret]`                                                            | Heartbeat secret        | `204`, no body; `401` for a wrong secret or unknown id |
+| `GET`                   | `/healthz`                                                                            | none                    | `200 ok` (liveness, `text/plain`)                      |
+| `GET`                   | `/readyz`                                                                             | none                    | `200 ok` or `503` with a reason (`text/plain`)         |
+| `GET`                   | `/metrics`                                                                            | none                    | Prometheus text                                        |
+| `GET`                   | `/admin/config`                                                                       | `read` or `checks`      | see [Admin config routes](#admin-config-routes)        |
+| `POST`, `PUT`, `DELETE` | `/admin/checks[/:id]`, `/admin/components[/:id]`, `/admin/maintenance[/:index]`       | `admin` and `checks`    | see [Admin config routes](#admin-config-routes)        |
+| `GET`, `POST`           | `/admin/tokens[/:id[/…]]`                                                             | `admin`                 | see [Tokens](#tokens)                                  |
+| `GET`                   | `/admin/audit[/export]`                                                               | `admin`                 | see [Audit log](#audit-log)                            |
 
 General rules:
 
@@ -33,7 +39,7 @@ General rules:
 - A request body over 1,000,000 bytes gives `413` with `request body too large`.
 - An unexpected failure gives `500` with `internal error`. The cause is written to stderr.
 - Timestamps are epoch milliseconds.
-- Read routes have no authentication. Run the API on a private network or behind a proxy if the data is not public.
+- The public reads (auth `none` above) need no token. `/probe/checks`, `/results`, every `/admin/*` route and the manual-incident writes need one. Keep the API on a private network and publish only the heartbeat route: see [Network exposure](install.md#network-exposure).
 
 ## POST /results
 

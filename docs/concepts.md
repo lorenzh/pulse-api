@@ -60,7 +60,7 @@ The API remembers, per location, the newest result timestamp (`lastResultAt`) an
 
 A location is the name of a probe, for example `east`. Each result carries the location of the probe that produced it.
 
-`POST /results` needs a probe token: `Authorization: Bearer <token>`. The token fixes the probe's location. Read routes (`GET`) are public.
+`POST /results` needs a probe token: `Authorization: Bearer <token>`. The token fixes the probe's location. The public reads need no token; `GET /probe/checks` needs a probe token, and `/admin/*` and the manual-incident writes need an admin-side token.
 
 Rules for locations:
 
