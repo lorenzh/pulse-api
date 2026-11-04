@@ -2,23 +2,25 @@
 
 ## Start and restart
 
-The API reads `checks.json` and its environment at start, and the token files only until their one-time import (see [Token import](configuration.md#token-import)). It reloads `checks.json` while it runs (see [Changing checks](#changing-checks)). Restart it after a change to the environment. Tokens are managed over HTTP and need no restart.
+The API reads its environment at start, and the token files only until their one-time import (see [Token import](configuration.md#token-import)). Tokens are managed over HTTP and need no restart.
 
-After a change to the checks file, restart only the API. Probes reload their checks from the API on their own, within their reload interval (`PULSE_CHECKS_RELOAD_MS`, see the probe docs).
+A change to `checks.json` needs no restart: the API reloads the file while it runs, or at once on `SIGHUP` (see [Changing checks](#changing-checks)). Probes then reload their checks from the API on their own, within their reload interval (`PULSE_CHECKS_RELOAD_MS`, see the probe docs).
 
 The `docker compose …` commands on this page run inside your pulse-deploy setup directory, for example `cd pulse-deploy/full`.
 
+A change to the environment needs a new process. After you change `environment:` or `env_file:` in the Compose file, recreate the container:
+
 ```sh
-docker compose restart api
+docker compose up -d api
 ```
 
-Use `restart`, not `docker compose up -d`: `up -d` does not recreate the API when only the mounted checks file changed, so the API keeps the checks it loaded at start (`src/main.ts` reads the file once).
+`docker compose restart api` restarts the same container with its old environment, so it does not apply a changed `environment:` or `env_file:`.
 
 Everything else is kept in the database, so a restart loses no state. The check counter and open incidents survive restarts.
 
 ## Database
 
-The database is one SQLite file, at `PULSE_DB` (default `./pulse.db`, `/data/pulse.db` in the Docker image). The API opens the file in journal mode WAL with `synchronous = NORMAL`. A reader on a second connection, such as the [backup command](#backup-and-restore), is never blocked by a write. With `NORMAL` a crash or power loss can lose the last committed transactions, but never corrupts the file; probes re-send buffered results and `POST /results` is idempotent, so lost results are mostly sent again.
+The database is one SQLite file, at `PULSE_DB` (default `./pulse.db`, `/data/pulse.db` in the Docker image). The API opens the file in journal mode WAL with `synchronous = NORMAL`. A reader on a second connection, such as the [backup command](#backup-and-restore), is never blocked by a write. With `NORMAL` a crash of the API process loses no committed transaction. A power loss or an operating system crash can lose the last committed transactions, but does not corrupt the file. A probe forgets a result once the API answered `204`, so it never re-sends such a lost result: it is gone. `POST /results` is idempotent, so a re-send of a result that is already stored is safe, but this recovers nothing.
 
 While the API runs, `pulse.db-wal` and `pulse.db-shm` sit next to `pulse.db`. The process user creates them in the same directory, so that directory must be writable (`/data` in the image is). SQLite's default auto-checkpoint (1000 pages, on commit) moves the WAL into the file. A clean shutdown checkpoints and removes both files. An older file in rollback-journal mode is switched to WAL at start; an older API version can open a WAL file.
 
@@ -138,6 +140,8 @@ To restore:
 3. Delete `pulse.db-wal` and `pulse.db-shm` if they exist. A stale WAL belongs to the old file and must not be applied to the restored one.
 4. Start the API.
 
+A file under `/data` sits on the live volume: when the volume or the host is lost, the backup is lost with it. Move each copy to storage outside that volume and that host (the `docker compose cp` step above, then off the host), keep more than one copy, and test a restore from time to time.
+
 A backup from an older version is migrated at start. A file with a newer schema version is refused with exit code 2 (see [Schema](#schema)). With Compose the file is in the `api-data` volume.
 
 ## Retention and disk space
@@ -194,7 +198,11 @@ Manual-incident and token writes commit with their entry in one transaction.
 
 ## Admin tokens and header secrets
 
-An admin token can point any check that references `{ "env": NAME }` at any URL. The probe sends the secret there if it binds `NAME` to that host in `PULSE_PROBE_HEADER_HOSTS`. So an admin token is as sensitive as every header secret it can address, and the probe's `PULSE_PROBE_HEADER_HOSTS` is the limit. Bind each secret only to the hosts that need it.
+A token with the scopes `admin` and `checks` can point any check that references `{ "env": NAME }` at another URL. The probe sends the secret to that URL only when its `PULSE_PROBE_HEADER_HOSTS` binds `NAME` to that host. So such a token is as sensitive as every secret that is bound to a host, and the probe's `PULSE_PROBE_HEADER_HOSTS` is the limit. Keeping the secret only in the probe's environment does not remove that authority. Bind each secret only to the hosts that need it.
+
+A probe token reads the literal header values and request bodies of every check from `GET /probe/checks`. It does not read the values of `{ "env": NAME }` references: the API never has them.
+
+Do not put credentials in a check URL. A URL with userinfo (`user:password@`) is rejected, but a token in the query string or the path is accepted and stored. The URL is served unchanged by the public `GET /checks`, by `GET /probe/checks` and by `GET /admin/config`. The status page removes userinfo, query and fragment from what it shows, but that does not protect a direct read of the API. Put the credential in a header with `{ "env": NAME }` and bind it to its host (see [HTTP checks](configuration.md#http-checks)).
 
 ## Changing checks
 
@@ -285,7 +293,7 @@ With Compose: `docker compose logs api`.
 
 `GET /locations` lists each probe location with `reporting` or `silent` ([REST API](rest-api.md#get-locations)); the silent threshold is `PULSE_LOCATION_SILENT_MS` ([Configuration](configuration.md)). The metric `pulse_api_location_last_result_timestamp_seconds{location}` is the newest accepted result timestamp. Alert on silence, for example `time() - pulse_api_location_last_result_timestamp_seconds > 300`. The metric uses the result timestamp, so after a long outage it lags until a probe has delivered its buffered results; `GET /locations` uses the receive time and is `reporting` as soon as the probe delivers.
 
-A probe that could not reach the API keeps its results in a bounded buffer and re-sends them in order. `POST /results` is idempotent, so a re-sent result that the API already stored is safe. Replayed results are processed like live ones with their original timestamps (they are not late unless they arrive out of order), so a replay can open or resolve an incident with an old time and notify can send late notifications after an outage. The API rejects results older than 7 days.
+A probe that could not reach the API keeps its results in a bounded buffer and re-sends them in order. `POST /results` is idempotent, so a re-sent result that the API already stored is safe. Replayed results are processed like live ones with their original timestamps (they are not late unless they arrive out of order), so a replay can open or resolve an incident with an old time and notify can send late notifications after an outage. The API rejects results older than 7 days. The probe keeps that buffer in memory, so a restart or stop of a probe loses its unsent results (see the probe's [Result buffer](https://github.com/lorenzh/pulse-probe/blob/main/docs/operation.md#result-buffer)).
 
 ## Health and metrics
 

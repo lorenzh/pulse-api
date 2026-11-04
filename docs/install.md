@@ -48,6 +48,12 @@ The image runs as the non-root `bun` user with `bun --no-env-file src/main.ts`. 
 
 The image starts Bun with `--no-env-file`, so neither the API nor its healthcheck reads `.env` files, also not ones mounted into `/app`. Settings come from the container environment (`-e`, `docker run --env-file` read on the host, Compose `environment:`/`env_file:`) and the documented setting files (`PULSE_CHECKS_FILE`, `PULSE_TOKENS_FILE`). `bun start` from source still loads `.env` files as Bun does by default.
 
+## Network exposure
+
+Keep the API on a private network. If jobs outside it must ping heartbeat checks, publish only `GET` and `POST` on `/heartbeat/<id>` and `/heartbeat/<id>/<secret>`, through a TLS reverse proxy. The proxy must match the normalized path (or reject dot segments such as `..` and `%2e%2e`); a plain prefix match on `/heartbeat` forwards `/heartbeat/../admin/config`, which the API reads as `/admin/config`.
+
+Keep everything else off that ingress: `/admin/*`, the `/manual-incidents` writes, `/probe/checks`, `/results`, the public reads (`/checks`, `/incidents` and the others) and `/healthz`, `/readyz` and `/metrics`. The status page serves the public data through its own proxy. This is deployment advice: the API itself does not restrict the heartbeat route to any network.
+
 ## Next steps
 
 - Configure your checks: [checks.json](configuration.md#checksjson).

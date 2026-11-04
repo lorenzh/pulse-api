@@ -136,7 +136,7 @@ An incident opens at the third consecutive `down` evaluation. Check these points
 
 ## 401 on /heartbeat/:id
 
-The secret is wrong or missing, or the id is not in the checks file. The answer is the same for all three. Compare the id and `secret` in `checks.json`; the API reads the file at start only. A probe token is not a ping secret. A check that was removed from the file has no secret and also answers `401`.
+The secret is wrong or missing, or the id is not in the checks file. The answer is the same for all three. Compare the id and `secret` in `checks.json`; the API reloads the file while it runs (see [Changing checks](operation.md#changing-checks)), so a changed secret works once the file is applied. A probe token is not a ping secret. A check that was removed from the file has no secret and also answers `401`.
 
 ## A heartbeat check is down
 
