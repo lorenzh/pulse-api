@@ -787,9 +787,12 @@ test("sentinel: header values, env names, bodies and secrets stay out of every o
     await b.call("POST", "/admin/checks", { body: http, ifMatch: await b.revision() }),
   );
   assert.equal(r.status, 201);
-  const view = JSON.parse(outputs.at(-1) ?? "{}") as { headers?: string[]; hasBody?: boolean };
-  assert.deepEqual(view.headers, ["x-token", "x-env"]);
-  assert.equal(view.hasBody, true);
+  const view = JSON.parse(outputs.at(-1) ?? "{}") as { headers?: unknown; body?: unknown };
+  assert.deepEqual(view.headers, {
+    "x-token": { keep: true },
+    "x-env": { env: "PULSE_HEADER_SENTINEL_ENV_NAME_7731" },
+  });
+  assert.deepEqual(view.body, { keep: true });
   const hb = { id: "job", name: "Job", type: "heartbeat", period: 60000, grace: 0, secret: SECRET };
   await keep(await b.call("POST", "/admin/checks", { body: hb, ifMatch: await b.revision() }));
   await keep(
@@ -825,9 +828,12 @@ test("sentinel: header values, env names, bodies and secrets stay out of every o
     outputs.push(await (await b.call("GET", path)).text());
   }
   const joined = [...outputs, ...b.lines.map((l) => l.line)].join("\n");
-  for (const secret of [SENTINEL_HEADER, SENTINEL_ENV, SENTINEL_BODY, SECRET, ADMIN]) {
+  for (const secret of [SENTINEL_HEADER, SENTINEL_BODY, SECRET, ADMIN]) {
     assert.ok(!joined.includes(secret), `${secret} leaked`);
   }
+  // Admin views serve env names; logs must not.
+  const logs = b.lines.map((l) => l.line).join("\n");
+  assert.ok(!logs.includes(SENTINEL_ENV), "env name leaked to logs");
   // the probe route still carries them as written (probe token), unchanged
   const probe = await (
     await fetch(`${b.base}/probe/checks`, { headers: { authorization: `Bearer ${PROBE}` } })

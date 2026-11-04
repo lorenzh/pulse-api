@@ -117,23 +117,37 @@ function mapFsError(err: unknown): ConfigWriteError {
   });
 }
 
-/** The check as served: header names only, no body, no secret. */
-export function checkView(check: Check): AdminCheckView {
+type CheckSource = AdminCheckView["source"];
+
+const KEEP = { keep: true } as const;
+
+/** The check as served: `{ env }` references stay, literal values and bodies become keep markers. */
+export function checkView(check: Check, source: CheckSource): AdminCheckView {
   switch (check.type) {
     case "heartbeat":
-      return { ...check, hasSecret: true as const };
+      return { ...check, source, hasSecret: true as const };
     case "tls":
     case "tcp":
     case "dns":
     case "domain":
-      return { ...check };
+      return { ...check, source };
     case undefined:
     case "http": {
       const { headers, body, ...rest } = check;
       return {
         ...rest,
-        ...(headers === undefined ? {} : { headers: Object.keys(headers) }),
-        ...(body === undefined ? {} : { hasBody: true }),
+        source,
+        ...(headers === undefined
+          ? {}
+          : {
+              headers: Object.fromEntries(
+                Object.entries(headers).map(([name, value]) => [
+                  name,
+                  typeof value === "string" ? KEEP : { env: value.env },
+                ]),
+              ),
+            }),
+        ...(body === undefined ? {} : { body: KEEP }),
       };
     }
     default: {
@@ -146,9 +160,11 @@ export function checkView(check: Check): AdminCheckView {
 export function configView(config: Config, revision: string): AdminConfigResponse {
   return {
     revision,
-    checks: config.checks.map(checkView),
+    checks: config.checks.map((check) => checkView(check, "file")),
+    shadowed: [],
     components: config.components.map((c) => ({ ...c })),
     maintenance: config.maintenance.map((w, index) => ({ ...w, index })),
+    file: { state: "ok", message: null, lastAppliedAt: 0 },
   };
 }
 
@@ -336,7 +352,7 @@ function entityOf(edit: ConfigEdit, config: Config, index: number): AdminWriteRe
   switch (edit.kind) {
     case "check": {
       const check = config.checks[index];
-      return check === undefined ? undefined : checkView(check);
+      return check === undefined ? undefined : checkView(check, "file");
     }
     case "component": {
       const component: AdminComponent | undefined = config.components[index];
