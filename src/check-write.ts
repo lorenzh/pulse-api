@@ -54,11 +54,18 @@ function isKeepMarker(value: Record<string, unknown>): boolean {
   return keys.length === 1 && keys[0] === "keep" && value.keep === true;
 }
 
-/** True when a plain object or array holds a keep marker at any depth. */
-function hasKeepMarker(value: unknown): boolean {
-  if (Array.isArray(value)) return value.some(hasKeepMarker);
-  if (!isRecord(value)) return false;
-  return isKeepMarker(value) || Object.values(value).some(hasKeepMarker);
+function isMarker(value: unknown): boolean {
+  return isRecord(value) && isKeepMarker(value);
+}
+
+/**
+ * True when a field that the admin view redacts holds a keep marker: a header value, the body,
+ * or the secret. Other fields (such as `jsonAssert` data) are literal JSON.
+ */
+function hasKeepMarker(body: Record<string, unknown>): boolean {
+  const headers = body.headers;
+  if (isRecord(headers) && Object.values(headers).some(isMarker)) return true;
+  return isMarker(body.body) || isMarker(body.secret);
 }
 
 /** Validate a body with the rules of a checks file entry. Messages never quote a value. */

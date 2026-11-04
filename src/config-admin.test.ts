@@ -1063,6 +1063,18 @@ test("database checks: fields named keep are literal values, only { keep: true }
     { body: { ...NEW_CHECK, id: "h2", headers: { "x-a": "v", keep: "true" } }, status: 201 },
     { body: { ...NEW_CHECK, id: "h3", headers: { "x-a": { keep: true } } }, status: 422 },
     { body: { ...NEW_CHECK, id: "h4", body: { keep: true } }, status: 422 },
+    {
+      body: { ...NEW_CHECK, id: "h5", jsonAssert: [{ pointer: "/flags", equals: { keep: true } }] },
+      status: 201,
+    },
+    {
+      body: {
+        ...NEW_CHECK,
+        id: "h6",
+        jsonAssert: [{ pointer: "/list", equals: [{ keep: true }, { a: { keep: true } }] }],
+      },
+      status: 201,
+    },
   ];
   const b = await boot();
   for (const c of cases) {
@@ -1072,7 +1084,7 @@ test("database checks: fields named keep are literal values, only { keep: true }
   const view = (await (await b.call("GET", "/admin/config")).json()) as AdminConfigResponse;
   assert.deepEqual(
     view.checks.map((c) => c.id).filter((id) => id.startsWith("h")),
-    ["h1", "h2"],
+    ["h1", "h2", "h5", "h6"],
   );
 });
 
