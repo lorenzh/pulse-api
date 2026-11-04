@@ -11,7 +11,9 @@ import {
   createCheckStore,
   type FileSnapshot,
 } from "./check-store.ts";
+import { ConfigError, parseCheck } from "./config.ts";
 import { openDb } from "./db.ts";
+import { effectiveChecks } from "./effective-checks.ts";
 
 let dir: string;
 let path: string;
@@ -188,5 +190,77 @@ test("stored definitions and snapshots keep literal headers, env names and bodie
     expect(text).toContain(HB_DIGEST);
     expect(text).not.toContain(HB_SECRET);
     expect(text).not.toContain("keep");
+  }
+});
+
+const FILE_HB_SECRET = "hb-file-sentinel-0123456789";
+const FILE_HB_DIGEST = createHash("sha256").update(FILE_HB_SECRET).digest("hex");
+
+test("the effective set lists file checks first, then unshadowed definitions in creation order", () => {
+  store.create(http("d2", "db two"), null);
+  store.create(http("shared", "db"), null);
+  store.create(heartbeat, HB_DIGEST);
+  const fileHb: Check = { ...heartbeat, id: "fhb" };
+  const merged = effectiveChecks(
+    { checks: [http("shared", "file"), fileHb], secretDigests: new Map([["fhb", FILE_HB_DIGEST]]) },
+    store.list(),
+  );
+  expect(merged.checks.map((c) => [c.id, c.name])).toEqual([
+    ["shared", "file"],
+    ["fhb", "Nightly"],
+    ["d2", "db two"],
+    ["hb", "Nightly"],
+  ]);
+  expect(merged.shadowed.map((d) => [d.check.id, d.check.name])).toEqual([["shared", "db"]]);
+  expect([...merged.sources]).toEqual([
+    ["shared", "file"],
+    ["fhb", "file"],
+    ["d2", "database"],
+    ["hb", "database"],
+  ]);
+  expect([...merged.heartbeatDigests]).toEqual([
+    ["fhb", FILE_HB_DIGEST],
+    ["hb", HB_DIGEST],
+  ]);
+});
+
+test("a file heartbeat shadows the database digest of the same id", () => {
+  store.create(heartbeat, HB_DIGEST);
+  const merged = effectiveChecks(
+    { checks: [heartbeat], secretDigests: new Map([["hb", FILE_HB_DIGEST]]) },
+    store.list(),
+  );
+  expect(merged.heartbeatDigests.get("hb")).toBe(FILE_HB_DIGEST);
+  // Without the file entry the database definition and its digest are effective again.
+  const unshadowed = effectiveChecks({ checks: [], secretDigests: new Map() }, store.list());
+  expect(unshadowed.heartbeatDigests.get("hb")).toBe(HB_DIGEST);
+  expect(unshadowed.shadowed).toEqual([]);
+});
+
+test("parseCheck applies the file entry rules to one check", () => {
+  expect(
+    parseCheck({
+      id: "hb",
+      name: "Nightly",
+      type: "heartbeat",
+      period: 60_000,
+      grace: 0,
+      secret: FILE_HB_SECRET,
+    }),
+  ).toEqual({
+    check: heartbeat,
+    secret: FILE_HB_SECRET,
+  });
+  expect(
+    parseCheck({ id: "w", name: "W", url: "https://example.com/", intervalMs: 60_000 }).secret,
+  ).toBeNull();
+  for (const bad of [
+    null,
+    1,
+    "x",
+    { id: "w", type: "ftp" },
+    { id: "w", name: "W", url: "https://example.com/", extra: 1 },
+  ]) {
+    expect(() => parseCheck(bad)).toThrow(ConfigError);
   }
 });
