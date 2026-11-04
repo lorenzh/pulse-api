@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -364,5 +365,257 @@ test("security HTTP: admin rejects control characters, wrong types and unknown k
     });
     assert.equal(result.status, 422, JSON.stringify(input));
     assert.ok(!result.body.includes(SECRET) && !result.body.includes(HEADER));
+  }
+});
+
+// ---- Where values may appear (spec #565, check 4; the export cells come with the export) ----
+
+const LIT_DB = "lit-db-sentinel-1";
+const LIT_FILE = "lit-file-sentinel-1";
+const BODY_DB = "body-db-sentinel-1";
+const BODY_FILE = "body-file-sentinel-1";
+const ENV_DB = "PULSE_HEADER_SENTINEL_DB_ENV";
+const ENV_FILE = "PULSE_HEADER_SENTINEL_FILE_ENV";
+const HB_DB = "hb-db-sentinel-0123456789";
+const HB_FILE = "hb-file-sentinel-0123456789";
+const LITERALS = [LIT_DB, LIT_FILE, BODY_DB, BODY_FILE];
+const ENVS = [ENV_DB, ENV_FILE];
+const SECRETS = [HB_DB, HB_FILE];
+const sha256Hex = (text: string): string => createHash("sha256").update(text).digest("hex");
+
+const httpCheck = (id: string, lit: string, env: string, body: string) => ({
+  id,
+  name: id,
+  url: `https://${id}.example/`,
+  intervalMs: 60000,
+  method: "POST",
+  headers: { "x-lit": lit, "x-env": { env } },
+  body,
+});
+const SENTINEL_FILE = {
+  checks: [
+    httpCheck("file-http", LIT_FILE, ENV_FILE, BODY_FILE),
+    { id: "file-hb", name: "File HB", type: "heartbeat", period: 60000, secret: HB_FILE },
+  ],
+};
+
+function assertAbsent(surface: string, text: string, values: readonly string[]): void {
+  for (const value of values) assert.ok(!text.includes(value), `${surface} must not hold ${value}`);
+}
+
+async function sentinelSession(work: string): Promise<{ texts: Map<string, string> }> {
+  const logs: string[] = [];
+  const hups: (() => void)[] = [];
+  const s = await startApi({
+    env: {
+      PORT: "0",
+      PULSE_DB: join(work, "pulse.db"),
+      PULSE_CHECKS_FILE: join(work, "checks.json"),
+      PULSE_TOKENS_FILE: join(work, "tokens.json"),
+      PULSE_API_ADMIN_TOKENS_FILE: join(work, "admin.json"),
+      PULSE_CHECKS_RELOAD_INTERVAL_MS: "0",
+    },
+    now: () => NOW,
+    sleep: () => new Promise<void>(() => undefined),
+    setTimeout: () => undefined,
+    clearTimeout: () => undefined,
+    write: (_level, line) => logs.push(line),
+    openDb: (path) => openDb(path),
+    onSignal: (_signal, handler) => {
+      hups.push(handler);
+      return () => undefined;
+    },
+  });
+  const base = `http://127.0.0.1:${s.port}`;
+  const texts = new Map<string, string>();
+  const get = async (path: string, token?: string): Promise<string> => {
+    const r = await fetch(`${base}${path}`, {
+      headers: token === undefined ? {} : { authorization: `Bearer ${token}` },
+    });
+    return r.text();
+  };
+  const write = async (method: string, path: string, body: unknown): Promise<Response> => {
+    const etag = (
+      await fetch(`${base}/admin/config`, {
+        headers: { authorization: `Bearer ${ADMIN}` },
+      })
+    ).headers.get("etag");
+    return fetch(`${base}${path}`, {
+      method,
+      headers: {
+        authorization: `Bearer ${ADMIN}`,
+        "content-type": "application/json",
+        "if-match": etag ?? "",
+      },
+      body: JSON.stringify(body),
+    });
+  };
+  try {
+    const writes: string[] = [];
+    for (const body of [
+      httpCheck("db-http", LIT_DB, ENV_DB, BODY_DB),
+      { id: "db-hb", name: "DB HB", type: "heartbeat", period: 60000, secret: HB_DB },
+    ]) {
+      const r = await write("POST", "/admin/checks", body);
+      assert.equal(r.status, 201);
+      writes.push(await r.text());
+    }
+    const put = await write("PUT", "/admin/checks/db-http", {
+      ...httpCheck("db-http", LIT_DB, ENV_DB, BODY_DB),
+      headers: { "x-lit": { keep: true }, "x-env": { env: ENV_DB } },
+      body: { keep: true },
+      name: "renamed",
+    });
+    assert.equal(put.status, 200);
+    writes.push(await put.text());
+    texts.set("admin writes", writes.join("\n"));
+    for (const [id, secret] of [
+      ["db-hb", HB_DB],
+      ["file-hb", HB_FILE],
+    ] as const) {
+      const r = await fetch(`${base}/heartbeat/${id}/${secret}`, { method: "POST" });
+      assert.ok(r.status < 300, `ping ${id}`);
+    }
+    // An error body built from a refused write that carries every value.
+    const refused = await write("POST", "/admin/checks", {
+      ...httpCheck("bad", LIT_DB, ENV_DB, BODY_DB),
+      intervalMs: -1,
+      secret: HB_DB,
+    });
+    assert.equal(refused.status, 422);
+    texts.set("error body", await refused.text());
+    texts.set(
+      "public",
+      (
+        await Promise.all(
+          [
+            "/checks",
+            "/checks/db-http",
+            "/checks/file-http",
+            "/components",
+            "/incidents",
+            "/maintenance",
+          ].map((p) => get(p)),
+        )
+      ).join("\n"),
+    );
+    texts.set("probe", await get("/probe/checks", PROBE));
+    texts.set("admin view", await get("/admin/config", ADMIN));
+    texts.set("audit", await get("/admin/audit", ADMIN));
+    texts.set("metrics", await get("/metrics"));
+    // A broken file that holds the literal values: file.message must not quote them.
+    writeFileSync(join(work, "checks.json"), `{ "x": "${LIT_FILE} ${BODY_FILE} ${HB_FILE}" `);
+    for (const hup of hups) hup();
+    const status: unknown = JSON.parse(await get("/admin/config", ADMIN));
+    texts.set("file.message", JSON.stringify(isObject(status) ? status.file : null));
+    // Restore the applied bytes so the snapshot stays the one of the sentinel file.
+    writeFileSync(join(work, "checks.json"), JSON.stringify(SENTINEL_FILE));
+    for (const hup of hups) hup();
+  } finally {
+    await s.close();
+  }
+  texts.set("logs", logs.join("\n"));
+  return { texts };
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function assertResponses(texts: Map<string, string>): void {
+  const text = (k: string): string => texts.get(k) ?? "";
+  for (const surface of ["public", "audit", "logs", "metrics", "error body", "file.message"]) {
+    assertAbsent(surface, text(surface), [...LITERALS, ...ENVS, ...SECRETS, "keep"]);
+  }
+  for (const surface of ["admin view", "admin writes"]) {
+    assertAbsent(surface, text(surface), [...LITERALS, ...SECRETS]);
+    for (const digest of SECRETS.map(sha256Hex)) assert.ok(!text(surface).includes(digest));
+  }
+  for (const env of ENVS) assert.ok(text("admin view").includes(env), `admin view has ${env}`);
+  const view: unknown = JSON.parse(text("admin view"));
+  assert.ok(isObject(view) && Array.isArray(view.checks));
+  for (const id of ["db-http", "file-http"]) {
+    const check: unknown = view.checks.find((c: unknown) => isObject(c) && c.id === id);
+    assert.ok(isObject(check) && isObject(check.headers), id);
+    assert.deepEqual(check.headers["x-lit"], { keep: true }, id);
+    assert.deepEqual(check.body, { keep: true }, id);
+  }
+  const probe = text("probe");
+  for (const value of [...LITERALS, ...ENVS])
+    assert.ok(probe.includes(value), `probe has ${value}`);
+  assertAbsent("probe", probe, [...SECRETS, '"keep"']);
+}
+
+type Row = Record<string, unknown>;
+
+/** Every text cell of the database file, after a checkpoint, with `<table>.<column>`. */
+function storedCells(work: string): { where: string; text: string }[] {
+  const db = openDb(join(work, "pulse.db"));
+  const cells: { where: string; text: string }[] = [];
+  try {
+    db.run("PRAGMA wal_checkpoint(TRUNCATE)");
+    const tables = db
+      .query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .all();
+    for (const { name } of tables) {
+      for (const row of db.query<Row, []>(`SELECT * FROM "${name}"`).all()) {
+        for (const [column, value] of Object.entries(row)) {
+          if (typeof value === "string") cells.push({ where: `${name}.${column}`, text: value });
+        }
+      }
+    }
+  } finally {
+    db.close();
+  }
+  return cells;
+}
+
+function assertStorage(work: string): void {
+  const cells = storedCells(work);
+  assert.deepEqual(
+    cells.filter((c) => c.where === "check_definitions.secret_sha256").map((c) => c.text),
+    [sha256Hex(HB_DB)],
+  );
+  const allowed: Record<string, readonly string[]> = {
+    [LIT_DB]: ["check_definitions.check_json", "checks.headers_json"],
+    [BODY_DB]: ["check_definitions.check_json", "checks.body"],
+    [ENV_DB]: ["check_definitions.check_json", "checks.headers_json"],
+    [LIT_FILE]: ["checks.headers_json", "config_state.file_snapshot_json"],
+    [BODY_FILE]: ["checks.body", "config_state.file_snapshot_json"],
+    [ENV_FILE]: ["checks.headers_json", "config_state.file_snapshot_json"],
+    [sha256Hex(HB_DB)]: ["check_definitions.secret_sha256"],
+    [sha256Hex(HB_FILE)]: ["config_state.file_snapshot_json"],
+  };
+  for (const [value, places] of Object.entries(allowed)) {
+    const found = cells.filter((c) => c.text.includes(value)).map((c) => c.where);
+    assert.ok(found.length > 0, `${value} is stored`);
+    for (const where of found)
+      assert.ok(places.includes(where), `${value} must not be in ${where}`);
+  }
+  for (const cell of cells)
+    assert.ok(!/"keep"\s*:/.test(cell.text), `no keep marker in ${cell.where}`);
+  for (const name of readdirSync(work).filter((n) => n.startsWith("pulse.db"))) {
+    const bytes = readFileSync(join(work, name));
+    for (const secret of SECRETS) assert.ok(!bytes.includes(secret), `${secret} not in ${name}`);
+  }
+}
+
+test("security sentinels: every non-export cell of the table of where values may appear", async () => {
+  const work = mkdtempSync(join(tmpdir(), "pulse-sentinel-"));
+  try {
+    writeFileSync(join(work, "checks.json"), JSON.stringify(SENTINEL_FILE));
+    writeFileSync(
+      join(work, "tokens.json"),
+      JSON.stringify({ tokens: [{ location: "eu", token: PROBE }] }),
+    );
+    writeFileSync(
+      join(work, "admin.json"),
+      JSON.stringify({ tokens: [{ name: "ops", token: ADMIN }] }),
+    );
+    const { texts } = await sentinelSession(work);
+    assertResponses(texts);
+    assertStorage(work);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
   }
 });

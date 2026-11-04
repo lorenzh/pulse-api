@@ -87,7 +87,7 @@ Upgrade to the version that binds header secrets to hosts: prepare before the AP
 
 Served results now carry integer `latencyMs` (stored fractions are rounded) and a `reason` of at most 1000 characters (longer stored ones end in `…`). Stored rows are not rewritten.
 
-Downgrades are not supported: an older release refuses a database file with a higher schema version (exit 2, `downgrades are not supported`). Going back without restoring the backup works only to a release with the same `SCHEMA_VERSION`; otherwise restore the backup (see [Backup and restore](#backup-and-restore)).
+Downgrades are not supported: an older release refuses a database file with a higher schema version (exit 2, `downgrades are not supported`). The version with database checks adds schema step 6 (`SCHEMA_VERSION` 6); back up before the upgrade, because database checks exist only in the database and a release before it cannot read them. To go back, restore the backup; database checks created after the backup are lost. Going back without restoring the backup works only to a release with the same `SCHEMA_VERSION`; otherwise restore the backup (see [Backup and restore](#backup-and-restore)).
 
 #### Upgrade to 32-character admin secrets
 
@@ -146,7 +146,7 @@ A backup from an older version is migrated at start. A file with a newer schema 
 
 ## Retention and disk space
 
-Cleanup of old results runs at start and then hourly. See [Retention](concepts.md#retention) for the rules. Set the number of days with `PULSE_RETENTION_DAYS`. The latency rollups (`latency_daily`, one small row per HTTP check and day) are deleted with the same cutoff, which is never inside the 90-day window, and when their check is gone. The uptime tallies (`uptime_daily`, one small row per check and closed day) follow the same rules: the same cutoff, and deleted when their check is gone. A check removed from the checks file stays in the database, so its rows stay.
+Cleanup of old results runs at start and then hourly. See [Retention](concepts.md#retention) for the rules. Set the number of days with `PULSE_RETENTION_DAYS`. The latency rollups (`latency_daily`, one small row per HTTP check and day) are deleted with the same cutoff, which is never inside the 90-day window, and when their check is gone. The uptime tallies (`uptime_daily`, one small row per check and closed day) follow the same rules: the same cutoff, and deleted when their check is gone. A check removed from the configuration stays in the database, so its rows stay.
 
 Rows per check per day are `86400 / interval_s * locations`. A row takes roughly 100 bytes with its indexes in a measured database of minimal rows (129,600 rows, 60 s interval, about 13 MB). Allow about 250 bytes for rows with reasons. Example: 60 s interval, 1 location and 90 days give 129,600 rows, roughly 30 MB per check.
 
@@ -206,7 +206,9 @@ Do not put credentials in a check URL. A URL with userinfo (`user:password@`) is
 
 ## Changing checks
 
-The checks file is the only source of truth. Change it by hand or through the [admin routes](rest-api.md#admin-config-routes); the API applies the change without a restart.
+Checks come from two sources: the checks file and the database. Change the file by hand; the API applies it without a restart. Create, replace and delete database checks through the [admin routes](rest-api.md#admin-config-routes). Components and maintenance windows live only in the file; an admin write of them rewrites the file.
+
+**Effective set.** The API runs the checks of the applied file, in file order, then the database checks whose id the file does not hold, in creation order. A file check wins over a database check with the same id: the database copy is _shadowed_. It is listed under `shadowed` in `GET /admin/config`, can only be deleted, and becomes effective again when the file no longer holds the id. Components and maintenance windows may reference only file checks; a reference to a database-only check answers `422`.
 
 **Hot reload.** The API looks at the file every `PULSE_CHECKS_RELOAD_INTERVAL_MS` (default 5000; `0` turns it off). One look is one `stat`. Only when the modification time, size or inode changed does it read and hash the file; the same bytes (a `touch`) change nothing. It does not use `fs.watch`; the look sees a replaced file by its inode. A rename over a single-file bind mount does not reach the container (it keeps the old inode), so mount the directory that holds the file. An edit that keeps mtime, size and inode is not seen by the look: send `SIGHUP`, which always reads, hashes and applies the file.
 
@@ -217,11 +219,15 @@ docker compose kill -s HUP api            # with Compose
 
 A valid file is applied in one step: checks are upserted, components, maintenance windows and heartbeat secrets are replaced, and the read cache is cleared. A changed check field reaches a probe at its next fetch of `GET /probe/checks`. State of an unchanged heartbeat check is kept, and a changed secret works for the next ping. Existing manual incidents that name a removed component stay readable and can be resolved; a new one for it is refused. Maintenance windows that are active at the reload end at their own times; a removed window ends at once.
 
-An invalid or unreadable file is not applied. The API keeps the running configuration and logs one `warn` line, `config reload rejected: <path>: <message>` (the message never quotes a value), and counts `pulse_api_config_reload_total{result="invalid"}`. The same bad file is not logged again at every look; fix it or send `SIGHUP` to log it again. A start with an invalid file still fails.
+An invalid or unreadable file is not applied. The API keeps the running configuration and logs one `warn` line, `config reload rejected: <path>: <message>` (the message never quotes a value), and counts `pulse_api_config_reload_total{result="invalid"}`. The same bad file is not logged again at every look; fix it or send `SIGHUP` to log it again. Database check writes still work while the file is broken.
+
+**File state.** `GET /admin/config` reports `file`: `state` is `ok`, `invalid` (the last read did not parse or validate), `unreadable` (the last read failed) or `written-not-applied` (a valid file could not be applied); `message` is `null` for `ok`, else the safe text of the warn line without the path; `lastAppliedAt` is the epoch ms of the last file apply. A database write does not change `lastAppliedAt`.
+
+**Start with a broken file.** Every applied file is stored in the database as a snapshot (heartbeat secrets only as SHA-256 digests). When the file is invalid or missing at start and a snapshot exists, the API starts from the snapshot, serves its checks, components and windows, accepts file heartbeat pings, reports the file state and logs one `warn` line `config load rejected at start: <message>; using the checks file applied at <ISO time>`. Without a snapshot (a fresh database) an invalid or missing file still stops the start with exit code 2. The database is opened before the file is read.
 
 A valid file that cannot be applied (for example a database error) is not applied either. The API keeps the running configuration and revision, logs one `warn` line, `config reload failed: <path>: cannot apply the configuration: <error>`, and counts `pulse_api_config_reload_total{result="error"}`. `<error>` is only the error name and code (for example `Error SQLITE_BUSY`), never its message. The file is applied again at the next look, so a lasting failure logs one line per look.
 
-Checks that you remove from the file stay in the database with their results, but become inactive. The API does not delete checks. An inactive check is left out of `GET /checks` and `GET /uptime`, and `POST /results` for it answers `404 unknown check`. Its results and incidents stay readable. At the reload an open incident of a removed check is resolved (`resolvedAt` is the reload time, one log line per incident) and the check state is reset, so `notify` may send a "resolved" notification. If you add the check again, it becomes active with its history.
+Checks that leave the configuration (removed from the file, or a database check deleted) stay in the database with their results, but become inactive. The API does not delete checks. An inactive check is left out of `GET /checks` and `GET /uptime`, and `POST /results` for it answers `404 unknown check`. Its results and incidents stay readable. At the reload an open incident of a removed check is resolved (`resolvedAt` is the reload time, one log line per incident) and the check state is reset, so `notify` may send a "resolved" notification. If you add the check again, it becomes active with its history.
 
 **Writing through the API.** Use a token with `admin` and `checks` (the first one comes from the import of `PULSE_API_ADMIN_TOKENS_FILE`). Every write needs `If-Match` with the `ETag` of the last read:
 
@@ -234,7 +240,21 @@ curl -sS -X POST "$API/admin/checks" -H "Authorization: Bearer $TOKEN" -H "If-Ma
   -d '{"id":"blog","name":"Blog","url":"https://blog.example/","intervalMs":60000}'
 ```
 
-A write needs a checks file that the API can replace: it writes a temp file in the same directory and renames it over the file. A read-only mount, or a single file bind-mounted into the container, answers `503` (for example `checks file is read-only (EROFS)`). The `full` setup of [pulse-deploy](https://github.com/lorenzh/pulse-deploy) mounts its `full/config` directory read-only, so a hand edit, also a save by rename, reaches the container. To opt in to writes, mount that directory writable instead, with a directory that the container user may write. The file keeps its mode and, when the process may set it, its owner. The write rewrites the file as JSON with two spaces: comments and layout of a hand-made file are not kept. A hand edit and a write at the same moment can still race in the last millisecond before the rename; the revision check makes this rare, not impossible. A write runs in this order: temp file, `fsync`, revision check, rename, `fsync` of the directory, then apply. When a step after the rename fails (the directory `fsync`, or applying to the database), the write answers `500` (`503` for a read-only cause), but the new file is already in place. The running configuration and the `ETag` stay at the old revision, and the next reload (a look or `SIGHUP`) applies the file. Until then a write gets `412`.
+A database check is stored in the database, in one transaction with its audit entry; it needs no writable checks file. Each committed check write raises the database generation by one, so send the `ETag` of the last answer, or read `GET /admin/config` again, with every write.
+
+**Edit a database check (GET-edit-PUT).** The view of a check never holds literal header values or bodies: each one is shown as `{"keep": true}`, and `{"env": NAME}` references are shown as they are. Send the view back with `PUT`, and every marker keeps the stored value. A header or body you leave out is removed. A heartbeat `PUT` without `secret` keeps the stored secret; a new `secret` replaces it.
+
+```sh
+VIEW=$(curl -sS -D /tmp/h "$API/admin/config" -H "Authorization: Bearer $TOKEN" | jq '.checks[] | select(.id == "blog")')
+ETAG=$(tr -d '\r' < /tmp/h | sed -n 's/^[Ee][Tt]ag: //p')
+echo "$VIEW" | jq '.name = "Blog (new name)"' |
+  curl -sS -X PUT "$API/admin/checks/blog" -H "Authorization: Bearer $TOKEN" -H "If-Match: $ETAG" \
+    -H 'Content-Type: application/json' --data-binary @-
+```
+
+A file check (`source: "file"`) answers `409` to `PUT` and `DELETE`: edit the file.
+
+A component or maintenance window write needs a checks file that the API can replace: it writes a temp file in the same directory and renames it over the file. A read-only mount, or a single file bind-mounted into the container, answers `503` (for example `checks file is read-only (EROFS)`). The `full` setup of [pulse-deploy](https://github.com/lorenzh/pulse-deploy) mounts its `full/config` directory read-only, so a hand edit, also a save by rename, reaches the container. To opt in to writes, mount that directory writable instead, with a directory that the container user may write. The file keeps its mode and, when the process may set it, its owner. The write rewrites the file as JSON with two spaces: comments and layout of a hand-made file are not kept. A hand edit and a write at the same moment can still race in the last millisecond before the rename; the revision check makes this rare, not impossible. A write runs in this order: temp file, `fsync`, revision check, rename, `fsync` of the directory, then apply. When a step after the rename fails (the directory `fsync`, or applying to the database), the write answers `500` (`503` for a read-only cause), but the new file is already in place. The running configuration and the `ETag` stay at the old revision, and the next reload (a look or `SIGHUP`) applies the file. Until then a component or window write gets `412`. Such a write also needs the file on disk to be the applied one: when it differs (a broken or not yet applied hand edit), the answer is `412` `the checks file on disk differs from the applied one (<state>): fix or reload it, then retry`. A file write never changes database checks. Database check writes never answer `503`.
 
 Each successful write logs one `info` line `config write` with the token name, kind, action and id; a failed write logs one `warn` line with the status and kind. Metrics: `pulse_api_config_writes_total{kind,action,result}`.
 
@@ -264,9 +284,10 @@ Secret handling:
 
 The API writes JSON lines: `{"time":"<ISO 8601>","level":"info","msg":"...", ...fields}`. `info` and `debug` go to stdout, `warn` and `error` to stderr. `PULSE_LOG_LEVEL` (`debug`, `info`, `warn`, `error`; default `info`) sets the lowest level that is written. There is no log file.
 
-- `listening` (info): The API is ready. Fields: `port`, `checks`, `maintenanceWindows`, `checksFile`, `db`, `retentionDays`, `probeTokens` and `locations` (active probe tokens in the database), `adminTokens` (active admin-side tokens), `tokensFile`, `tokenStore` (`database`).
+- `listening` (info): The API is ready. Fields: `port`, `checks`, `maintenanceWindows`, `checksFile`, `db`, `fileState` (the file state at start), `databaseChecks` (the number of stored database checks), `retentionDays`, `probeTokens` and `locations` (active probe tokens in the database), `adminTokens` (active admin-side tokens), `tokensFile`, `tokenStore` (`database`).
 - `retention: deleted <n> results` (info): A cleanup deleted rows (results and resolved manual incidents). Silent when it deletes none.
 - `retention failed: <message>` (warn): A cleanup failed. The next run is still scheduled.
+- `config load rejected at start: <message>; using the checks file applied at <ISO time>` (warn): The checks file was invalid or unreadable at start, and the stored snapshot is used. The message has no path and no values.
 - `check "<id>" removed from the configuration: incident resolved` (info): One line per incident resolved when its check leaves the configuration.
 - `request failed` (error): An unexpected failure in a request (`500`). The field `error` holds the stack.
 - `shutdown bound reached: closing open connections` (warn): The shutdown took longer than 5 s.

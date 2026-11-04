@@ -988,6 +988,104 @@ test("check 1d: broken bytes stay unchanged after POST 201 with the fresh revisi
   assert.equal(readFileSync(file, "utf8"), "{ broken");
 });
 
+test("counterexample 24: a read-only mount takes a check (201), then a component with the fresh revision is 503", async () => {
+  const b = await boot(BASE_FILE, { configFs: READ_ONLY_FS });
+  const check = await b.call("POST", "/admin/checks", {
+    body: NEW_CHECK,
+    ifMatch: await b.revision(),
+  });
+  assert.equal(check.status, 201);
+  const component = await b.call("POST", "/admin/components", {
+    body: NEW_COMPONENT,
+    ifMatch: await b.revision(),
+  });
+  assert.equal(component.status, 503);
+});
+
+const definitionRows = (db: Db): unknown[] =>
+  db.query("SELECT id, check_json, secret_sha256 FROM check_definitions ORDER BY id").all();
+
+test("file writes: a disk that differs from the applied file is 412 naming its state", async () => {
+  const cases = [
+    {
+      name: "invalid JSON (counterexample 23)",
+      edit: (): void => writeFileSync(file, "{ broken"),
+      state: "invalid",
+    },
+    { name: "missing file", edit: (): void => rmSync(file), state: "unreadable" },
+  ];
+  for (const c of cases) {
+    const { b, db } = await bootWithDb();
+    const created = await b.call("POST", "/admin/checks", {
+      body: NEW_CHECK,
+      ifMatch: await b.revision(),
+    });
+    assert.equal(created.status, 201, c.name);
+    const definitions = definitionRows(db());
+    c.edit();
+    b.poll();
+    const rev = await b.revision();
+    const before = c.state === "unreadable" ? undefined : readFileSync(file, "utf8");
+    for (const [method, path, body] of [
+      ["POST", "/admin/components", NEW_COMPONENT],
+      ["PUT", "/admin/components/site", { id: "site", name: "Renamed", checkIds: ["web"] }],
+      ["DELETE", "/admin/maintenance/0", undefined],
+    ] as const) {
+      const r = await b.call(method, path, { body, ifMatch: rev });
+      assert.equal(r.status, 412, `${c.name} ${method} ${path}`);
+      assert.deepEqual(await r.json(), {
+        error: `the checks file on disk differs from the applied one (${c.state}): fix or reload it, then retry`,
+      });
+    }
+    if (before !== undefined) assert.equal(readFileSync(file, "utf8"), before, c.name);
+    assert.deepEqual(definitionRows(db()), definitions, c.name);
+    assert.equal(generationOf(db()), 1, c.name);
+  }
+});
+
+test("file writes: an unapplied valid edit on disk is 412; a stale If-Match is 412 too", async () => {
+  const b = await boot();
+  const rev = await b.revision();
+  writeExternal({ ...BASE_FILE, components: [] });
+  const r = await b.call("POST", "/admin/components", { body: NEW_COMPONENT, ifMatch: rev });
+  assert.equal(r.status, 412);
+  assert.deepEqual(await r.json(), {
+    error:
+      "the checks file on disk differs from the applied one (written-not-applied): fix or reload it, then retry",
+  });
+  b.poll();
+  const stale = await b.call("POST", "/admin/components", { body: NEW_COMPONENT, ifMatch: rev });
+  assert.equal(stale.status, 412);
+  const ok = await b.call("POST", "/admin/components", {
+    body: NEW_COMPONENT,
+    ifMatch: await b.revision(),
+  });
+  assert.equal(ok.status, 201);
+});
+
+test("counterexample 35: a component or window naming a database-only check is 422", async () => {
+  const { b, db } = await bootWithDb();
+  const created = await b.call("POST", "/admin/checks", {
+    body: { ...NEW_CHECK, id: "db-only" },
+    ifMatch: await b.revision(),
+  });
+  assert.equal(created.status, 201);
+  const bytes = readFileSync(file, "utf8");
+  const definitions = definitionRows(db());
+  for (const [path, body] of [
+    ["/admin/components", { id: "c2", name: "C2", checkIds: ["db-only"] }],
+    [
+      "/admin/maintenance",
+      { checkId: "db-only", start: "2027-02-01T00:00:00Z", end: "2027-02-01T01:00:00Z" },
+    ],
+  ] as const) {
+    const r = await b.call("POST", path, { body, ifMatch: await b.revision() });
+    assert.equal(r.status, 422, path);
+  }
+  assert.equal(readFileSync(file, "utf8"), bytes);
+  assert.deepEqual(definitionRows(db()), definitions);
+});
+
 test("database checks: each committed write advances the generation by one", async () => {
   const { b, db } = await bootWithDb();
   const bytes = readFileSync(file);

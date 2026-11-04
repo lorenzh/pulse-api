@@ -408,19 +408,38 @@ export function createConfigWriter(deps: WriterDeps): ConfigWriter {
   const fault = deps.fault ?? (() => undefined);
   const lock = deps.lock ?? createWriteLock();
 
-  const readBytes = (): Buffer => {
+  /** The state named in a 412 when the disk no longer holds the applied file. */
+  const diskState = (bytes: Buffer): AdminFileStatus["state"] => {
+    const known = deps.reloader.fileStatus().state;
+    if (known !== "ok") return known;
     try {
-      return fs.readFile(path);
-    } catch (err) {
-      throw mapFsError(err);
+      parseConfig(JSON.parse(bytes.toString("utf8")));
+    } catch {
+      // Only the kind of difference is reported, never the parser text of a foreign file.
+      return "invalid";
     }
+    return "written-not-applied";
   };
 
+  const diskDiffers = (state: AdminFileStatus["state"]): ConfigWriteError =>
+    new ConfigWriteError(
+      "stale",
+      `the checks file on disk differs from the applied one (${state}): fix or reload it, then retry`,
+    );
+
+  /** The If-Match must be the admin revision, and the disk must still hold the applied file. */
   const assertCurrent = (ifMatch: string): Buffer => {
-    const bytes = readBytes();
-    if (adminRevision(revisionOf(bytes), deps.generation()) !== ifMatch) {
+    const applied = deps.reloader.revision();
+    if (adminRevision(applied, deps.generation()) !== ifMatch) {
       throw new ConfigWriteError("stale", "the checks file changed: reload it and retry");
     }
+    let bytes: Buffer;
+    try {
+      bytes = fs.readFile(path);
+    } catch (err) {
+      throw Object.assign(diskDiffers("unreadable"), { cause: err });
+    }
+    if (revisionOf(bytes) !== applied) throw diskDiffers(diskState(bytes));
     return bytes;
   };
 

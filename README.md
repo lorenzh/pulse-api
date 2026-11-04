@@ -8,6 +8,8 @@ It depends on [pulse-contract](https://github.com/lorenzh/pulse-contract) for th
 
 pulse is built by Paragon Factory agents from the issues in [pulse-meta](https://github.com/lorenzh/pulse-meta).
 
+Checks come from the checks file and from the database: admin check writes are stored in the database, a file check wins over a database check with the same id, and a broken checks file no longer blocks a restart once a file was applied. Components and maintenance windows stay in the file. See [Changing checks](docs/operation.md#changing-checks).
+
 Contributing: see [AGENTS.md](AGENTS.md) and [docs/development.md](docs/development.md).
 
 ## Shared tooling configuration

@@ -45,7 +45,7 @@ See [tokens.json](configuration.md#tokensjson).
 
 ### `pulse-api: <path>: ...` (checks file)
 
-The checks file is invalid. The API prints one line `pulse-api: <path>: <message>` and exits with code 2. The message names the entry, for example `checks[0].url: must be an http: or https: URL` or `duplicate check id "example"`. Fix the file. Messages you may see:
+The checks file is invalid and the database holds no snapshot of an applied file (a first start). The API prints one line `pulse-api: <path>: <message>` and exits with code 2. With a snapshot the API starts from it instead and logs `config load rejected at start: <message>; using the checks file applied at <ISO time>`; `GET /admin/config` then shows `file.state` `invalid` or `unreadable` until you fix the file. The message names the entry, for example `checks[0].url: must be an http: or https: URL` or `duplicate check id "example"`. Fix the file. Messages you may see:
 
 - `cannot read checks file <path>: ...`: wrong `PULSE_CHECKS_FILE`, or the file is not mounted.
 - `checks file <path> is not valid JSON: ...`
@@ -157,3 +157,7 @@ The status page shows what `GET /checks` returns. If a location is `stale` in `G
 ## `retention failed: ...`
 
 The cleanup threw an error, for example because the disk is full or the file is locked. The API keeps running and tries again after an hour. Read the message after the colon.
+
+## 412 `the checks file on disk differs from the applied one`
+
+A component or maintenance window write found a checks file on disk that is not the applied one: a broken hand edit (`invalid`), a missing file (`unreadable`) or a valid edit not applied yet (`written-not-applied`). The write changes nothing. Fix the file, or send `SIGHUP`, then read `GET /admin/config` again and retry. Database check writes are not affected.
