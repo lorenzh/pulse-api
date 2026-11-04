@@ -48,11 +48,17 @@ function invalid(message: string): ConfigWriteError {
   return new ConfigWriteError("invalid", message);
 }
 
-/** True when a plain object or array holds a `keep` marker at any depth. */
+/** A keep marker is exactly `{ "keep": true }`; a header or field named `keep` is not one. */
+function isKeepMarker(value: Record<string, unknown>): boolean {
+  const keys = Object.keys(value);
+  return keys.length === 1 && keys[0] === "keep" && value.keep === true;
+}
+
+/** True when a plain object or array holds a keep marker at any depth. */
 function hasKeepMarker(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(hasKeepMarker);
   if (!isRecord(value)) return false;
-  return Object.hasOwn(value, "keep") || Object.values(value).some(hasKeepMarker);
+  return isKeepMarker(value) || Object.values(value).some(hasKeepMarker);
 }
 
 /** Validate a body with the rules of a checks file entry. Messages never quote a value. */

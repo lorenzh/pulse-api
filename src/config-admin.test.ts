@@ -1057,6 +1057,25 @@ test("database checks: absent ids 404, a source field 422, a keep marker 422, a 
   assert.equal((await b.call("DELETE", "/admin/checks/new", { ifMatch: rev })).status, 412);
 });
 
+test("database checks: fields named keep are literal values, only { keep: true } is a marker", async () => {
+  const cases: { body: Record<string, unknown>; status: number }[] = [
+    { body: { ...NEW_CHECK, id: "h1", headers: { keep: "literal-header-value" } }, status: 201 },
+    { body: { ...NEW_CHECK, id: "h2", headers: { "x-a": "v", keep: "true" } }, status: 201 },
+    { body: { ...NEW_CHECK, id: "h3", headers: { "x-a": { keep: true } } }, status: 422 },
+    { body: { ...NEW_CHECK, id: "h4", body: { keep: true } }, status: 422 },
+  ];
+  const b = await boot();
+  for (const c of cases) {
+    const r = await b.call("POST", "/admin/checks", { body: c.body, ifMatch: await b.revision() });
+    assert.equal(r.status, c.status, String(c.body.id));
+  }
+  const view = (await (await b.call("GET", "/admin/config")).json()) as AdminConfigResponse;
+  assert.deepEqual(
+    view.checks.map((c) => c.id).filter((id) => id.startsWith("h")),
+    ["h1", "h2"],
+  );
+});
+
 test("database checks: of two PUTs with one If-Match the first is 200 and the second 412", async () => {
   const b = await boot();
   const created = await b.call("POST", "/admin/checks", {
