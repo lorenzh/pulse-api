@@ -190,6 +190,31 @@ test("the four file states are distinct, only ok has a null message, and a fix a
   );
 });
 
+test("restoring the applied bytes after a failure clears the failure state", async () => {
+  const original = JSON.stringify(FILE_A);
+  const breakers: [string, () => void][] = [
+    ["invalid", () => writeFileSync(file, BROKEN)],
+    ["unreadable", () => rmSync(file)],
+  ];
+  for (const [state, breakFile] of breakers) {
+    const h = await boot(original);
+    h.clock.now = T0 + 1000;
+    breakFile();
+    h.poll();
+    assert.equal((await fileStatus(h)).state, state);
+    h.clock.now = T0 + 2000;
+    writeFileSync(file, original);
+    h.poll();
+    assert.deepEqual(
+      await fileStatus(h),
+      { state: "ok", message: null, lastAppliedAt: T0 + 2000 },
+      `recovery from ${state}`,
+    );
+    for (const api of running.splice(0)) await api.close();
+    rmSync(join(dir, "pulse.db"), { force: true });
+  }
+});
+
 test("the same bad file is logged once, while a failed apply is retried at every poll", async () => {
   const h = await boot(JSON.stringify(FILE_A));
   writeFileSync(file, BROKEN);

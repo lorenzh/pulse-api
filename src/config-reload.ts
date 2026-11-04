@@ -211,7 +211,8 @@ export function createConfigReloader(deps: ReloaderDeps, initial: InitialConfig)
 
   const apply = (bytes: Buffer, isForced: boolean): void => {
     const next = revisionOf(bytes);
-    if (next === revision && !isForced && !isRetryPending) return;
+    // Identical bytes after a failure still apply, so the failure state clears.
+    if (next === revision && !isForced && !isRetryPending && status.state === "ok") return;
     let config: Config;
     try {
       config = parseConfigText(path, utf8(bytes));
