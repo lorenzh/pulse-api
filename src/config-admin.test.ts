@@ -1057,6 +1057,33 @@ test("database checks: absent ids 404, a source field 422, a keep marker 422, a 
   assert.equal((await b.call("DELETE", "/admin/checks/new", { ifMatch: rev })).status, 412);
 });
 
+test("database checks: hasSecret is accepted only as true on a heartbeat", async () => {
+  const { b, db } = await bootWithDb();
+  const hb = { id: "hb", name: "Hb", type: "heartbeat", period: 60000, grace: 0, secret: SECRET };
+  const refused: Record<string, unknown>[] = [
+    { ...NEW_CHECK, hasSecret: true },
+    { ...NEW_CHECK, hasSecret: false },
+    { ...hb, hasSecret: false },
+    { ...hb, hasSecret: "true" },
+    { ...hb, hasSecret: null },
+  ];
+  const rev = await b.revision();
+  for (const body of refused) {
+    const res = await b.call("POST", "/admin/checks", { body, ifMatch: rev });
+    assert.equal(res.status, 422, JSON.stringify(body.hasSecret));
+    assert.equal(
+      ((await res.json()) as ErrorResponse).error,
+      "check.hasSecret must be true and only on a heartbeat check",
+    );
+  }
+  assert.equal(generationOf(db()), 0);
+  const ok = await b.call("POST", "/admin/checks", {
+    body: { ...hb, hasSecret: true },
+    ifMatch: rev,
+  });
+  assert.equal(ok.status, 201);
+});
+
 test("database checks: fields named keep are literal values, only { keep: true } is a marker", async () => {
   const cases: { body: Record<string, unknown>; status: number }[] = [
     { body: { ...NEW_CHECK, id: "h1", headers: { keep: "literal-header-value" } }, status: 201 },

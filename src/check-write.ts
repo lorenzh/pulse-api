@@ -82,7 +82,11 @@ function materialized(
 ): Record<string, unknown> {
   const rest: Record<string, unknown> = { ...body };
   delete rest.source;
-  delete rest.hasSecret;
+  if (Object.hasOwn(rest, "hasSecret")) {
+    if (rest.type !== "heartbeat" || rest.hasSecret !== true)
+      throw invalid("check.hasSecret must be true and only on a heartbeat check");
+    delete rest.hasSecret;
+  }
   if (isMarker(rest.secret)) throw invalid("check.secret: has no stored value to keep");
   const headers = rest.headers;
   if (isRecord(headers)) {
