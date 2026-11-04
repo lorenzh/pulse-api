@@ -55,6 +55,12 @@ function isMarker(value: unknown): boolean {
   return keys.length === 1 && keys[0] === "keep" && value.keep === true;
 }
 
+/** An env reference is exactly `{ "env": "<name>" }`; extra keys are refused, not ignored. */
+function isEnvRef(value: Record<string, unknown>): boolean {
+  const keys = Object.keys(value);
+  return keys.length === 1 && keys[0] === "env";
+}
+
 /** A stored literal header value whose name equals `name` case-insensitively. */
 function storedLiteral(stored: Check | undefined, name: string): string | undefined {
   if (stored === undefined || (stored.type !== undefined && stored.type !== "http"))
@@ -80,6 +86,29 @@ function dropHasSecret(rest: Record<string, unknown>): void {
   delete rest.hasSecret;
 }
 
+/** One header value: a literal or env reference as sent, or a keep marker resolved from `stored`. */
+function resolvedHeader(name: string, value: unknown, stored: Check | undefined): unknown {
+  if (!isRecord(value)) return value;
+  if (isEnvRef(value)) return value;
+  if (!isMarker(value)) {
+    throw invalid(`check.headers.${name}: must be a string, an env reference or a keep marker`);
+  }
+  const kept = storedLiteral(stored, name);
+  if (kept === undefined) throw invalid(`check.headers.${name}: has no stored value to keep`);
+  return kept;
+}
+
+function resolvedHeaders(
+  headers: Record<string, unknown>,
+  stored: Check | undefined,
+): Record<string, unknown> {
+  const resolved: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    resolved[name] = resolvedHeader(name, value, stored);
+  }
+  return resolved;
+}
+
 /**
  * Resolve keep markers in header values and the body against the stored definition with the same
  * id; `stored` is undefined on create. Other fields (such as `jsonAssert` data) are literal JSON.
@@ -92,20 +121,7 @@ function materialized(
   delete rest.source;
   dropHasSecret(rest);
   if (isMarker(rest.secret)) throw invalid("check.secret: has no stored value to keep");
-  const headers = rest.headers;
-  if (isRecord(headers)) {
-    const resolved: Record<string, unknown> = {};
-    for (const [name, value] of Object.entries(headers)) {
-      if (!isMarker(value)) {
-        resolved[name] = value;
-        continue;
-      }
-      const kept = storedLiteral(stored, name);
-      if (kept === undefined) throw invalid(`check.headers.${name}: has no stored value to keep`);
-      resolved[name] = kept;
-    }
-    rest.headers = resolved;
-  }
+  if (isRecord(rest.headers)) rest.headers = resolvedHeaders(rest.headers, stored);
   if (isMarker(rest.body)) {
     const kept = storedBody(stored);
     if (kept === undefined) throw invalid("check.body: has no stored value to keep");

@@ -1084,6 +1084,38 @@ test("database checks: hasSecret is accepted only as true on a heartbeat", async
   assert.equal(ok.status, 201);
 });
 
+test("database checks: header objects other than an env reference or a marker are refused", async () => {
+  const { b, db } = await bootWithDb();
+  const base = {
+    ...NEW_CHECK,
+    id: "hx",
+    headers: { "x-token": "S1", "x-env": { env: "PULSE_HEADER_A" } },
+  };
+  const created = await b.call("POST", "/admin/checks", {
+    body: base,
+    ifMatch: await b.revision(),
+  });
+  assert.equal(created.status, 201);
+  const malformed: Record<string, unknown>[] = [
+    { env: "PULSE_HEADER_A", keep: true },
+    { env: "PULSE_HEADER_A", x: 1 },
+    { keep: true, x: 1 },
+    {},
+  ];
+  for (const value of malformed) {
+    const res = await b.call("PUT", "/admin/checks/hx", {
+      body: { ...base, headers: { "x-token": { keep: true }, "x-env": value } },
+      ifMatch: await b.revision(),
+    });
+    assert.equal(res.status, 422, JSON.stringify(value));
+    assert.equal(
+      ((await res.json()) as ErrorResponse).error,
+      "check.headers.x-env: must be a string, an env reference or a keep marker",
+    );
+  }
+  assert.equal(generationOf(db()), 1);
+});
+
 test("database checks: fields named keep are literal values, only { keep: true } is a marker", async () => {
   const cases: { body: Record<string, unknown>; status: number }[] = [
     { body: { ...NEW_CHECK, id: "h1", headers: { keep: "literal-header-value" } }, status: 201 },
