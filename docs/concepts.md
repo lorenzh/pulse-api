@@ -84,7 +84,7 @@ The `401` check comes before body checks, so a caller without a token learns not
 
 Raw results are deleted after `PULSE_RETENTION_DAYS` days (default and minimum 90, the window of `GET /uptime`).
 
-- Resolved manual incidents are deleted with the same cutoff, by their resolution time.
+- Resolved manual incidents are deleted with the same cutoff, by their resolution time, with their notes.
 - The stored daily uptime tallies (`uptime_daily`) and latency rollups follow the same cutoff, by their day.
 - Retention counts whole UTC days including today. Results before the start of the UTC day `PULSE_RETENTION_DAYS - 1` days ago are deleted.
 - The newest result of each check and location is always kept.
@@ -126,3 +126,15 @@ Maintenance windows are listed in `checks.json` (see [maintenance](configuration
 - An incident that is open when a window starts stays open.
 - While `now` is inside a window, `GET /checks` shows `state: "maintenance"` and the active window in `maintenance`, whatever the stored state. Afterwards the stored state shows again.
 - Windows of one check can overlap. They form a union, and the one with the earliest `start` is reported.
+
+## Manual incidents: drafts, notes and visibility
+
+A manual incident is written by an operator. It starts either published at once (`POST /manual-incidents`, always `public`) or as a draft (`POST /admin/manual-incidents`). A draft holds its first status and message and is not public. Publishing it adds update 0 at the publication time, which is also its public `createdAt`.
+
+`visibility` is `public` or `internal`. It can change while the incident is a draft and is fixed at publication. An `internal` incident is visible only on the private routes: it is never on the public reads, the status page, the feeds, the metrics counters or notify.
+
+A published, open incident can hold one draft update. Saving replaces it; publishing appends it to the public timeline. A write that resolves the incident discards it.
+
+Notes are private remarks with an author (the admin token name). They can be added and deleted on any incident, never edited, and never become updates.
+
+Ids come from one sequence for every incident, so public ids have gaps: a gap can be a deleted, a draft or an internal incident, and the public answer for each is the same `404`.

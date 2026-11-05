@@ -362,3 +362,13 @@ test("server without a store answers an empty list and 404 for writes with token
     await new Promise<void>((r) => server.close(() => r()));
   }
 });
+
+test("the legacy create refuses the privacy keys and stores nothing", async () => {
+  const before = await call("GET", "/manual-incidents?status=all", undefined, null);
+  for (const key of ["visibility", "draft"]) {
+    const r = await call("POST", "/manual-incidents", { ...NEW, [key]: "internal" });
+    assert.equal(r.status, 400);
+    assert.equal(errorOf(r.json), `${key}: not accepted here; use /admin/manual-incidents`);
+  }
+  assert.deepEqual(await call("GET", "/manual-incidents?status=all", undefined, null), before);
+});
