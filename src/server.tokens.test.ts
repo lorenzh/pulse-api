@@ -312,3 +312,77 @@ test("a probe token created with a padded location accepts results for that loca
     await api.close();
   }
 });
+
+test("GET /admin/tokens/self answers the caller's own metadata", async () => {
+  const api = await startApi(deps(bootstrap("self.db")));
+  try {
+    const made = secretOf(
+      await call(api, "POST", "/admin/tokens", ADMIN, { name: "console", scopes: ["admin"] }),
+    );
+    const self = await call(api, "GET", "/admin/tokens/self", made.secret);
+    assert.equal(self.status, 200);
+    assert.equal(self.headers.get("cache-control"), "no-store");
+    const body: unknown = JSON.parse(self.text);
+    const parsed = validateTokenMetadata(body);
+    assert.ok(parsed.ok);
+    assert.equal(parsed.value.id, made.token.id);
+    assert.equal(parsed.value.name, "console");
+    assert.deepEqual(parsed.value.scopes, ["admin"]);
+    assert.notEqual(parsed.value.lastUsedAt, null);
+    assert.ok(typeof body === "object" && body !== null);
+    for (const key of Object.keys(body)) assert.ok(!/secret|digest|sha/i.test(key), key);
+    assert.ok(!self.text.includes(made.secret));
+
+    // During a rotation overlap both secrets name the same token.
+    const rotated = secretOf(
+      await call(api, "POST", `/admin/tokens/${made.token.id}/rotate`, ADMIN),
+    );
+    const ids = [];
+    for (const secret of [made.secret, rotated.secret]) {
+      const r = await call(api, "GET", "/admin/tokens/self", secret);
+      assert.equal(r.status, 200);
+      ids.push((JSON.parse(r.text) as { id: string }).id);
+    }
+    assert.deepEqual(ids, [made.token.id, made.token.id]);
+
+    const reader = secretOf(
+      await call(api, "POST", "/admin/tokens", ADMIN, { name: "r", scopes: ["read"] }),
+    ).secret;
+    const cases: [string, string, string, number][] = [
+      ["GET", "/admin/tokens/self", PROBE, 403],
+      ["GET", "/admin/tokens/self", reader, 403],
+      ["POST", "/admin/tokens/self", ADMIN, 405],
+      ["PUT", "/admin/tokens/self", ADMIN, 405],
+      ["POST", "/admin/tokens/self/rotate", ADMIN, 404],
+      ["POST", "/admin/tokens/self/revoke", ADMIN, 404],
+      ["GET", "/admin/tokens/self", "wrong-token-0123456789abcdef", 401],
+    ];
+    for (const [method, path, token, status] of cases) {
+      const r = await call(api, method, path, token);
+      assert.equal(r.status, status, `${method} ${path}`);
+      assert.equal(r.headers.get("cache-control"), "no-store", `${method} ${path}`);
+      if (status === 405) assert.equal(r.headers.get("allow"), "GET");
+    }
+    for (let i = 0; i < 10; i += 1) {
+      await call(api, "GET", "/admin/tokens/self", "wrong-token-0123456789abcdef");
+    }
+    const blocked = await call(api, "GET", "/admin/tokens/self", ADMIN);
+    assert.equal(blocked.status, 429);
+    assert.equal(blocked.headers.get("cache-control"), "no-store");
+  } finally {
+    await api.close();
+  }
+});
+
+test("GET /admin/tokens/self answers 404 before the admin import", async () => {
+  const env = deps(bootstrap("noadmin.db"));
+  const withoutAdmin = { ...env.env };
+  delete withoutAdmin.PULSE_API_ADMIN_TOKENS_FILE;
+  const api = await startApi({ ...env, env: withoutAdmin });
+  try {
+    const r = await call(api, "GET", "/admin/tokens/self", ADMIN);
+    assert.equal(r.status, 404);
+  } finally {
+    await api.close();
+  }
+});

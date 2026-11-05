@@ -29,7 +29,7 @@ The API serves JSON over HTTP. The types come from [pulse-contract](https://gith
 | `GET`                          | `/metrics`                                                                            | none                    | Prometheus text                                        |
 | `GET`                          | `/admin/config`                                                                       | `read` or `checks`      | see [Admin config routes](#admin-config-routes)        |
 | `POST`, `PUT`, `DELETE`        | `/admin/checks[/:id]`, `/admin/components[/:id]`, `/admin/maintenance[/:index]`       | `admin` and `checks`    | see [Admin config routes](#admin-config-routes)        |
-| `GET`, `POST`                  | `/admin/tokens[/:id[/…]]`                                                             | `admin`                 | see [Tokens](#tokens)                                  |
+| `GET`, `POST`                  | `/admin/tokens[/self\|/:id[/…]]`                                                      | `admin`                 | see [Tokens](#tokens)                                  |
 | `GET`                          | `/admin/audit[/export]`                                                               | `admin`                 | see [Audit log](#audit-log)                            |
 
 General rules:
@@ -448,7 +448,7 @@ Tokens are stored in the database as SHA-256 digests only. Each token has one or
 | `GET /admin/config`                                                              | `read` or `checks`           |
 | `POST`/`PUT`/`DELETE` `/admin/checks`, `/admin/components`, `/admin/maintenance` | `admin` and `checks`         |
 | Manual-incident writes                                                           | `admin` and `incidents`      |
-| `GET /admin/tokens`, `GET /admin/tokens/:id`                                     | `admin`                      |
+| `GET /admin/tokens`, `GET /admin/tokens/self`, `GET /admin/tokens/:id`           | `admin`                      |
 | `POST /admin/tokens`, `.../rotate`, `.../revoke`                                 | `admin`, plus the grant rule |
 | `GET /admin/audit`, `GET /admin/audit/export`                                    | `admin`                      |
 
@@ -472,9 +472,12 @@ The config, token and audit routes under `/admin/*` and the manual-incident writ
 
 All token routes answer with `cache-control: no-store`, also on `401` and `403`. Bodies are limited to 4096 bytes (`413`). Bad JSON answers `400`. An unknown or malformed `:id` answers `404 {"error":"token not found"}` after auth.
 
+`GET /admin/tokens/self` answers the metadata of the token that made the request, so a client can confirm which token it holds; both secrets of a token in its rotation overlap answer the same `id`. It needs `admin` like the other token routes and keeps their order: `404` while no admin token is imported, then `429`, `401`, `403` (also for a `probe` or `read`-only token), then `405` with `Allow: GET` for another method. Its `lastUsedAt` already counts this request. `self` is matched only as the whole segment: `/admin/tokens/self/rotate` and `/admin/tokens/self/revoke` treat `self` as a malformed id and answer `404`.
+
 | Route                           | Body               | Answer                                                   |
 | ------------------------------- | ------------------ | -------------------------------------------------------- |
 | `GET /admin/tokens`             | none               | `200` `TokensResponse` `{tokens}`, revoked ones included |
+| `GET /admin/tokens/self`        | none               | `200` `TokenMetadata` of the calling token               |
 | `GET /admin/tokens/:id`         | none               | `200` `TokenMetadata`                                    |
 | `POST /admin/tokens`            | `TokenCreateInput` | `201` `TokenSecretResponse` and a `Location` header      |
 | `POST /admin/tokens/:id/rotate` | empty or `{}`      | `200` `TokenSecretResponse`                              |
@@ -487,6 +490,7 @@ All token routes answer with `cache-control: no-store`, also on `401` and `403`.
 - Each write logs `token write` with the caller's name, the action and the token id.
 
 ```sh
+curl -sS "$API/admin/tokens/self" -H "Authorization: Bearer $TOKEN"
 curl -sS -X POST "$API/admin/tokens" -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -d '{"name":"probe eu","scopes":["probe"],"location":"eu"}'
 curl -sS -X POST "$API/admin/tokens/<id>/rotate" -H "Authorization: Bearer $TOKEN"
