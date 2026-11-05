@@ -139,6 +139,27 @@ CREATE TABLE config_state (
 );
 INSERT INTO config_state (id, database_generation) VALUES (1, 0);
 `,
+  // 7: manual incident drafts, private notes and visibility. Existing incidents become published
+  // and public at their creation time, so their public JSON does not change.
+  `
+ALTER TABLE manual_incidents ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public';
+ALTER TABLE manual_incidents ADD COLUMN published_at INTEGER;
+UPDATE manual_incidents SET published_at = created_at;
+CREATE TABLE manual_incident_drafts (
+  incident_id INTEGER PRIMARY KEY REFERENCES manual_incidents(id) ON DELETE CASCADE,
+  status TEXT NOT NULL,
+  message TEXT NOT NULL,
+  saved_at INTEGER NOT NULL
+);
+CREATE TABLE manual_incident_notes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  incident_id INTEGER NOT NULL REFERENCES manual_incidents(id) ON DELETE CASCADE,
+  at INTEGER NOT NULL,
+  author TEXT NOT NULL,
+  message TEXT NOT NULL
+);
+CREATE INDEX manual_incident_notes_by_incident ON manual_incident_notes (incident_id, at, id);
+`,
 ];
 
 /** The step that adds the unique sample index; `openDb` counts the duplicates it removes. */

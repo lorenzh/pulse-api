@@ -4,37 +4,38 @@ The API serves JSON over HTTP. The types come from [pulse-contract](https://gith
 
 ## Overview
 
-| Method                  | Path                                                                                  | Auth                    | Response                                               |
-| ----------------------- | ------------------------------------------------------------------------------------- | ----------------------- | ------------------------------------------------------ |
-| `POST`                  | `/results`                                                                            | probe token             | `204`, no body                                         |
-| `GET`                   | `/probe/checks`                                                                       | probe token             | `Check[]` (active checks as configured)                |
-| `GET`                   | `/checks`                                                                             | none                    | `ChecksResponse` (`CheckWithState[]`)                  |
-| `GET`                   | `/checks/:id/results`                                                                 | none                    | `ResultsResponse` (`Result[]`)                         |
-| `GET`                   | `/uptime`                                                                             | none                    | `UptimeResponse` (`CheckUptime[]`)                     |
-| `GET`                   | `/latency`                                                                            | none                    | `LatencyResponse` (`CheckLatency[]`)                   |
-| `GET`                   | `/checks/:id/latency`                                                                 | none                    | `CheckLatency`                                         |
-| `GET`                   | `/components`                                                                         | none                    | `ComponentsResponse` (`ComponentWithState[]`)          |
-| `GET`                   | `/components/uptime`                                                                  | none                    | `ComponentsUptimeResponse` (`ComponentUptime[]`)       |
-| `GET`                   | `/incidents`                                                                          | none                    | `IncidentsResponse` (`Incident[]`)                     |
-| `GET`                   | `/maintenance`                                                                        | none                    | `MaintenanceResponse` (`MaintenanceWindow[]`)          |
-| `GET`                   | `/locations`                                                                          | none                    | see [GET /locations](#get-locations)                   |
-| `GET`                   | `/manual-incidents`, `/manual-incidents/:id`                                          | none                    | see [GET /manual-incidents](#get-manual-incidents)     |
-| `POST`                  | `/manual-incidents`, `/manual-incidents/:id/updates`, `/manual-incidents/:id/resolve` | `admin` and `incidents` | see [Write routes](#write-routes)                      |
-| `DELETE`                | `/manual-incidents/:id`                                                               | `admin` and `incidents` | see [Write routes](#write-routes)                      |
-| `GET`, `POST`           | `/heartbeat/:id[/:secret]`                                                            | Heartbeat secret        | `204`, no body; `401` for a wrong secret or unknown id |
-| `GET`                   | `/healthz`                                                                            | none                    | `200 ok` (liveness, `text/plain`)                      |
-| `GET`                   | `/readyz`                                                                             | none                    | `200 ok` or `503` with a reason (`text/plain`)         |
-| `GET`                   | `/metrics`                                                                            | none                    | Prometheus text                                        |
-| `GET`                   | `/admin/config`                                                                       | `read` or `checks`      | see [Admin config routes](#admin-config-routes)        |
-| `POST`, `PUT`, `DELETE` | `/admin/checks[/:id]`, `/admin/components[/:id]`, `/admin/maintenance[/:index]`       | `admin` and `checks`    | see [Admin config routes](#admin-config-routes)        |
-| `GET`, `POST`           | `/admin/tokens[/:id[/…]]`                                                             | `admin`                 | see [Tokens](#tokens)                                  |
-| `GET`                   | `/admin/audit[/export]`                                                               | `admin`                 | see [Audit log](#audit-log)                            |
+| Method                         | Path                                                                                  | Auth                    | Response                                               |
+| ------------------------------ | ------------------------------------------------------------------------------------- | ----------------------- | ------------------------------------------------------ |
+| `POST`                         | `/results`                                                                            | probe token             | `204`, no body                                         |
+| `GET`                          | `/probe/checks`                                                                       | probe token             | `Check[]` (active checks as configured)                |
+| `GET`                          | `/checks`                                                                             | none                    | `ChecksResponse` (`CheckWithState[]`)                  |
+| `GET`                          | `/checks/:id/results`                                                                 | none                    | `ResultsResponse` (`Result[]`)                         |
+| `GET`                          | `/uptime`                                                                             | none                    | `UptimeResponse` (`CheckUptime[]`)                     |
+| `GET`                          | `/latency`                                                                            | none                    | `LatencyResponse` (`CheckLatency[]`)                   |
+| `GET`                          | `/checks/:id/latency`                                                                 | none                    | `CheckLatency`                                         |
+| `GET`                          | `/components`                                                                         | none                    | `ComponentsResponse` (`ComponentWithState[]`)          |
+| `GET`                          | `/components/uptime`                                                                  | none                    | `ComponentsUptimeResponse` (`ComponentUptime[]`)       |
+| `GET`                          | `/incidents`                                                                          | none                    | `IncidentsResponse` (`Incident[]`)                     |
+| `GET`                          | `/maintenance`                                                                        | none                    | `MaintenanceResponse` (`MaintenanceWindow[]`)          |
+| `GET`                          | `/locations`                                                                          | none                    | see [GET /locations](#get-locations)                   |
+| `GET`                          | `/manual-incidents`, `/manual-incidents/:id`                                          | none                    | see [GET /manual-incidents](#get-manual-incidents)     |
+| `POST`                         | `/manual-incidents`, `/manual-incidents/:id/updates`, `/manual-incidents/:id/resolve` | `admin` and `incidents` | see [Write routes](#write-routes)                      |
+| `DELETE`                       | `/manual-incidents/:id`                                                               | `admin` and `incidents` | see [Write routes](#write-routes)                      |
+| `GET`, `POST`, `PUT`, `DELETE` | `/admin/manual-incidents[/:id[/draft\|/publish\|/notes[/:noteId]]]`                   | `admin` and `incidents` | see [Private routes](#private-routes)                  |
+| `GET`, `POST`                  | `/heartbeat/:id[/:secret]`                                                            | Heartbeat secret        | `204`, no body; `401` for a wrong secret or unknown id |
+| `GET`                          | `/healthz`                                                                            | none                    | `200 ok` (liveness, `text/plain`)                      |
+| `GET`                          | `/readyz`                                                                             | none                    | `200 ok` or `503` with a reason (`text/plain`)         |
+| `GET`                          | `/metrics`                                                                            | none                    | Prometheus text                                        |
+| `GET`                          | `/admin/config`                                                                       | `read` or `checks`      | see [Admin config routes](#admin-config-routes)        |
+| `POST`, `PUT`, `DELETE`        | `/admin/checks[/:id]`, `/admin/components[/:id]`, `/admin/maintenance[/:index]`       | `admin` and `checks`    | see [Admin config routes](#admin-config-routes)        |
+| `GET`, `POST`                  | `/admin/tokens[/:id[/…]]`                                                             | `admin`                 | see [Tokens](#tokens)                                  |
+| `GET`                          | `/admin/audit[/export]`                                                               | `admin`                 | see [Audit log](#audit-log)                            |
 
 General rules:
 
 - Errors have the body `{"error": "<message>"}` (`ErrorResponse`).
 - A request target that is not a valid URL path (for example `//[`) gives `400` with `invalid request target`, on every path and method, before auth. The body never repeats the target, and nothing is logged.
-- Admin routes (`/admin/*` and the manual-incident writes) give `429` with `too many requests` and `Retry-After` when the client failed admin authentication too often. See [Admin auth throttle](#admin-auth-throttle).
+- Admin routes (`/admin/*`, including `/admin/manual-incidents`, and the manual-incident writes) give `429` with `too many requests` and `Retry-After` when the client failed admin authentication too often. See [Admin auth throttle](#admin-auth-throttle).
 - An unknown path gives `404` with `not found`. Another method on a known path gives `405` with `method not allowed` and the header `Allow` with the allowed methods (for example `Allow: GET`).
 - A request body over 1,000,000 bytes gives `413` with `request body too large`.
 - An unexpected failure gives `500` with `internal error`. The cause is written to stderr.
@@ -288,7 +289,7 @@ Limits: `title` 1 to 200 characters, `message` 1 to 2000, at most 100 updates pe
 
 ### GET /manual-incidents
 
-Public, like the other reads. `?status=open|resolved|all` (default `all`): open incidents (newest created first), then incidents resolved within 14 days (newest first, at most 50). `resolved` returns only the second group. Another value answers `400`. `GET /manual-incidents/:id` answers one incident or `404`. Before the first admin import (see [Token import](configuration.md#token-import)) the feature is off: the list is empty and every id answers `404`, even when the database holds incidents.
+Public, like the other reads. They serve only published `public` incidents: a draft or an `internal` incident is never listed, and its id answers the same `404` `{"error":"manual incident not found"}` (same status, body and headers apart from `Date`) as a deleted or unknown id. The public `createdAt` is the publication time. Ids are not contiguous; a gap can be a deleted or a private incident. The limit of 50 resolved incidents counts public incidents only. `?status=open|resolved|all` (default `all`): open incidents (newest created first), then incidents resolved within 14 days (newest first, at most 50). `resolved` returns only the second group. Another value answers `400`. `GET /manual-incidents/:id` answers one incident or `404`. Before the first admin import (see [Token import](configuration.md#token-import)) the feature is off: the list is empty and every id answers `404`, even when the database holds incidents.
 
 ### Write routes
 
@@ -305,6 +306,8 @@ Each successful write logs one `info` line `manual incident write` with the admi
 | `POST /manual-incidents/:id/resolve` | optional `message` (default `Resolved.`)                                                                  | `200` and the incident |
 | `DELETE /manual-incidents/:id`       | none                                                                                                      | `204`                  |
 
+The legacy writes see only published `public` incidents. On a draft or an `internal` incident they answer `404 manual incident not found`, like an unknown id, and change nothing. `POST /manual-incidents` always publishes a `public` incident; a body with a `visibility` or `draft` key answers `400` (`visibility: not accepted here; use /admin/manual-incidents`). A legacy update on an incident with a pending draft update appends and keeps the draft; a resolving write discards the draft.
+
 A resolved incident takes no update and no second resolve, and is never reopened: `409`. The same answer follows the 100th update. An unknown id answers `404`, invalid input `400`. Resolving by either route yields one resolution. `DELETE` is a hard delete: notifications that were sent cannot be retracted, and the incident leaves the status page and feeds. Resolved incidents are deleted after the retention window, like [resolved results](concepts.md#retention).
 
 ```sh
@@ -318,6 +321,65 @@ curl -sS -X POST "$API/manual-incidents/1/updates" -H "Authorization: Bearer $TO
 curl -sS -X POST "$API/manual-incidents/1/resolve" -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -d '{"message":"Fixed."}'
 curl -sS -X DELETE "$API/manual-incidents/1" -H "Authorization: Bearer $TOKEN"
+```
+
+### Private routes
+
+Drafts, internal notes and internal-only incidents live under `/admin/manual-incidents`. The shapes are `InternalManualIncident`, `ManualIncidentDraftInput`, `ManualIncidentUpdateInput` and `ManualIncidentNoteInput` of `@lorenzh/pulse-contract`. An `InternalManualIncident` adds `visibility` (`public` or `internal`), `publishedAt` (`null` while a draft), `draft` (`{status, message, savedAt}` or `null`) and `notes` (`{id, at, author, message}[]`) to the public fields; its `createdAt` is the first save. `author` is the name of the admin token that wrote the note.
+
+Every route needs a token with `admin` and `incidents`, also when the config writes are off. Checks run in this order: unknown path or a bad id (not `^\d{1,15}$`, for the incident and the note id) `404`; wrong method `405` with `Allow`; before the first admin import `404`; then auth (`401` with `WWW-Authenticate: Bearer`, `403`, `429` from the shared [throttle](#admin-auth-throttle)); then the body (`413` over 16 KiB, also for ignored bodies; `400` for invalid JSON or fields); then existence (`404`); then state (`409`). A caller without a valid token never learns whether an id exists.
+
+| Route                                              | Body                                                                                                   | Answer                                                                                                      |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| `GET /admin/manual-incidents[?status=…]`           | none                                                                                                   | `200`, drafts and open (newest created first), then resolved within 14 days (at most 50), both visibilities |
+| `GET /admin/manual-incidents/:id`                  | none                                                                                                   | `200` and the incident                                                                                      |
+| `POST /admin/manual-incidents`                     | `title`, `impact`, `componentIds`, `message`, `visibility`, optional `status` (not `resolved`); strict | `201` and the new draft incident                                                                            |
+| `PUT /admin/manual-incidents/:id`                  | as for `POST`                                                                                          | `200`; replaces the fields of a draft incident                                                              |
+| `DELETE /admin/manual-incidents/:id`               | ignored                                                                                                | `204`; deletes any incident with its updates, draft and notes                                               |
+| `PUT /admin/manual-incidents/:id/draft`            | `status`, `message`                                                                                    | `200`; saves or replaces the draft update of a published, open incident                                     |
+| `DELETE /admin/manual-incidents/:id/draft`         | ignored                                                                                                | `204`; discards the draft update                                                                            |
+| `POST /admin/manual-incidents/:id/publish`         | ignored                                                                                                | `200` and the incident after publication                                                                    |
+| `POST /admin/manual-incidents/:id/notes`           | `message`                                                                                              | `201` and the incident with the new note                                                                    |
+| `DELETE /admin/manual-incidents/:id/notes/:noteId` | ignored                                                                                                | `204`                                                                                                       |
+
+State rules. A draft incident has no published update; its status and message are its draft. Publishing it checks the components again, adds update 0 at the publication time and sets `publishedAt`; a public one then appears on the public reads and in `pulse_api_manual_incidents_created_total`. Publishing a draft update appends it at `max(now, last update)`; a `resolved` draft resolves the incident. `visibility` is fixed at publication. Notes are never public and never become updates. Fixed answers:
+
+| Request                                    | State                         | Answer                                                     |
+| ------------------------------------------ | ----------------------------- | ---------------------------------------------------------- |
+| `PUT …/:id`                                | published                     | `409 manual incident is published`                         |
+| `PUT` or `DELETE …/:id/draft`              | draft incident                | `409 manual incident is a draft`                           |
+| `PUT …/:id/draft`                          | resolved                      | `409 manual incident is resolved`                          |
+| `PUT …/:id/draft`, `POST …/:id/publish`    | 100 published updates         | `409 manual incident has the most updates it takes (100)`  |
+| `DELETE …/:id/draft`, `POST …/:id/publish` | published, no draft           | `409 manual incident has no draft` (also a second publish) |
+| `POST …/:id/publish`                       | a component was removed       | `409 componentIds: unknown component "<id>"`               |
+| `POST /admin/manual-incidents`             | 100 draft incidents           | `409 too many draft incidents (100)`                       |
+| `POST …/:id/notes`                         | 100 notes                     | `409 manual incident has the most notes it takes (100)`    |
+| `DELETE …/:id/notes/:noteId`               | no such note on this incident | `404 note not found`                                       |
+
+Each write and its audit entry commit together. Writes log `manual incident write` with the actions `create-draft`, `edit`, `delete`, `save-draft`, `discard-draft`, `publish`, `add-note`, `delete-note`; reads are not logged. Requests to these paths are not counted in `pulse_api_http_requests_total`. Internal incidents are never sent to notify or any channel. Known limit: two operators that save and publish at the same time get the text stored when the publish commits; there is no revision check.
+
+```sh
+# A draft, edited, then published (201, 200, 200; a second publish answers 409).
+curl -sS -X POST "$API/admin/manual-incidents" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Slow checkout","impact":"minor","componentIds":["web"],"message":"Looking.","visibility":"public"}'
+curl -sS -X PUT "$API/admin/manual-incidents/2" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Slow checkout","impact":"major","componentIds":["web"],"message":"Looking into it.","visibility":"public"}'
+curl -sS -X POST "$API/admin/manual-incidents/2/publish" -H "Authorization: Bearer $TOKEN"
+# A draft update, then its publication (200, 200).
+curl -sS -X PUT "$API/admin/manual-incidents/2/draft" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"status":"resolved","message":"Fixed."}'
+curl -sS -X POST "$API/admin/manual-incidents/2/publish" -H "Authorization: Bearer $TOKEN"
+# An internal note (201).
+curl -sS -X POST "$API/admin/manual-incidents/2/notes" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"message":"Rolled back release 41."}'
+# An internal-only incident: published (200), but GET /manual-incidents/3 answers 404.
+curl -sS -X POST "$API/admin/manual-incidents" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Replica lag","impact":"none","componentIds":[],"message":"Watching.","visibility":"internal"}'
+curl -sS -X POST "$API/admin/manual-incidents/3/publish" -H "Authorization: Bearer $TOKEN"
+curl -sS -X GET "$API/admin/manual-incidents/3" -H "Authorization: Bearer $TOKEN"
 ```
 
 `GET /components` is unchanged: it does not apply manual incidents. The status page maps an open incident's impact to the state of its components (`minor` to `degraded`, `major` and `critical` to `down`) with `incidentImpactState` of the contract.
@@ -409,7 +471,7 @@ curl -sS -X POST "$API/admin/tokens/<id>/revoke" -H "Authorization: Bearer $TOKE
 
 ## Audit log
 
-Every admin write is stored as an `AuditEntry` `{id, at, actor: {tokenId, name}, action, target: {kind, id}, revision}`. `actor.name` is the token name at write time. `action` is one of `check.*`, `component.*`, `maintenance.*` (`create`, `replace`, `delete`), `manual-incident.*` (`create`, `update`, `resolve`, `delete`) and `token.*` (`create`, `rotate`, `revoke`, `import`). `target.id` is the check or component id unchanged (any length), the maintenance index as text, the incident id as text, or the token id. `revision` is the checks file revision after a config write, else `null`. An entry never holds a body, title, message, header, heartbeat secret, URL, token value or digest. Rejected attempts and automatic work (results, pings, reloads, retention) are not audited. Entries are never deleted.
+Every admin write is stored as an `AuditEntry` `{id, at, actor: {tokenId, name}, action, target: {kind, id}, revision}`. `actor.name` is the token name at write time. `action` is one of `check.*`, `component.*`, `maintenance.*` (`create`, `replace`, `delete`), `manual-incident.*` (`create`, `update`, `resolve`, `delete`, `edit`, `draft-save`, `draft-discard`, `publish`, `note-add`, `note-delete`) and `token.*` (`create`, `rotate`, `revoke`, `import`). `target.id` is the check or component id unchanged (any length), the maintenance index as text, the incident id as text, or the token id. `revision` is the checks file revision after a config write, else `null`. An entry never holds a body, title, message, header, heartbeat secret, URL, token value or digest. Rejected attempts and automatic work (results, pings, reloads, retention) are not audited. Entries are never deleted.
 
 ### GET /admin/audit
 
@@ -438,20 +500,20 @@ Readiness, no token. Returns `200 ok` when `SELECT 1` works on the database and 
 
 Prometheus text format, no authentication. Counters live in memory and reset at restart. Any other method gives the same `405` as on `/healthz`.
 
-| Series                                             | Type      | Labels                                                                                                                                                                                                                     |
-| -------------------------------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pulse_up`                                         | gauge     | none. Always `1`.                                                                                                                                                                                                          |
-| `pulse_api_check_state`                            | gauge     | `check`, `state`. `1` for the current state of each check, `0` for the others.                                                                                                                                             |
-| `pulse_api_results_ingested_total`                 | counter   | `location`. A repeated post is not counted.                                                                                                                                                                                |
-| `pulse_api_location_last_result_timestamp_seconds` | gauge     | `location`. `lastResultAt` of `GET /locations` in Unix seconds, read at the scrape.                                                                                                                                        |
-| `pulse_api_result_latency_seconds`                 | histogram | `check`. The latency the probe reported. Buckets 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10 s.                                                                                                                                    |
-| `pulse_api_slo_budget_remaining_ratio`             | gauge     | `check` or `component`. Error budget left as a ratio (0.5 is 50 %, negative when exceeded). Omitted without a target or without results.                                                                                   |
-| `pulse_api_incidents_opened_total`                 | counter   | none                                                                                                                                                                                                                       |
-| `pulse_api_incidents_resolved_total`               | counter   | none                                                                                                                                                                                                                       |
-| `pulse_api_http_requests_total`                    | counter   | `route` (a pattern such as `/checks/:id/results`, `/checks/:id/latency`, `/heartbeat/:id`, or `unmatched`), `code`                                                                                                         |
-| `pulse_heartbeat_pings_total`                      | counter   | `check`. Accepted pings. Failed pings are only in the request counter, with code 401.                                                                                                                                      |
-| `pulse_heartbeat_missed_total`                     | counter   | `check`. One per `period` elapsed after the deadline `period + grace`.                                                                                                                                                     |
-| `pulse_api_admin_auth_failures_total`              | counter   | `route` (pattern), `status` (`401`, `403`). Failed admin authentications on `/admin/*` and the manual-incident writes. A series appears at its first failure; alert with `increase(...) > 0` and `or vector(0)` as needed. |
-| `pulse_api_admin_auth_throttled_total`             | counter   | `route` (pattern). Admin requests refused with `429` by the auth throttle. A series appears at its first `429`.                                                                                                            |
+| Series                                             | Type      | Labels                                                                                                                                                                                                                                                                                                                                                                                      |
+| -------------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pulse_up`                                         | gauge     | none. Always `1`.                                                                                                                                                                                                                                                                                                                                                                           |
+| `pulse_api_check_state`                            | gauge     | `check`, `state`. `1` for the current state of each check, `0` for the others.                                                                                                                                                                                                                                                                                                              |
+| `pulse_api_results_ingested_total`                 | counter   | `location`. A repeated post is not counted.                                                                                                                                                                                                                                                                                                                                                 |
+| `pulse_api_location_last_result_timestamp_seconds` | gauge     | `location`. `lastResultAt` of `GET /locations` in Unix seconds, read at the scrape.                                                                                                                                                                                                                                                                                                         |
+| `pulse_api_result_latency_seconds`                 | histogram | `check`. The latency the probe reported. Buckets 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10 s.                                                                                                                                                                                                                                                                                                     |
+| `pulse_api_slo_budget_remaining_ratio`             | gauge     | `check` or `component`. Error budget left as a ratio (0.5 is 50 %, negative when exceeded). Omitted without a target or without results.                                                                                                                                                                                                                                                    |
+| `pulse_api_incidents_opened_total`                 | counter   | none                                                                                                                                                                                                                                                                                                                                                                                        |
+| `pulse_api_incidents_resolved_total`               | counter   | none                                                                                                                                                                                                                                                                                                                                                                                        |
+| `pulse_api_http_requests_total`                    | counter   | `route` (a pattern such as `/checks/:id/results`, `/checks/:id/latency`, `/heartbeat/:id`, or `unmatched`), `code`. Requests to `/admin/manual-incidents` and below are never counted.                                                                                                                                                                                                      |
+| `pulse_heartbeat_pings_total`                      | counter   | `check`. Accepted pings. Failed pings are only in the request counter, with code 401.                                                                                                                                                                                                                                                                                                       |
+| `pulse_heartbeat_missed_total`                     | counter   | `check`. One per `period` elapsed after the deadline `period + grace`.                                                                                                                                                                                                                                                                                                                      |
+| `pulse_api_admin_auth_failures_total`              | counter   | `route` (pattern), `status` (`401`, `403`). Failed admin authentications on `/admin/*` and the manual-incident writes. The private manual-incident routes use the patterns `/admin/manual-incidents`, `…/:id`, `…/:id/draft`, `…/:id/publish`, `…/:id/notes` and `…/:id/notes/:noteId`. A series appears at its first failure; alert with `increase(...) > 0` and `or vector(0)` as needed. |
+| `pulse_api_admin_auth_throttled_total`             | counter   | `route` (pattern). Admin requests refused with `429` by the auth throttle. A series appears at its first `429`.                                                                                                                                                                                                                                                                             |
 
 The labels hold check ids and locations only. Check URLs, hosts, keywords, reasons and tokens never appear. The check ids are still configuration, so do not publish `/metrics` on a public network: scrape it from the private network, as with the read routes above.

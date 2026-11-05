@@ -19,6 +19,12 @@ import { auditPathOf, auditRouteOf } from "./audit-routes.ts";
 import { componentsUptime, componentsWithState } from "./components.ts";
 import { MAX_LOCATION_LENGTH } from "./location-limits.ts";
 import {
+  isPrivateManualPath,
+  isPrivateManualTarget,
+  ManualRouteError,
+  serveManualIncidentRoutes,
+} from "./manual-incident-routes.ts";
+import {
   ManualIncidentConflictError,
   ManualIncidentInputError,
   ManualIncidentNotFoundError,
@@ -466,6 +472,22 @@ function requireProbe(ops: Ops, header: string | undefined): string {
 
 type ManualWrite = "create" | "update" | "resolve" | "delete";
 
+const PRIVACY_KEYS = ["visibility", "draft"] as const;
+
+/**
+ * The legacy create always publishes a public incident. Its input schema strips unknown keys, so
+ * a privacy key is refused here instead of being dropped silently.
+ */
+function refusePrivacyKeys(body: unknown): unknown {
+  if (typeof body !== "object" || body === null) return body;
+  for (const key of PRIVACY_KEYS) {
+    if (Object.hasOwn(body, key)) {
+      throw new HttpError(400, `${key}: not accepted here; use /admin/manual-incidents`);
+    }
+  }
+  return body;
+}
+
 /** Apply one write and answer it; returns the id of the incident written. */
 async function applyManualWrite(
   store: ManualIncidentStore,
@@ -477,7 +499,7 @@ async function applyManualWrite(
 ): Promise<number> {
   // Each store call commits the change with its audit entry before the response is written.
   if (action === "create") {
-    const created = store.create(await readManualBody(req, false), actor);
+    const created = store.create(refusePrivacyKeys(await readManualBody(req, false)), actor);
     sendJson(res, 201, created);
     return created.id;
   }
@@ -608,6 +630,16 @@ async function handle(
   if (serveOps(ops, req, res)) return;
   const ping = HEARTBEAT_PATH.exec(path);
   if (ping) return servePing(ops, now, req, res, ping);
+  if (isPrivateManualPath(path)) {
+    // Before the `/admin/*` delegation, so these routes work also with the config writes off.
+    const deps = {
+      store: ops.manualIncidents,
+      authorize: (r: IncomingMessage, route: string) => requireAdmin(ops, r, route),
+      info: ops.info,
+      warn: ops.warn,
+    };
+    return serveManualIncidentRoutes(deps, req, res, url);
+  }
   if (path.startsWith("/admin/")) {
     // Before the admin bootstrap, or without a writer, the routes do not exist.
     if ((await ops.admin?.(req, res)) !== true) throw new HttpError(404, "not found");
@@ -791,6 +823,16 @@ function emptyManualIncidents(): ManualIncidentStore {
     addUpdate: refuse,
     resolve: refuse,
     remove: refuse,
+    listInternal: () => [],
+    getInternal: () => undefined,
+    createDraft: refuse,
+    editDraft: refuse,
+    saveDraftUpdate: refuse,
+    discardDraftUpdate: refuse,
+    publish: refuse,
+    addNote: refuse,
+    deleteNote: refuse,
+    removeAny: refuse,
     hasOpenIncidentFor: () => false,
     deleteResolvedBefore: () => 0,
   };
@@ -832,7 +874,11 @@ export function createApiServer(service: Service, options: ApiServerOptions): Se
   };
   const logError = options.logError ?? ((_message, err) => console.error(err));
   return createServer((req, res) => {
-    res.on("finish", () => ops.metrics.recordRequest(routeOf(req.url), res.statusCode));
+    res.on("finish", () => {
+      // A private route is never counted, whatever its status, so the counter shows no activity.
+      if (isPrivateManualTarget(req.url)) return;
+      ops.metrics.recordRequest(routeOf(req.url), res.statusCode);
+    });
     // Set before any write; writeHead keeps these next to the headers a response adds.
     for (const [name, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(name, value);
     handle(ops, now, req, res).catch((err: unknown) => {
@@ -840,7 +886,7 @@ export function createApiServer(service: Service, options: ApiServerOptions): Se
         res.destroy();
         return;
       }
-      if (err instanceof HttpError) {
+      if (err instanceof HttpError || err instanceof ManualRouteError) {
         sendError(res, err.status, err.message, err.headers);
       } else {
         logError("request failed", err);

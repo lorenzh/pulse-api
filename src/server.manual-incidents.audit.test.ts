@@ -237,3 +237,95 @@ test("a failing audit insert rolls the manual-incident write back and answers 50
   const after = await call("GET", `/manual-incidents/${id}`, undefined, null);
   assert.equal((after.json as ManualIncident).status, "investigating");
 });
+
+const NOTE = "note-sentinel";
+const PRIVATE = { ...NEW, visibility: "internal" };
+
+test("private writes audit and log their own actions, never their text", async () => {
+  const created = await call("POST", "/admin/manual-incidents", PRIVATE);
+  assert.equal(created.status, 201);
+  const id = String((created.json as { id: number }).id);
+  const path = `/admin/manual-incidents/${id}`;
+  assert.equal((await call("PUT", path, PRIVATE)).status, 200);
+  const noted = await call("POST", `${path}/notes`, { message: NOTE });
+  assert.equal(noted.status, 201);
+  const noteId = (noted.json as { notes: { id: number }[] }).notes[0]?.id;
+  assert.equal((await call("DELETE", `${path}/notes/${noteId}`)).status, 204);
+  assert.equal((await call("POST", `${path}/publish`)).status, 200);
+  const update = { status: "monitoring", message: MESSAGE };
+  assert.equal((await call("PUT", `${path}/draft`, update)).status, 200);
+  assert.equal((await call("DELETE", `${path}/draft`)).status, 204);
+  assert.equal((await call("DELETE", path)).status, 204);
+  assert.equal((await call("GET", "/admin/manual-incidents")).status, 200);
+  const actions = [
+    "create-draft",
+    "edit",
+    "add-note",
+    "delete-note",
+    "publish",
+    "save-draft",
+    "discard-draft",
+    "delete",
+  ];
+  assert.deepEqual(
+    lines,
+    actions.map((action) => ({
+      level: "info",
+      message: "manual incident write",
+      fields: { token: "ops", action, id },
+    })),
+  );
+  assert.deepEqual(
+    audited.map((e) => [e.action, e.target.id, e.actor.name, e.revision]),
+    [
+      "create",
+      "edit",
+      "note-add",
+      "note-delete",
+      "publish",
+      "draft-save",
+      "draft-discard",
+      "delete",
+    ].map((a) => [`manual-incident.${a}`, id, "ops", null]),
+  );
+  const text = JSON.stringify([lines, audited]);
+  for (const secret of [ADMIN, TITLE, MESSAGE, NOTE]) assert.ok(!text.includes(secret), secret);
+});
+
+test("a failed private write logs one warn line; a failed private read logs nothing", async () => {
+  assert.equal((await call("POST", "/admin/manual-incidents/999999/publish")).status, 404);
+  assert.equal((await call("GET", "/admin/manual-incidents/999999")).status, 404);
+  assert.deepEqual(lines, [
+    {
+      level: "warn",
+      message: "manual incident write failed",
+      fields: { status: "404", action: "publish", id: "999999" },
+    },
+  ]);
+});
+
+test("a failing audit insert rolls every private write back", async () => {
+  const created = await call("POST", "/admin/manual-incidents", PRIVATE);
+  const id = (created.json as { id: number }).id;
+  const path = `/admin/manual-incidents/${id}`;
+  const before = await call("GET", path);
+  assert.equal(before.status, 200);
+  isAuditDown = true;
+  const writes: [string, string, unknown][] = [
+    ["POST", "/admin/manual-incidents", PRIVATE],
+    ["PUT", path, { ...PRIVATE, title: "other" }],
+    ["POST", `${path}/notes`, { message: NOTE }],
+    ["POST", `${path}/publish`, undefined],
+    ["DELETE", path, undefined],
+  ];
+  for (const [method, target, body] of writes) {
+    assert.equal((await call(method, target, body)).status, 500, `${method} ${target}`);
+  }
+  isAuditDown = false;
+  assert.deepEqual(await call("GET", path), before);
+  const list = (await call("GET", "/admin/manual-incidents")).json as { id: number }[];
+  assert.deepEqual(
+    list.filter((i) => i.id > id),
+    [],
+  );
+});
