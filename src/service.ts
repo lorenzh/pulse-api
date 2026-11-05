@@ -994,10 +994,11 @@ export function createService(
   };
 
   /** Closed days in the window whose location rows do not sum to the stored uptime total. */
-  function incompleteDays(id: string): number[] {
+  function incompleteDays(id: string, loaded?: Map<number, Map<string, Tally>>): number[] {
     const today = dayOf(now());
     const firstDay = today - (UPTIME_DAYS - 1);
-    const stored = storedLocationsByDay(id, firstDay, today);
+    // The read path passes the rows it loaded, so the window is read once.
+    const stored = loaded ?? storedLocationsByDay(id, firstDay, today);
     const rows = storedUptime.all(id, firstDay, today) as unknown as DayRow[];
     return rows
       .filter((r) => Number(r.total) > 0 && sumTotal(stored.get(Number(r.day))) !== Number(r.total))
@@ -1031,7 +1032,8 @@ export function createService(
     const today = Math.floor(t / DAY_MS);
     const firstDay = today - (UPTIME_DAYS - 1);
     const byDay = storedLocationsByDay(id, firstDay, today);
-    for (const day of incompleteDays(id)) byDay.set(day, rebuildLocationDay(id, day));
+    for (const day of incompleteDays(id, new Map(byDay)))
+      byDay.set(day, rebuildLocationDay(id, day));
     byDay.set(today, locationTallies(id, today * DAY_MS, t));
     const sums = new Map<string, Tally>();
     for (const tallies of byDay.values()) {
@@ -1395,7 +1397,7 @@ export function createService(
       return cached(`location-uptime:${id}`, () => locationUptimeOf(id));
     },
 
-    incompleteLocationDays: incompleteDays,
+    incompleteLocationDays: (checkId: string) => incompleteDays(checkId),
 
     fillLocationDay(checkId, day) {
       if (day >= dayOf(now()) || !incompleteDays(checkId).includes(day)) return false;

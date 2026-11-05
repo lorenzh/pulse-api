@@ -254,3 +254,37 @@ test("backfill: location days after the uptime days, a yield after each, stops w
   assert.equal(service.fillLocationDay("a", CLOSED / DAY), false, "a complete day is skipped");
   assert.equal(service.fillLocationDay("a", TODAY / DAY), false, "today is never stored");
 });
+
+test("a read of an ordinary check reads the stored location window once", () => {
+  const { db, add } = setup();
+  add(CLOSED + 1000, "up", "eu");
+  let reads = 0;
+  // A hand-written fake: counts the range reads of the stored location rows.
+  const counting = new Proxy(db, {
+    get(target, key) {
+      if (key !== "prepare") {
+        const value: unknown = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+      return (sql: string) => {
+        const stmt = target.prepare(sql);
+        if (!/SELECT day, location, good, total FROM uptime_location_daily/.test(sql)) return stmt;
+        return new Proxy(stmt, {
+          get(s, k) {
+            const value: unknown = Reflect.get(s, k, s);
+            if (k !== "all" || typeof value !== "function") {
+              return typeof value === "function" ? value.bind(s) : value;
+            }
+            return (...args: unknown[]) => {
+              reads++;
+              return Reflect.apply(value, s, args);
+            };
+          },
+        });
+      };
+    },
+  });
+  const service = createService(counting, { now: () => NOW });
+  read(service);
+  assert.equal(reads, 1);
+});
