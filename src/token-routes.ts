@@ -27,26 +27,31 @@ export interface TokenRoutesDeps {
   info: (message: string, fields: Record<string, string>) => void;
 }
 
-/** The parts of a `/admin/tokens[/<id>[/rotate|/revoke]]` path. */
+/** The parts of a `/admin/tokens[/self|/<id>[/rotate|/revoke]]` path. */
 export interface TokenPath {
-  /** Undefined on the collection path. */
+  /** Undefined on the collection path and on `/admin/tokens/self`. */
   id: string | undefined;
   action: "rotate" | "revoke" | undefined;
+  /** True for exactly `/admin/tokens/self`: the caller's own token. */
+  isSelf: boolean;
 }
 
 const TOKEN_ID = new RegExp(`^${TOKEN_ID_PREFIX}[0-9a-f]{24}$`);
+const SELF_PATH = "/admin/tokens/self";
 const TOKENS_PATH = /^\/admin\/tokens(?:\/([^/]+)(?:\/(rotate|revoke))?)?$/;
 
 /** Parse a token route path; null when the path is not one. */
 export function tokenPathOf(path: string): TokenPath | null {
   const match = TOKENS_PATH.exec(path);
   if (match === null) return null;
+  if (path === SELF_PATH) return { id: undefined, action: undefined, isSelf: true };
   const action = match[2] === "rotate" || match[2] === "revoke" ? match[2] : undefined;
-  return { id: match[1], action };
+  return { id: match[1], action, isSelf: false };
 }
 
 /** The route pattern of a token path, for metrics and auth-failure lines. */
 export function tokenRouteOf(path: TokenPath): string {
+  if (path.isSelf) return SELF_PATH;
   if (path.id === undefined) return "/admin/tokens";
   return path.action === undefined ? "/admin/tokens/:id" : `/admin/tokens/:id/${path.action}`;
 }
@@ -153,6 +158,10 @@ async function dispatch(
 ): Promise<void> {
   const method = req.method ?? "GET";
   const actor: Actor = { tokenId: caller.id, name: caller.name };
+  if (path.isSelf) {
+    await sendSelf(deps.store, req, res, caller);
+    return;
+  }
   if (path.id === undefined) {
     if (method === "GET") {
       await readText(req);
@@ -189,6 +198,21 @@ async function dispatch(
   const revoked = deps.store.revoke(target.id, actor);
   deps.info("token write", { token: caller.name, action: "revoke", id: target.id });
   sendJson(res, 200, revoked);
+}
+
+async function sendSelf(
+  store: TokenStore,
+  req: IncomingMessage,
+  res: ServerResponse,
+  caller: AuthenticatedToken,
+): Promise<void> {
+  if ((req.method ?? "GET") !== "GET")
+    throw new TokenRouteError(405, "method not allowed", { Allow: "GET" });
+  await readText(req);
+  // Authentication read the token, but the store read is separate.
+  const self = store.get(caller.id);
+  if (self === null) throw notFound();
+  sendJson(res, 200, self);
 }
 
 function mustGet(store: TokenStore, id: string): TokenMetadata {

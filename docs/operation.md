@@ -176,6 +176,8 @@ Tokens are managed over HTTP with a token that has `admin` (see [Tokens](rest-ap
 2. Within those 10 minutes, give the probe the new secret as `PULSE_PROBE_TOKEN` (in pulse-deploy: `secrets/probe-token`) and restart the probe. The probe reads its token only at start.
 3. After the overlap only the new secret works. To end it at once, revoke the token and create a new one instead.
 
+A client with an `admin` token can confirm which token it holds with `GET /admin/tokens/self` (`curl -sS "$API/admin/tokens/self" -H "Authorization: Bearer $TOKEN"`). It answers that token's metadata, never a secret; during an overlap the old and the new secret answer the same `id`.
+
 A new location gets its own token: `POST /admin/tokens` with `{"name":"probe eu","scopes":["probe"],"location":"eu"}`. Changing a probe's location means a new token for the new location; the probe's `PULSE_LOCATION` and the token's `location` must be equal, or every result gets `403`.
 
 An admin-side secret (a token without the `probe` scope) must have 32 or more characters, also an imported one; a shorter one answers `401`. Imported probe tokens keep the secret from the old file with at least 16 characters. Rotate imported tokens once, so every secret in use is a generated 256-bit one.
