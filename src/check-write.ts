@@ -102,11 +102,10 @@ function resolvedHeaders(
   headers: Record<string, unknown>,
   stored: Check | undefined,
 ): Record<string, unknown> {
-  const resolved: Record<string, unknown> = {};
-  for (const [name, value] of Object.entries(headers)) {
-    resolved[name] = resolvedHeader(name, value, stored);
-  }
-  return resolved;
+  // fromEntries defines own keys; plain assignment would run the `__proto__` setter and drop it.
+  return Object.fromEntries(
+    Object.entries(headers).map(([name, value]) => [name, resolvedHeader(name, value, stored)]),
+  );
 }
 
 /**

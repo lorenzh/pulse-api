@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { validateAdminCheckInput } from "@lorenzh/pulse-contract";
+import { ConfigError, parseChecksWithSecrets } from "./config.ts";
 import { openDb } from "./db.ts";
 import { startApi } from "./start.ts";
 
@@ -58,5 +59,21 @@ test("security: an own __proto__ header cannot disappear before input validation
   } finally {
     await api.close();
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("security: the checks file parser refuses an own __proto__ header of any value", () => {
+  const values = ["null", '"literal-header-value"', '{"env":"PULSE_HEADER_A"}', '{"keep":true}'];
+  for (const value of values) {
+    const doc: unknown = JSON.parse(
+      `{"checks":[{"id":"proto","name":"Proto","url":"http://127.0.0.1:1/","intervalMs":60000,"headers":{"__proto__":${value}}}]}`,
+    );
+    assert.throws(
+      () => parseChecksWithSecrets(doc),
+      (error: unknown) =>
+        error instanceof ConfigError &&
+        error.message === "checks[0].headers: must not contain the name __proto__",
+      value,
+    );
   }
 });

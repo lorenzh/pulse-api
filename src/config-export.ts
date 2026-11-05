@@ -21,11 +21,13 @@ function exportCheck(check: Check, redacted: AdminExportRedaction[]): ExportChec
     case undefined:
     case "http": {
       const { headers, body, ...rest } = check;
-      const kept: Record<string, { env: string }> = {};
+      const keptEntries: [string, { env: string }][] = [];
       for (const [name, value] of Object.entries(headers ?? {})) {
         if (typeof value === "string") redacted.push({ checkId, field: `headers.${name}` });
-        else kept[name] = { env: value.env };
+        else keptEntries.push([name, { env: value.env }]);
       }
+      // fromEntries defines own keys; plain assignment would run the `__proto__` setter.
+      const kept = Object.fromEntries(keptEntries);
       if (body !== undefined) redacted.push({ checkId, field: "body" });
       return { ...rest, ...(Object.keys(kept).length > 0 ? { headers: kept } : {}) };
     }

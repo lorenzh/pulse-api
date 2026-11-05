@@ -222,6 +222,11 @@ function parseHttp(raw: Record<string, unknown>, where: (string | number)[]): Ht
   const parsed = HTTP_SCHEMA.safeParse(raw);
   if (!parsed.success) return failWith(parsed.error, where);
   const v = parsed.data;
+  // JSON.parse keeps an own `__proto__` key, which the contract validator skips and later
+  // object copies drop; refuse it so that the stored check is the one validated.
+  if (isRecord(v.headers) && Object.hasOwn(v.headers, "__proto__")) {
+    throw new ConfigError(`${pathName(where)}.headers: must not contain the name __proto__`);
+  }
   const timeout = v.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const worst = (v.retries + 1) * timeout + v.retries * v.retryDelayMs;
   if (v.retries > 0 && worst > v.intervalMs) {
