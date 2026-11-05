@@ -54,7 +54,14 @@ const DB_HTTP = {
   body: BODY_DB,
 };
 const DB_D = { id: "d", name: "db", url: "https://d-db.example/", intervalMs: 60000 };
-const DB_HB = { id: "db-hb", name: "DB HB", type: "heartbeat", period: 60000, secret: HB_DB };
+const DB_HB = {
+  id: "db-hb",
+  name: "DB HB",
+  type: "heartbeat",
+  period: 60000,
+  grace: 0,
+  secret: HB_DB,
+};
 
 let dir: string;
 let file: string;

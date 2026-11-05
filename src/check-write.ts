@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import type { Check } from "@lorenzh/pulse-contract";
+import { type Check, validateAdminCheckInput } from "@lorenzh/pulse-contract";
 import { isRecord } from "@lorenzh/pulse-kit";
 import type { AuditLog } from "./audit-log.ts";
 import type { CheckDefinition, CheckStore } from "./check-store.ts";
@@ -144,7 +144,11 @@ function parsedBody(
   if (Object.hasOwn(body, "source") && body.source !== "database") {
     throw invalid('check.source must be "database"');
   }
+  // Our own refusals come first for their exact messages; the strict contract check then refuses
+  // what the file rules allow, such as runtime fields on a tcp, dns or domain check.
+  const strict = validateAdminCheckInput(body);
   const raw = materialized(body, stored?.check);
+  if (!strict.ok) throw invalid(strict.error);
   const keepsSecret =
     raw.type === "heartbeat" &&
     raw.secret === undefined &&

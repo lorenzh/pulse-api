@@ -454,7 +454,7 @@ async function sentinelSession(work: string): Promise<{ texts: Map<string, strin
     const writes: string[] = [];
     for (const body of [
       httpCheck("db-http", LIT_DB, ENV_DB, BODY_DB),
-      { id: "db-hb", name: "DB HB", type: "heartbeat", period: 60000, secret: HB_DB },
+      { id: "db-hb", name: "DB HB", type: "heartbeat", period: 60000, grace: 0, secret: HB_DB },
     ]) {
       const r = await write("POST", "/admin/checks", body);
       assert.equal(r.status, 201);
