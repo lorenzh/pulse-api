@@ -102,6 +102,28 @@ test("GET /checks/:id/location-uptime answers 200 typed by the contract", async 
   assert.deepEqual(pick(await getTyped("/checks/c1/location-uptime")), EXPECTED);
 });
 
+const FULL_BODIES = [
+  { path: "/checks/c1/location-uptime", checkId: "c1" },
+  { path: "/checks/a%2Fb/location-uptime", checkId: "a/b" },
+];
+
+for (const { path, checkId } of FULL_BODIES) {
+  test(`${path} answers the complete CheckLocationUptime body`, async () => {
+    const res = await fetch(`${base}${path}`);
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { checkId, windowDays: 90, ...EXPECTED });
+  });
+}
+
+test("the docs example of GET /checks/:id/location-uptime passes the contract validator", async () => {
+  const doc = await Bun.file(join(import.meta.dir, "..", "docs", "rest-api.md")).text();
+  const section = doc.split("## GET /checks/:id/location-uptime")[1]?.split("\n## ")[0] ?? "";
+  const json = section.split("```json\n")[1]?.split("```")[0] ?? "";
+  const v = validateCheckLocationUptime(JSON.parse(json));
+  assert.ok(v.ok, v.ok ? "" : v.error);
+  assert.equal(v.value.checkId, "api");
+});
+
 test("an encoded id a/b is served", async () => {
   assert.deepEqual(pick(await getTyped("/checks/a%2Fb/location-uptime")), EXPECTED);
 });

@@ -199,7 +199,7 @@ Returns the `CheckLatency` of one active HTTP check. An unknown or inactive id, 
 
 ## GET /checks/:id/location-uptime
 
-Returns the `CheckLocationUptime` of one active check of any type: `{ locations: LocationUptime[] }`. The window is the one of `GET /uptime`: the 90 UTC days ending today, up to the API clock. The sample set is every stored result of the check in the window at that location, of any status; heartbeat results have the location `heartbeat`. For each location `good` counts the results that are not `down` (up and degraded), `results` counts all, and `uptime` is `good / results * 100`, unrounded, `null` exactly when `results` is `0`. Every location with a stored result of the check at any age is listed once, sorted by name in UTF-16 code-unit order; a location with only older results has `good` 0, `results` 0 and `uptime` null. See [Uptime](concepts.md#uptime).
+Returns the `CheckLocationUptime` of one active check of any type: `{ checkId, windowDays: 90, locations: LocationUptime[] }`. `checkId` is the decoded id, `windowDays` is always `90`. The window is the one of `GET /uptime`: the 90 UTC days ending today, up to the API clock. The sample set is every stored result of the check in the window at that location, of any status; heartbeat results have the location `heartbeat`. For each location `good` counts the results that are not `down` (up and degraded), `results` counts all, and `uptime` is `good / results * 100`, unrounded, `null` exactly when `results` is `0`. Every location with a stored result of the check at any age is listed once, sorted by name in UTF-16 code-unit order; a location with only older results has `good` 0, `results` 0 and `uptime` null. See [Uptime](concepts.md#uptime).
 
 An unknown or inactive id answers `404` with `unknown check`, a malformed id escape `400` with `bad check id`. No token is needed; an `Authorization` header is ignored. `HEAD` and every other method answer `405` with `Allow: GET`. Same headers and read cache as the other reads.
 
@@ -209,6 +209,8 @@ curl http://localhost:3000/checks/api/location-uptime
 
 ```json
 {
+  "checkId": "api",
+  "windowDays": 90,
   "locations": [
     { "location": "eu", "good": 1, "results": 2, "uptime": 50 },
     { "location": "us", "good": 1, "results": 1, "uptime": 100 }
