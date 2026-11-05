@@ -49,6 +49,10 @@ See [Releasing](docs/development.md#releasing) for the tags and how to verify an
 
 A check of type `heartbeat` is for cron jobs and workers. The job calls `POST|GET /heartbeat/<id>` with `Authorization: Bearer <secret>`; no ping within `period + grace` opens an incident, and the next ping resolves it. See [Configuration](docs/configuration.md#heartbeat-checks), [REST API](docs/rest-api.md#getpost-heartbeatidsecret) and [Operation](docs/operation.md#heartbeat-checks).
 
+## Per-location uptime
+
+`GET /checks/:id/location-uptime` is a public read. It answers `CheckLocationUptime`: per location, the results and the good (not `down`) results of the 90-day uptime window, and their uptime. Only `GET` is served; `HEAD` and the other methods answer `405` with `Allow: GET`. The check ids `.` and `..` cannot be addressed by per-id routes. See [REST API](docs/rest-api.md#get-checksidlocation-uptime).
+
 ## Manual incidents
 
 Checks, components and maintenance windows can be changed through `/admin/*` routes with a token that has the scopes `admin` and `checks`, and the API applies a changed checks file without a restart: it looks at the file every `PULSE_CHECKS_RELOAD_INTERVAL_MS` (default 5000, `0` is off) and on `SIGHUP`. See [REST API](docs/rest-api.md#admin-config-routes) and [Operation](docs/operation.md#changing-checks).

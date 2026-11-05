@@ -13,6 +13,7 @@ The API serves JSON over HTTP. The types come from [pulse-contract](https://gith
 | `GET`                          | `/uptime`                                                                             | none                    | `UptimeResponse` (`CheckUptime[]`)                     |
 | `GET`                          | `/latency`                                                                            | none                    | `LatencyResponse` (`CheckLatency[]`)                   |
 | `GET`                          | `/checks/:id/latency`                                                                 | none                    | `CheckLatency`                                         |
+| `GET`                          | `/checks/:id/location-uptime`                                                         | none                    | `CheckLocationUptime`                                  |
 | `GET`                          | `/components`                                                                         | none                    | `ComponentsResponse` (`ComponentWithState[]`)          |
 | `GET`                          | `/components/uptime`                                                                  | none                    | `ComponentsUptimeResponse` (`ComponentUptime[]`)       |
 | `GET`                          | `/incidents`                                                                          | none                    | `IncidentsResponse` (`Incident[]`)                     |
@@ -37,6 +38,8 @@ General rules:
 - A request target that is not a valid URL path (for example `//[`) gives `400` with `invalid request target`, on every path and method, before auth. The body never repeats the target, and nothing is logged.
 - Admin routes (`/admin/*`, including `/admin/manual-incidents`, and the manual-incident writes) give `429` with `too many requests` and `Retry-After` when the client failed admin authentication too often. See [Admin auth throttle](#admin-auth-throttle).
 - An unknown path gives `404` with `not found`. Another method on a known path gives `405` with `method not allowed` and the header `Allow` with the allowed methods (for example `Allow: GET`).
+- The public reads (`/checks`, `/checks/:id/*`, `/uptime`, `/latency` and the others marked `GET` above) serve only `GET`. `HEAD` and every other method answer `405` with `Allow: GET`, before the id is looked up; the body is `{"error":"method not allowed"}`, empty for `HEAD`.
+- Per-id routes cannot address the check ids `.` and `..`: the path is normalized before routing, so `/checks/%2E/location-uptime` answers `404` `not found` and `/checks/../results` is the path `/results`.
 - A request body over 1,000,000 bytes gives `413` with `request body too large`.
 - An unexpected failure gives `500` with `internal error`. The cause is written to stderr.
 - Timestamps are epoch milliseconds.
@@ -194,6 +197,25 @@ curl http://localhost:3000/latency
 
 Returns the `CheckLatency` of one active HTTP check. An unknown or inactive id, and a check without latency (heartbeat, TLS, tcp, dns, domain), answer `404` with `unknown check`. A malformed id escape gives `400`. Same headers and read cache as the other reads.
 
+## GET /checks/:id/location-uptime
+
+Returns the `CheckLocationUptime` of one active check of any type: `{ locations: LocationUptime[] }`. The window is the one of `GET /uptime`: the 90 UTC days ending today, up to the API clock. The sample set is every stored result of the check in the window at that location, of any status; heartbeat results have the location `heartbeat`. For each location `good` counts the results that are not `down` (up and degraded), `results` counts all, and `uptime` is `good / results * 100`, unrounded, `null` exactly when `results` is `0`. Every location with a stored result of the check at any age is listed once, sorted by name in UTF-16 code-unit order; a location with only older results has `good` 0, `results` 0 and `uptime` null. See [Uptime](concepts.md#uptime).
+
+An unknown or inactive id answers `404` with `unknown check`, a malformed id escape `400` with `bad check id`. No token is needed; an `Authorization` header is ignored. `HEAD` and every other method answer `405` with `Allow: GET`. Same headers and read cache as the other reads.
+
+```sh
+curl http://localhost:3000/checks/api/location-uptime
+```
+
+```json
+{
+  "locations": [
+    { "location": "eu", "good": 1, "results": 2, "uptime": 50 },
+    { "location": "us", "good": 1, "results": 1, "uptime": 100 }
+  ]
+}
+```
+
 ## GET /components
 
 Returns one `ComponentWithState` per component of the checks file, in configured order, or `[]` without components. It carries the configured fields (`id`, `name`, `description`, `group`, `checkIds`) plus:
@@ -209,7 +231,7 @@ Returns one `ComponentUptime` (`componentId`, `days`, `uptime`) per component, i
 
 ## Read cache
 
-`GET /checks`, `GET /uptime`, `GET /latency` and `GET /checks/:id/latency` answers are reused for up to 5 s. Every ingest (`POST /results`, a heartbeat ping or expiry), a checks file load and every retention delete clears the cache, so a result is visible right after it is accepted. Recomputing after an ingest does not re-read today's results: today's uptime and latency are kept in memory and updated with each stored result. The TTL only bounds changes made by the clock; a maintenance window that opens or closes also ends a cached answer.
+`GET /checks`, `GET /uptime`, `GET /latency`, `GET /checks/:id/latency` and `GET /checks/:id/location-uptime` answers are reused for up to 5 s. Every ingest (`POST /results`, a heartbeat ping or expiry), a checks file load and every retention delete clears the cache, so a result is visible right after it is accepted. Recomputing after an ingest does not re-read today's results: today's uptime and latency are kept in memory and updated with each stored result. The TTL only bounds changes made by the clock; a maintenance window that opens or closes also ends a cached answer.
 
 ## GET /incidents
 
@@ -510,7 +532,7 @@ Prometheus text format, no authentication. Counters live in memory and reset at 
 | `pulse_api_slo_budget_remaining_ratio`             | gauge     | `check` or `component`. Error budget left as a ratio (0.5 is 50 %, negative when exceeded). Omitted without a target or without results.                                                                                                                                                                                                                                                    |
 | `pulse_api_incidents_opened_total`                 | counter   | none                                                                                                                                                                                                                                                                                                                                                                                        |
 | `pulse_api_incidents_resolved_total`               | counter   | none                                                                                                                                                                                                                                                                                                                                                                                        |
-| `pulse_api_http_requests_total`                    | counter   | `route` (a pattern such as `/checks/:id/results`, `/checks/:id/latency`, `/heartbeat/:id`, or `unmatched`), `code`. Requests to `/admin/manual-incidents` and below are never counted.                                                                                                                                                                                                      |
+| `pulse_api_http_requests_total`                    | counter   | `route` (a pattern such as `/checks/:id/results`, `/checks/:id/latency`, `/checks/:id/location-uptime`, `/heartbeat/:id`, or `unmatched`), `code`. Requests to `/admin/manual-incidents` and below are never counted.                                                                                                                                                                       |
 | `pulse_heartbeat_pings_total`                      | counter   | `check`. Accepted pings. Failed pings are only in the request counter, with code 401.                                                                                                                                                                                                                                                                                                       |
 | `pulse_heartbeat_missed_total`                     | counter   | `check`. One per `period` elapsed after the deadline `period + grace`.                                                                                                                                                                                                                                                                                                                      |
 | `pulse_api_admin_auth_failures_total`              | counter   | `route` (pattern), `status` (`401`, `403`). Failed admin authentications on `/admin/*` and the manual-incident writes. The private manual-incident routes use the patterns `/admin/manual-incidents`, `…/:id`, `…/:id/draft`, `…/:id/publish`, `…/:id/notes` and `…/:id/notes/:noteId`. A series appears at its first failure; alert with `increase(...) > 0` and `or vector(0)` as needed. |

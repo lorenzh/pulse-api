@@ -199,6 +199,7 @@ export function validateResult(
 
 const RESULTS_PATH = /^\/checks\/([^/]+)\/results$/;
 const LATENCY_PATH = /^\/checks\/([^/]+)\/latency$/;
+const LOCATION_UPTIME_PATH = /^\/checks\/([^/]+)\/location-uptime$/;
 const MANUAL_PATH = /^\/manual-incidents(?:\/([^/]+)(?:\/(updates|resolve))?)?$/;
 const HEARTBEAT_PATH = /^\/heartbeat\/([^/]+)(?:\/([^/]+))?$/;
 const ADMIN_ROUTE = /^\/admin\/(config|checks|components|maintenance)(\/[^/]+)?$/;
@@ -230,6 +231,7 @@ function routeOf(rawUrl: string | undefined): string {
   }
   if (RESULTS_PATH.test(path)) return "/checks/:id/results";
   if (LATENCY_PATH.test(path)) return "/checks/:id/latency";
+  if (LOCATION_UPTIME_PATH.test(path)) return "/checks/:id/location-uptime";
   if (HEARTBEAT_PATH.test(path)) return "/heartbeat/:id";
   const audit = auditPathOf(path);
   if (audit !== null) return auditRouteOf(audit);
@@ -605,7 +607,12 @@ const PLAIN_READS: ReadonlySet<string> = new Set([
 ]);
 
 function isReadPath(path: string): boolean {
-  return PLAIN_READS.has(path) || RESULTS_PATH.test(path) || LATENCY_PATH.test(path);
+  return (
+    PLAIN_READS.has(path) ||
+    RESULTS_PATH.test(path) ||
+    LATENCY_PATH.test(path) ||
+    LOCATION_UPTIME_PATH.test(path)
+  );
 }
 
 /** Parse the request target; only a `URL` failure becomes a quiet 400 without request data. */
@@ -758,6 +765,12 @@ function queryRead(service: Service, url: URL): unknown {
     const latency = service.getCheckLatency(decodeCheckId(latencyMatch[1]));
     if (latency === undefined) throw new HttpError(404, "unknown check");
     return latency;
+  }
+  const locationMatch = LOCATION_UPTIME_PATH.exec(path);
+  if (locationMatch) {
+    const uptime = service.getCheckLocationUptime(decodeCheckId(locationMatch[1]));
+    if (uptime === undefined) throw new HttpError(404, "unknown check");
+    return uptime;
   }
   const id = decodeCheckId(RESULTS_PATH.exec(path)?.[1]);
   const limit = Math.min(
