@@ -17,8 +17,12 @@ const check = (id: string) => ({
   intervalMs: 60000,
 });
 const FILE_A = `${JSON.stringify({ checks: [check("a")] }, null, 2)}\n`;
-const FILE_B = `${JSON.stringify({ checks: [check("a"), check("b")] }, null, 2)}\n`;
-const sha = (s: string): string => `sha256-${createHash("sha256").update(s).digest("hex")}`;
+// File-protocol writes are component writes: check writes go to the database since #565.
+const COMPONENT_B = { id: "b", name: "B", checkIds: ["a"] };
+const FILE_B = `${JSON.stringify({ checks: [check("a")], components: [COMPONENT_B] }, null, 2)}\n`;
+const hex = (bytes: string | Buffer): string => createHash("sha256").update(bytes).digest("hex");
+// The admin revision, computed here from its formula: the file revision, a newline, generation 0.
+const sha = (bytes: string | Buffer): string => `sha256-${hex("sha256-" + hex(bytes) + "\n0")}`;
 const REV_A = sha(FILE_A);
 const REV_B = sha(FILE_B);
 const ACTOR = { tokenId: "tok_1", name: "ops" };
@@ -206,10 +210,19 @@ function world(journal: Journal, durableLevel: number): World {
         path: PATH,
         fs,
         holder: createConfigHolder(parseConfig(JSON.parse(FILE_A))),
-        reloader: { revision: () => "", adopt: () => undefined },
+        // A reloader that has applied what is on disk: the precondition sees no disk drift.
+        reloader: {
+          revision: () => {
+            const bytes = fs.live.get(PATH);
+            return bytes === undefined ? "" : `sha256-${hex(bytes)}`;
+          },
+          adopt: () => undefined,
+          fileStatus: () => ({ state: "ok", message: null, lastAppliedAt: 0 }),
+        },
         tempSuffix: () => `${name}-${++n}`,
         hasOpenIncidentFor: () => false,
         pending: db,
+        generation: () => 0,
         now: () => 1,
         warn: () => undefined,
         fault: (point) => {
@@ -220,7 +233,7 @@ function world(journal: Journal, durableLevel: number): World {
   };
 }
 
-const EDIT_B = { kind: "check", action: "create", body: check("b") } as const;
+const EDIT_B = { kind: "component", action: "create", body: COMPONENT_B } as const;
 
 /** Run until a PowerLoss or the end; any other error is the write's normal answer. */
 async function attempt(fn: () => Promise<unknown> | unknown): Promise<"crashed" | "done"> {
@@ -257,8 +270,8 @@ function record(): AuditRecord {
   return {
     at: 1,
     actor: ACTOR,
-    action: "check.create",
-    target: { kind: "check", id: "b" },
+    action: "component.create",
+    target: { kind: "component", id: "b" },
     revision: null,
   };
 }

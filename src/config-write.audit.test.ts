@@ -18,15 +18,27 @@ const FILE_A = `${JSON.stringify({ checks: [{ id: "a", name: "A", url: "https://
 const STORED_MSG =
   "checks file stored; its audit entry is pending and is resolved at the next write or restart";
 
-const sha = (bytes: string | Buffer): string =>
-  `sha256-${createHash("sha256").update(bytes).digest("hex")}`;
+const hex = (bytes: string | Buffer): string => createHash("sha256").update(bytes).digest("hex");
+// The admin revision, computed here from its formula: the file revision, a newline, generation 0.
+const sha = (bytes: string | Buffer): string => `sha256-${hex("sha256-" + hex(bytes) + "\n0")}`;
 
-const checkEdit = (id: string) =>
+// File-protocol writes are component writes: check writes go to the database since #565.
+const componentEdit = (id: string) =>
   ({
-    kind: "check",
+    kind: "component",
     action: "create",
-    body: { id, name: id.toUpperCase(), url: `https://${id}.example/`, intervalMs: 60000 },
+    body: { id, name: id.toUpperCase(), checkIds: ["a"] },
   }) as const;
+
+const followingReloader = (read: () => Buffer | undefined) => ({
+  // A reloader that has applied what is on disk: the precondition then sees no disk drift.
+  revision: () => {
+    const bytes = read();
+    return bytes === undefined ? "" : `sha256-${hex(bytes)}`;
+  },
+  adopt: () => undefined,
+  fileStatus: () => ({ state: "ok" as const, message: null, lastAppliedAt: 0 }),
+});
 
 const errno = (code: string): Error => Object.assign(new Error(`fake ${code}`), { code });
 
@@ -169,10 +181,11 @@ function harness(fs = new MemFs(), pending = new FakePending(fs), warns: string[
     path: PATH,
     fs,
     holder: createConfigHolder(parseConfig(JSON.parse(FILE_A))),
-    reloader: { revision: () => "", adopt: () => undefined },
+    reloader: followingReloader(() => fs.files.get(PATH)),
     tempSuffix: () => `t${++suffix}`,
     hasOpenIncidentFor: () => false,
     pending,
+    generation: () => 0,
     now: () => 1000,
     warn: (line) => warns.push(line),
   });
@@ -182,7 +195,7 @@ function harness(fs = new MemFs(), pending = new FakePending(fs), warns: string[
 /** A write of check `id` based on the current file; resolves to the status-like outcome. */
 async function write(h: Harness, id: string, ifMatch = sha(h.fs.text())): Promise<string> {
   try {
-    await h.writer.apply(checkEdit(id), ifMatch, ACTOR);
+    await h.writer.apply(componentEdit(id), ifMatch, ACTOR);
     return "200";
   } catch (err) {
     const code = err instanceof Error ? Reflect.get(err, "code") : undefined;
@@ -216,8 +229,8 @@ test("success call order: temp name synced before the insert, promote after the 
       id: 1,
       at: 1000,
       actor: ACTOR,
-      action: "check.create",
-      target: { kind: "check", id: "b" },
+      action: "component.create",
+      target: { kind: "component", id: "b" },
       revision: sha(h.fs.text()),
     },
   ]);
@@ -244,7 +257,7 @@ test("failure call order: a rename that throws EIO aborts durably before the rem
 
 /** A pending row for a write to B whose temp file is missing; the checks file is B. */
 function rowForB(h: Harness, temp = "/d/checks.json.old.tmp"): string {
-  const b = `${JSON.stringify({ checks: [{ id: "b", name: "B", url: "https://b.example/", intervalMs: 60000 }] }, null, 2)}\n`;
+  const b = `${JSON.stringify({ checks: [{ id: "a", name: "A", url: "https://a.example/", intervalMs: 60000 }], components: [{ id: "b", name: "B", checkIds: ["a"] }] }, null, 2)}\n`;
   h.fs.files.set(PATH, Buffer.from(b));
   h.pending.insert({ ...rec(), revision: sha(b) }, temp);
   return sha(b);
@@ -254,8 +267,8 @@ function rec(): AuditRecord {
   return {
     at: 1,
     actor: ACTOR,
-    action: "check.create",
-    target: { kind: "check", id: "b" },
+    action: "component.create",
+    target: { kind: "component", id: "b" },
     revision: null,
   };
 }
@@ -449,7 +462,6 @@ test("interleaving: write 2 with a stale If-Match syncs before it promotes, then
     "lstat(/d/checks.json.t1.tmp)",
     "fsyncDir(/d)",
     "pending.promote",
-    "readFile(/d/checks.json)",
   ]);
 });
 
@@ -479,10 +491,11 @@ test("a pending row from another working directory is recovered by its absolute 
       path: "checks.json",
       fs: nodeConfigFs,
       holder: createConfigHolder(parseConfig(JSON.parse(FILE_A))),
-      reloader: { revision: () => "", adopt: () => undefined },
+      reloader: followingReloader(() => readFileSync("checks.json")),
       tempSuffix: () => "crash",
       hasOpenIncidentFor: () => false,
       pending: createPendingAudit(db),
+      generation: () => 0,
       now: () => 1000,
       warn: () => undefined,
       ...(fault === undefined ? {} : { fault }),
@@ -493,9 +506,9 @@ test("a pending row from another working directory is recovered by its absolute 
     const crash = (p: string): void => {
       if (p === "pending.insert") throw new PowerLoss("crash");
     };
-    await expect(writerIn(db1, crash).apply(checkEdit("b"), sha(FILE_A), ACTOR)).rejects.toThrow(
-      PowerLoss,
-    );
+    await expect(
+      writerIn(db1, crash).apply(componentEdit("b"), sha(FILE_A), ACTOR),
+    ).rejects.toThrow(PowerLoss);
     const stored = db1.query("SELECT temp_path FROM audit_pending").all() as {
       temp_path: string;
     }[];
@@ -523,14 +536,15 @@ test("the real store records the entry of a write in audit_log", async () => {
     path,
     fs: nodeConfigFs,
     holder: createConfigHolder(parseConfig(JSON.parse(FILE_A))),
-    reloader: { revision: () => "", adopt: () => undefined },
+    reloader: followingReloader(() => readFileSync(path)),
     tempSuffix: () => "s",
     hasOpenIncidentFor: () => false,
     pending: createPendingAudit(real),
+    generation: () => 0,
     now: () => 5,
     warn: () => undefined,
   });
-  await writer.apply(checkEdit("b"), sha(FILE_A), ACTOR);
+  await writer.apply(componentEdit("b"), sha(FILE_A), ACTOR);
   expect(real.query("SELECT revision, target_id FROM audit_log").all()).toEqual([
     { revision: sha(readFileSync(path)), target_id: "b" },
   ]);

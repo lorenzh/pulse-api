@@ -3,15 +3,19 @@ import type {
   AdminCheckView,
   AdminComponent,
   AdminConfigResponse,
+  AdminFileStatus,
   AdminMaintenanceView,
   AdminWriteResponse,
   Check,
 } from "@lorenzh/pulse-contract";
 import { isRecord } from "@lorenzh/pulse-kit";
 import type { AuditRecord, PendingAudit } from "./audit-log.ts";
+import type { CheckDefinition } from "./check-store.ts";
 import { type Config, ConfigError, parseConfig } from "./config.ts";
 import type { ConfigHolder } from "./config-holder.ts";
-import { type ConfigReloader, revisionOf } from "./config-reload.ts";
+import { adminRevision, type ConfigReloader, revisionOf } from "./config-reload.ts";
+import { effectiveChecks } from "./effective-checks.ts";
+import { createWriteLock, type WriteLock } from "./write-lock.ts";
 
 export type ConfigKind = "check" | "component" | "maintenance";
 export type ConfigAction = "create" | "replace" | "delete";
@@ -61,7 +65,9 @@ export interface WriterDeps {
   path: string;
   fs: WriteFs;
   holder: ConfigHolder;
-  reloader: Pick<ConfigReloader, "revision" | "adopt">;
+  reloader: Pick<ConfigReloader, "revision" | "adopt" | "fileStatus">;
+  /** The database generation; with the applied file revision it makes the admin revision. */
+  generation: () => number;
   /** A unique file name part for the temp file. */
   tempSuffix: () => string;
   /** True when an unresolved manual incident names the component. */
@@ -71,6 +77,8 @@ export interface WriterDeps {
   now: () => number;
   /** Warn lines name an error code only, never a path. */
   warn: (line: string) => void;
+  /** Shared with the database check writer; defaults to a lock of its own. */
+  lock?: WriteLock;
   /** Test only: called after each named step of the write protocol. */
   fault?: (point: string) => void;
 }
@@ -117,23 +125,37 @@ function mapFsError(err: unknown): ConfigWriteError {
   });
 }
 
-/** The check as served: header names only, no body, no secret. */
-export function checkView(check: Check): AdminCheckView {
+type CheckSource = AdminCheckView["source"];
+
+const KEEP = { keep: true } as const;
+
+/** The check as served: `{ env }` references stay, literal values and bodies become keep markers. */
+export function checkView(check: Check, source: CheckSource): AdminCheckView {
   switch (check.type) {
     case "heartbeat":
-      return { ...check, hasSecret: true as const };
+      return { ...check, source, hasSecret: true as const };
     case "tls":
     case "tcp":
     case "dns":
     case "domain":
-      return { ...check };
+      return { ...check, source };
     case undefined:
     case "http": {
       const { headers, body, ...rest } = check;
       return {
         ...rest,
-        ...(headers === undefined ? {} : { headers: Object.keys(headers) }),
-        ...(body === undefined ? {} : { hasBody: true }),
+        source,
+        ...(headers === undefined
+          ? {}
+          : {
+              headers: Object.fromEntries(
+                Object.entries(headers).map(([name, value]) => [
+                  name,
+                  typeof value === "string" ? KEEP : { env: value.env },
+                ]),
+              ),
+            }),
+        ...(body === undefined ? {} : { body: KEEP }),
       };
     }
     default: {
@@ -143,12 +165,21 @@ export function checkView(check: Check): AdminCheckView {
   }
 }
 
-export function configView(config: Config, revision: string): AdminConfigResponse {
+/** The admin view: applied file checks first, then the database checks the file does not shadow. */
+export function configView(
+  config: Config,
+  revision: string,
+  definitions: readonly CheckDefinition[],
+  file: AdminFileStatus,
+): AdminConfigResponse {
+  const merged = effectiveChecks({ checks: config.checks, secretDigests: new Map() }, definitions);
   return {
     revision,
-    checks: config.checks.map(checkView),
+    checks: merged.checks.map((check) => checkView(check, merged.sources.get(check.id) ?? "file")),
+    shadowed: merged.shadowed.map((d) => checkView(d.check, "database")),
     components: config.components.map((c) => ({ ...c })),
     maintenance: config.maintenance.map((w, index) => ({ ...w, index })),
+    file: { ...file },
   };
 }
 
@@ -336,7 +367,7 @@ function entityOf(edit: ConfigEdit, config: Config, index: number): AdminWriteRe
   switch (edit.kind) {
     case "check": {
       const check = config.checks[index];
-      return check === undefined ? undefined : checkView(check);
+      return check === undefined ? undefined : checkView(check, "file");
     }
     case "component": {
       const component: AdminComponent | undefined = config.components[index];
@@ -375,21 +406,40 @@ export function createConfigWriter(deps: WriterDeps): ConfigWriter {
   const { path, fs, pending } = deps;
   const dir = dirname(path);
   const fault = deps.fault ?? (() => undefined);
-  let tail: Promise<unknown> = Promise.resolve();
+  const lock = deps.lock ?? createWriteLock();
 
-  const readBytes = (): Buffer => {
+  /** The state named in a 412 when the disk no longer holds the applied file. */
+  const diskState = (bytes: Buffer): AdminFileStatus["state"] => {
+    const known = deps.reloader.fileStatus().state;
+    if (known !== "ok") return known;
     try {
-      return fs.readFile(path);
-    } catch (err) {
-      throw mapFsError(err);
+      parseConfig(JSON.parse(bytes.toString("utf8")));
+    } catch {
+      // Only the kind of difference is reported, never the parser text of a foreign file.
+      return "invalid";
     }
+    return "written-not-applied";
   };
 
+  const diskDiffers = (state: AdminFileStatus["state"]): ConfigWriteError =>
+    new ConfigWriteError(
+      "stale",
+      `the checks file on disk differs from the applied one (${state}): fix or reload it, then retry`,
+    );
+
+  /** The If-Match must be the admin revision, and the disk must still hold the applied file. */
   const assertCurrent = (ifMatch: string): Buffer => {
-    const bytes = readBytes();
-    if (revisionOf(bytes) !== ifMatch) {
+    const applied = deps.reloader.revision();
+    if (adminRevision(applied, deps.generation()) !== ifMatch) {
       throw new ConfigWriteError("stale", "the checks file changed: reload it and retry");
     }
+    let bytes: Buffer;
+    try {
+      bytes = fs.readFile(path);
+    } catch (err) {
+      throw Object.assign(diskDiffers("unreadable"), { cause: err });
+    }
+    if (revisionOf(bytes) !== applied) throw diskDiffers(diskState(bytes));
     return bytes;
   };
 
@@ -544,7 +594,7 @@ export function createConfigWriter(deps: WriterDeps): ConfigWriter {
     const { index } = applyEdit(edit, doc, deps.hasOpenIncidentFor);
     const config = validated(doc);
     const data = Buffer.from(`${JSON.stringify(doc, null, 2)}\n`, "utf8");
-    const revision = revisionOf(data);
+    const revision = adminRevision(revisionOf(data), deps.generation());
     store(data, ifMatch, config, {
       at: deps.now(),
       actor,
@@ -556,7 +606,13 @@ export function createConfigWriter(deps: WriterDeps): ConfigWriter {
   };
 
   return {
-    view: () => configView(deps.holder.get(), deps.reloader.revision()),
+    view: () =>
+      configView(
+        deps.holder.file(),
+        adminRevision(deps.reloader.revision(), deps.generation()),
+        deps.holder.definitions(),
+        deps.reloader.fileStatus(),
+      ),
     assertWritable() {
       try {
         fs.assertWritable(dir);
@@ -565,10 +621,7 @@ export function createConfigWriter(deps: WriterDeps): ConfigWriter {
       }
     },
     apply(edit, ifMatch, actor) {
-      const result = tail.then(() => run(edit, ifMatch, actor));
-      // The chain goes on after a failure.
-      tail = result.catch(() => undefined);
-      return result;
+      return lock.run(() => run(edit, ifMatch, actor));
     },
     resolvePending,
   };

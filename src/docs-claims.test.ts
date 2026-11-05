@@ -88,3 +88,40 @@ test("operation: rotation overlap, lockout restore, audit growth, EXTRA and orph
     /Going back without restoring the backup works only to a release with the same/,
   );
 });
+
+test("docs: checks come from the file and the database; a snapshot lets a broken file start", () => {
+  const operation = read("docs/operation.md");
+  const restApi = read("docs/rest-api.md");
+  assert.doesNotMatch(operation, /The checks file is the only source of truth/);
+  assert.doesNotMatch(restApi, /The checks file stays the only source of truth/);
+  assert.doesNotMatch(operation, /A start with an invalid file still fails/);
+  assert.doesNotMatch(
+    restApi,
+    /Responses never contain header values, `\{"env": NAME\}` references/,
+  );
+  assert.match(operation, /using the checks file applied at <ISO time>/);
+  assert.match(operation, /GET-edit-PUT/);
+  assert.match(operation, /may reference only file checks/);
+  assert.match(
+    operation,
+    /back up before the upgrade, because database checks exist only in the database/,
+  );
+  assert.match(operation, /Database check writes never answer `503`/);
+  assert.match(restApi, /`\{"keep": true\}`/);
+  assert.match(read("docs/troubleshooting.md"), /no snapshot of an applied file/);
+  assert.match(read("docs/configuration.md"), /reference only checks of the file/);
+});
+
+test("docs: the export is documented with redacted, restoration with new secrets and no import", () => {
+  const rest = read("docs/rest-api.md");
+  assert.match(rest, /### GET \/admin\/config\/export/);
+  assert.match(rest, /An export with `redacted` cannot be loaded as a checks file/);
+  assert.match(rest, /There is no import route/);
+  assert.match(read("docs/operation.md"), /### Export the checks/);
+  assert.match(
+    read("docs/configuration.md"),
+    /an export with a `redacted` key is refused by this parser/,
+  );
+  assert.match(read("docs/troubleshooting.md"), /unknown key "redacted"/);
+  assert.match(read("README.md"), /There is no import\./);
+});

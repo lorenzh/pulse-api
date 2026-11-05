@@ -222,6 +222,11 @@ function parseHttp(raw: Record<string, unknown>, where: (string | number)[]): Ht
   const parsed = HTTP_SCHEMA.safeParse(raw);
   if (!parsed.success) return failWith(parsed.error, where);
   const v = parsed.data;
+  // JSON.parse keeps an own `__proto__` key, which the contract validator skips and later
+  // object copies drop; refuse it so that the stored check is the one validated.
+  if (isRecord(v.headers) && Object.hasOwn(v.headers, "__proto__")) {
+    throw new ConfigError(`${pathName(where)}.headers: must not contain the name __proto__`);
+  }
   const timeout = v.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const worst = (v.retries + 1) * timeout + v.retries * v.retryDelayMs;
   if (v.retries > 0 && worst > v.intervalMs) {
@@ -313,6 +318,28 @@ const TOP_SCHEMA = z.strictObject(
   { error: 'config must be an object with a "checks" array' },
 );
 
+/**
+ * Validate one check with the rules of a checks file entry; throws ConfigError. `secret` is the
+ * heartbeat ping secret, null for every other type.
+ */
+export function parseCheck(
+  raw: unknown,
+  where: (string | number)[] = ["check"],
+): { check: Check; secret: string | null } {
+  if (!isRecord(raw)) throw new ConfigError(`${pathName(where)} must be an object`);
+  const type = raw.type ?? "http";
+  if (!isCheckType(type)) {
+    throw new ConfigError(
+      `${pathName(where)}.type must be "http", "tls", "tcp", "dns", "domain" or "heartbeat"`,
+    );
+  }
+  if (type === "heartbeat") return parseHeartbeat(raw, where);
+  if (type === "tcp" || type === "dns" || type === "domain") {
+    return { check: parseProbed(raw, where, type), secret: null };
+  }
+  return { check: type === "tls" ? parseTls(raw, where) : parseHttp(raw, where), secret: null };
+}
+
 /** Validate a parsed checks file and return the heartbeat secrets with it; throws ConfigError. */
 export function parseChecksWithSecrets(data: unknown): ParsedChecks {
   const top = TOP_SCHEMA.safeParse(data);
@@ -325,24 +352,9 @@ export function parseChecksWithSecrets(data: unknown): ParsedChecks {
   const checks: Check[] = [];
   const secrets = new Map<string, string>();
   top.data.checks.forEach((raw: unknown, i: number) => {
-    const where = ["checks", i];
-    if (!isRecord(raw)) throw new ConfigError(`${pathName(where)} must be an object`);
-    const type = raw.type ?? "http";
-    if (!isCheckType(type)) {
-      throw new ConfigError(
-        `${pathName(where)}.type must be "http", "tls", "tcp", "dns", "domain" or "heartbeat"`,
-      );
-    }
-    let check: Check;
-    if (type === "heartbeat") {
-      const parsed = parseHeartbeat(raw, where);
-      check = parsed.check;
-      secrets.set(check.id, parsed.secret);
-    } else if (type === "tcp" || type === "dns" || type === "domain") {
-      check = parseProbed(raw, where, type);
-    } else {
-      check = type === "tls" ? parseTls(raw, where) : parseHttp(raw, where);
-    }
+    const parsed = parseCheck(raw, ["checks", i]);
+    const check = parsed.check;
+    if (parsed.secret !== null) secrets.set(check.id, parsed.secret);
     if (seen.has(check.id)) throw new ConfigError(`duplicate check id "${check.id}"`);
     seen.add(check.id);
     checks.push(check);

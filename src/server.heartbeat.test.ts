@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, test } from "bun:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import type { ChecksResponse, ErrorResponse } from "@lorenzh/pulse-contract";
 import { openDb } from "./db.ts";
@@ -9,6 +10,8 @@ import { createService } from "./service.ts";
 import { openTokenStore } from "./token-import.ts";
 
 const SECRET = "hb-secret-0123456789abcdef";
+// Independent of the code under test: the ping route gets digests only.
+const sha256Hex = (text: string): string => createHash("sha256").update(text).digest("hex");
 const TOKEN = "probe-token-0123456789abcdef";
 const NOW = 1_000_000;
 
@@ -25,10 +28,10 @@ const server = createApiServer(service, {
     { db: openDb(":memory:"), now: () => 0 },
     { probe: [{ location: "east", token: TOKEN }], admin: undefined },
   ),
-  heartbeatSecrets: () =>
+  heartbeatDigests: () =>
     new Map([
-      ["job", SECRET],
-      ["off", "other-secret-0123456789abc"],
+      ["job", sha256Hex(SECRET)],
+      ["off", sha256Hex("other-secret-0123456789abc")],
     ]),
   metrics,
   now: () => NOW,
@@ -191,7 +194,7 @@ async function freshApi(): Promise<{
       { db: openDb(":memory:"), now: () => 0 },
       { probe: [{ location: "default", token: TOKEN }], admin: undefined },
     ),
-    heartbeatSecrets: () => new Map([["hb", SECRET]]),
+    heartbeatDigests: () => new Map([["hb", sha256Hex(SECRET)]]),
     metrics: m,
     now: () => NOW,
   });
@@ -300,5 +303,40 @@ test("a ping still records an up result for the heartbeat check", async () => {
     assert.equal(api.service.listChecks().find((c) => c.id === "hb")?.state, "up");
   } finally {
     await api.close();
+  }
+});
+
+test("the route compares digests: a stored plaintext or a bad digest accepts no ping", async () => {
+  const s = createService(openDb(":memory:"), { now: () => NOW });
+  s.upsertChecks([
+    { id: "plain", name: "Plain", type: "heartbeat", period: 60000, grace: 0 },
+    { id: "short", name: "Short", type: "heartbeat", period: 60000, grace: 0 },
+    { id: "ok", name: "Ok", type: "heartbeat", period: 60000, grace: 0 },
+  ]);
+  const srv = createApiServer(s, {
+    tokenStore: openTokenStore(
+      { db: openDb(":memory:"), now: () => 0 },
+      { probe: [{ location: "default", token: TOKEN }], admin: undefined },
+    ),
+    heartbeatDigests: () =>
+      new Map([
+        ["plain", SECRET],
+        ["short", sha256Hex(SECRET).slice(0, 62)],
+        ["ok", "fad9b126d9059f42e8c4bf9446affa60d228bb2e692f4a87b1d23d6f9003e434"],
+      ]),
+    now: () => NOW,
+  });
+  await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+  try {
+    const url = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`;
+    for (const id of ["plain", "short"]) {
+      const res = await fetch(`${url}/heartbeat/${id}/${SECRET}`, { method: "POST" });
+      assert.equal(res.status, 401, id);
+    }
+    // The digest literal is the SHA-256 of this secret (sha256sum).
+    const ok = await fetch(`${url}/heartbeat/ok/literal-ping-secret-42`, { method: "POST" });
+    assert.equal(ok.status, 204);
+  } finally {
+    await new Promise<void>((r) => srv.close(() => r()));
   }
 });

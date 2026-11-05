@@ -70,6 +70,7 @@ function setup(opts: SetupOpts): Harness {
           return opts.bytes ?? VALID;
         },
       },
+      now: () => 0,
       onApply: (_config: Config) => {
         applies += 1;
         if (failures.length > 0) throw failures.shift();
@@ -142,14 +143,61 @@ test("an invalid file is rejected once per stamp", () => {
   assert.deepEqual(h.results, ["invalid"]);
 });
 
-test("a read failure is rejected once and read once per stamp", () => {
+test("a read failure is rejected and counted once, while it is read again at every poll", () => {
   const err = Object.assign(new Error("denied"), { code: "EACCES" });
   const h = setup({ readError: err });
   h.poll();
   h.poll();
   assert.deepEqual(h.lines, [`config reload rejected: ${PATH}: cannot read the file (EACCES)`]);
   assert.deepEqual(h.results, ["invalid"]);
-  assert.equal(h.reads(), 1);
+  assert.equal(h.reads(), 2);
+});
+
+test("an unreadable file under an unchanged stamp is applied once it is readable again", () => {
+  const cases = [
+    { name: "unreadable at start (fallback)", isUnreadableAtStart: true },
+    { name: "unreadable at a poll", isUnreadableAtStart: false },
+  ];
+  for (const c of cases) {
+    let isDenied = true;
+    const results: ConfigReloadResult[] = [];
+    const reloader = createConfigReloader(
+      {
+        path: PATH,
+        fs: {
+          // A chmod changes neither mtime, size nor inode.
+          stat: () => STAMP,
+          readFile: () => {
+            if (isDenied) throw Object.assign(new Error("denied"), { code: "EACCES" });
+            return VALID;
+          },
+        },
+        now: () => 5000,
+        onApply: () => undefined,
+        log: () => undefined,
+        metrics: { recordConfigReload: (r) => results.push(r) },
+      },
+      {
+        config: parseConfigText(PATH, VALID.toString("utf8")),
+        revision: INITIAL,
+        stampKey: c.isUnreadableAtStart ? "2:10:1" : "old",
+        appliedAt: 1000,
+        ...(c.isUnreadableAtStart
+          ? { status: { state: "unreadable" as const, message: "cannot read the file (EACCES)" } }
+          : {}),
+      },
+    );
+    reloader.poll();
+    assert.equal(reloader.fileStatus().state, "unreadable", c.name);
+    isDenied = false;
+    reloader.poll();
+    assert.deepEqual(
+      reloader.fileStatus(),
+      { state: "ok", message: null, lastAppliedAt: 5000 },
+      c.name,
+    );
+    assert.equal(reloader.revision(), revisionOf(VALID), c.name);
+  }
 });
 
 test("the failure line holds name and safe code only, never the message", () => {
