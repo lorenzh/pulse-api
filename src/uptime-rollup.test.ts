@@ -64,6 +64,8 @@ function spyService(service: RollupService) {
       calls.push({ id, day: d, isStored });
       return isStored;
     },
+    incompleteLocationDays: (id) => service.incompleteLocationDays(id),
+    fillLocationDay: (id, d) => service.fillLocationDay(id, d),
   };
   return { spy, calls };
 }
@@ -162,12 +164,10 @@ test("uptime backfill: one fill per (check, day), each followed by a sleep(0)", 
       return Promise.resolve();
     },
   });
-  assert.deepEqual(result, { checks: 3, written: ALL_DAYS });
+  // One location day: the only closed day with results; it is rebuilt after all uptime days.
+  assert.deepEqual(result, { checks: 3, written: ALL_DAYS, locationDays: 1 });
   assert.equal(new Set(calls.map((c) => `${c.id}:${c.day}`)).size, ALL_DAYS);
-  assert.deepEqual(
-    yieldsAfter,
-    Array.from({ length: ALL_DAYS }, (_, i) => i + 1),
-  );
+  assert.deepEqual(yieldsAfter, [...Array.from({ length: ALL_DAYS }, (_, i) => i + 1), ALL_DAYS]);
   assert.equal(service.getUptime()[0]?.days[88]?.uptime, 75);
 });
 
@@ -185,7 +185,10 @@ test("uptime backfill: a restart on a complete table computes nothing; after mid
   await fire(second.timers, 0);
   await r2.stop();
   assert.equal(sameDay.calls.length, 0);
-  assert.equal(second.logs[1], "uptime rollup: backfill done, stored 0 days in 0 ms");
+  assert.equal(
+    second.logs[1],
+    "uptime rollup: backfill done, stored 0 days and 0 location days in 0 ms",
+  );
 
   const nextDay = spyService(createService(db, { now: () => NOW + DAY }));
   const third = runnerDeps(nextDay.spy);
@@ -197,7 +200,10 @@ test("uptime backfill: a restart on a complete table computes nothing; after mid
     { id: "b", day: TODAY_DAY, isStored: true },
     { id: "hb", day: TODAY_DAY, isStored: true },
   ]);
-  assert.equal(third.logs[1], "uptime rollup: backfill done, stored 3 days in 0 ms");
+  assert.equal(
+    third.logs[1],
+    "uptime rollup: backfill done, stored 3 days and 0 location days in 0 ms",
+  );
 });
 
 test("uptime backfill: a day stored by a read during a pause is skipped, no duplicates", async () => {
@@ -215,7 +221,7 @@ test("uptime backfill: a day stored by a read during a pause is skipped, no dupl
   gate.release();
   await running;
   assert.equal(calls.filter((c) => c.isStored).length, 1);
-  assert.equal(logs[1], "uptime rollup: backfill done, stored 1 days in 0 ms");
+  assert.equal(logs[1], "uptime rollup: backfill done, stored 1 days and 1 location days in 0 ms");
   const perCheck = db
     .query(
       "SELECT check_id AS id, COUNT(*) AS n, COUNT(DISTINCT day) AS days FROM uptime_daily GROUP BY check_id ORDER BY check_id",
@@ -246,13 +252,13 @@ test("uptime logs: start and done with an integer duration; hourly only when day
   await fire(timers, 0);
   assert.deepEqual(logs, [
     "uptime rollup: backfill started (3 checks)",
-    "uptime rollup: backfill done, stored 267 days in 1234 ms",
+    "uptime rollup: backfill done, stored 267 days and 0 location days in 1234 ms",
   ]);
   await fire(timers, 1);
   assert.equal(logs.length, 2, "an hourly run with 0 days logs nothing");
   db.run("DELETE FROM uptime_daily WHERE check_id = 'a' AND day >= ?", [TODAY_DAY - 3]);
   await fire(timers, 2);
-  assert.deepEqual(logs.slice(2), ["uptime rollup: stored 3 days in 1234 ms"]);
+  assert.deepEqual(logs.slice(2), ["uptime rollup: stored 3 days and 0 location days in 1234 ms"]);
 });
 
 test("uptime logs: a failed run logs the error and no done line, and the next run is scheduled", async () => {
@@ -263,6 +269,8 @@ test("uptime logs: a failed run logs the error and no done line, and the next ru
       throw new Error("boom");
     },
     fillUptimeDay: () => true,
+    incompleteLocationDays: () => [],
+    fillLocationDay: () => false,
   };
   const { deps, timers, logs } = runnerDeps(failing);
   startUptimeRollup(deps);
@@ -431,6 +439,8 @@ test("uptime logs: the failure line is warn, the start line is info", async () =
       throw new Error("boom");
     },
     fillUptimeDay: () => true,
+    incompleteLocationDays: () => [],
+    fillLocationDay: () => false,
   };
   const { deps, timers } = runnerDeps(failing, {
     log: (m, level) => lines.push([m, level]),

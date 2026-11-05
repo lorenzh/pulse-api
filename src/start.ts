@@ -376,6 +376,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     deleteManualIncidents: (cutoff) => manualIncidents.deleteResolvedBefore(cutoff),
     deleteLatencyRollups: (cutoff) => service.deleteExpiredLatency(cutoff),
     deleteUptimeRollups: (cutoff) => service.deleteExpiredUptime(cutoff),
+    deleteLocationUptimeRollups: (cutoff) => service.deleteExpiredLocationUptime(cutoff),
   });
 
   const heartbeat = startHeartbeatEvaluator({

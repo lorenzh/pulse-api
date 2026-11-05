@@ -80,6 +80,17 @@ CREATE TABLE IF NOT EXISTS latency_daily (
   count INTEGER NOT NULL,
   PRIMARY KEY (check_id, day)
 );
+-- Good and total results per closed UTC day and location. IF NOT EXISTS, no numbered step: a
+-- day whose location totals do not sum to uptime_daily.total is rebuilt from results, so a file
+-- that an older release changed without these rows stays correct.
+CREATE TABLE IF NOT EXISTS uptime_location_daily (
+  check_id TEXT NOT NULL,
+  day INTEGER NOT NULL,
+  location TEXT NOT NULL,
+  good INTEGER NOT NULL,
+  total INTEGER NOT NULL,
+  PRIMARY KEY (check_id, day, location)
+);
 `;
 
 export class SchemaVersionError extends Error {
