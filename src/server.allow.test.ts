@@ -87,10 +87,15 @@ test("the read routes answer 405 with Allow: GET", async () => {
     "/maintenance",
     "/checks/a/results",
     "/checks/a/latency",
+    "/checks/a/location-uptime",
     "/checks/unknown/results",
   ];
   for (const path of paths) await expect405("POST", path, "GET");
   await expect405("HEAD", "/checks", "GET");
+  await expect405("HEAD", "/checks/a/location-uptime", "GET");
+  for (const method of ["PUT", "PATCH", "DELETE", "OPTIONS"]) {
+    await expect405(method, "/checks/a/location-uptime", "GET");
+  }
 });
 
 test("the heartbeat answers 405 with Allow: GET, POST for any id", async () => {

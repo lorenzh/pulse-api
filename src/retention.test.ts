@@ -252,6 +252,38 @@ test("cleanupResults: uptime tallies before the cutoff day and of gone checks ar
   ]);
 });
 
+test("cleanupResults: location tallies before the cutoff day and of gone checks are deleted, the window and inactive checks stay", async () => {
+  const { db, service } = setup();
+  // eslint-disable-next-line sonarjs/no-clear-text-protocols -- plain http literal is a local test fixture
+  const a = { id: "a", name: "A", url: "http://a/", intervalMs: 60_000 };
+  service.upsertChecks([a, { ...a, id: "z", name: "Z" }]);
+  service.upsertChecks([a]); // z is deactivated but stays in `checks`
+  const cutoffDay = retentionCutoff(NOW, 90) / DAY;
+  const add = db.prepare(
+    "INSERT INTO uptime_location_daily (check_id, day, location, good, total) VALUES (?, ?, ?, 1, 1)",
+  );
+  add.run("a", cutoffDay - 1, "eu");
+  add.run("a", cutoffDay - 1, "us");
+  add.run("a", cutoffDay, "eu");
+  add.run("gone", cutoffDay + 5, "eu");
+  add.run("z", cutoffDay + 5, "eu");
+  const deleted = await cleanupResults(service, {
+    now: () => NOW,
+    retentionDays: 90,
+    sleep: () => Promise.resolve(),
+    deleteLocationUptimeRollups: (cutoff) => service.deleteExpiredLocationUptime(cutoff),
+  });
+  // Three location rows plus the four results of days 100 and 91 (two locations each).
+  assert.equal(deleted, 3 + 4);
+  const rows = db
+    .query("SELECT check_id AS id, day, location FROM uptime_location_daily ORDER BY check_id")
+    .all();
+  assert.deepEqual(rows, [
+    { id: "a", day: cutoffDay, location: "eu" },
+    { id: "z", day: cutoffDay + 5, location: "eu" },
+  ]);
+});
+
 test("cleanupResults: resolved manual incidents older than the window are deleted, open ones stay", async () => {
   const { db, service } = setup();
   const store = createManualIncidentStore(db, { now: () => NOW, componentIds: () => new Set() });

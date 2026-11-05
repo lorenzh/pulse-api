@@ -43,6 +43,8 @@ The table `latency_daily` (daily p50 and p95 per check) is created with `CREATE 
 
 The table `uptime_daily` holds the good and total result counts per check and closed UTC day, the source of the closed days in `GET /uptime`, `GET /components/uptime` and `slo`. It can be rebuilt from the results. Deleting its rows with the API stopped is safe: the backfill and the reads fill them again from `results`. Do not delete rows while the API runs, because it keeps the loaded days in memory.
 
+The table `uptime_location_daily` holds the good and total result counts per check, closed UTC day and location, the source of the closed days in `GET /checks/:id/location-uptime`. It is created with `CREATE TABLE IF NOT EXISTS` on every open, without a numbered step, so `user_version` does not change. A stored day counts as complete when its location totals sum to that day's `uptime_daily` total; otherwise a read or the backfill replaces the day's location rows from `results` in one transaction. So the table can be rebuilt from the results: restoring a file without it, or deleting its rows, is safe. A downgrade without a restore is safe too: an older release ignores the table, and a late result that it stores changes only `uptime_daily`, so that day no longer sums and is rebuilt after the next upgrade.
+
 #### Rolling out latency history and availability objectives
 
 Roll out in this order:
@@ -67,10 +69,10 @@ The uptime backfill fills `uptime_daily` the same way. It starts 5 s after the A
 
 ```text
 uptime rollup: backfill started (20 checks)
-uptime rollup: backfill done, stored 0 days in 2 ms
+uptime rollup: backfill done, stored 0 days and 0 location days in 2 ms
 ```
 
-An hourly run logs `uptime rollup: stored <N> days in <D> ms` only when it stored days. A failed run logs `uptime rollup failed: <message>` at `warn`; the other lines are `info`. A shutdown waits for the batch in progress before it closes the database.
+After the uptime days, the same run rebuilds the location tallies (`uptime_location_daily`) of every closed day whose location totals do not sum to its `uptime_daily` total, one (check, day) per batch with a yield after each. An hourly run logs `uptime rollup: stored <N> days and <L> location days in <D> ms` only when it stored days or location days. A failed run logs `uptime rollup failed: <message>` at `warn`; the other lines are `info`. A shutdown waits for the batch in progress before it closes the database.
 
 ### Upgrades
 
@@ -146,7 +148,7 @@ A backup from an older version is migrated at start. A file with a newer schema 
 
 ## Retention and disk space
 
-Cleanup of old results runs at start and then hourly. See [Retention](concepts.md#retention) for the rules. Set the number of days with `PULSE_RETENTION_DAYS`. The latency rollups (`latency_daily`, one small row per HTTP check and day) are deleted with the same cutoff, which is never inside the 90-day window, and when their check is gone. The uptime tallies (`uptime_daily`, one small row per check and closed day) follow the same rules: the same cutoff, and deleted when their check is gone. A check removed from the configuration stays in the database, so its rows stay.
+Cleanup of old results runs at start and then hourly. See [Retention](concepts.md#retention) for the rules. Set the number of days with `PULSE_RETENTION_DAYS`. The latency rollups (`latency_daily`, one small row per HTTP check and day) are deleted with the same cutoff, which is never inside the 90-day window, and when their check is gone. The uptime tallies (`uptime_daily`, one small row per check and closed day) and the location tallies (`uptime_location_daily`, one small row per check, closed day and location) follow the same rules: the same cutoff, and deleted when their check is gone. A check removed from the configuration stays in the database, so its rows stay.
 
 Rows per check per day are `86400 / interval_s * locations`. A row takes roughly 100 bytes with its indexes in a measured database of minimal rows (129,600 rows, 60 s interval, about 13 MB). Allow about 250 bytes for rows with reasons. Example: 60 s interval, 1 location and 90 days give 129,600 rows, roughly 30 MB per check.
 

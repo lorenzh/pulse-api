@@ -85,7 +85,7 @@ The `401` check comes before body checks, so a caller without a token learns not
 Raw results are deleted after `PULSE_RETENTION_DAYS` days (default and minimum 90, the window of `GET /uptime`).
 
 - Resolved manual incidents are deleted with the same cutoff, by their resolution time, with their notes.
-- The stored daily uptime tallies (`uptime_daily`) and latency rollups follow the same cutoff, by their day.
+- The stored daily uptime tallies (`uptime_daily`, `uptime_location_daily`) and latency rollups follow the same cutoff, by their day.
 - Retention counts whole UTC days including today. Results before the start of the UTC day `PULSE_RETENTION_DAYS - 1` days ago are deleted.
 - The newest result of each check and location is always kept.
 - Automatic incidents are never deleted.
@@ -98,6 +98,8 @@ The database file does not shrink after deletes. SQLite reuses the freed pages. 
 `GET /uptime` returns the uptime of the last 90 UTC calendar days per check. A day's uptime is `(up + degraded results) / all results * 100`, unrounded. `degraded` counts as up, all locations count, and maintenance is not subtracted. A day without results has `uptime: null`: it is not down.
 
 Closed days are stored once in the table `uptime_daily` (good and total results per check and UTC day). A late result for a closed day still counts: it updates the stored day in the same write. Today's tally is kept per check in memory. It is built from today's results at the first read in a process or a new UTC day, then updated after every stored result. Results stamped after now are left out at read time. The rows are filled by a background backfill after start and by reads that find a closed day without a row, so responses are the same before, during and after the backfill.
+
+Per-location uptime uses the same window and the same sample set, split by the location that stored each result (heartbeat results have the location `heartbeat`). For each location, `good` counts results that are not `down`, `results` counts all, and `uptime` is `good / results * 100`, or `null` without results. Every location with a stored result at any age is listed once, sorted by name in UTF-16 code-unit order; a location with only older results is listed with `results` 0. The per-location numbers are never averaged into the aggregate: summed over locations, `results` equals the results of the aggregate uptime at the same time. Closed days come from the table `uptime_location_daily`. A day whose location totals do not sum to its `uptime_daily` total is rebuilt from the results; a late result for a closed, stored day updates both in the same write. Today is one query over today's results up to now.
 
 ## Latency history and availability objective
 

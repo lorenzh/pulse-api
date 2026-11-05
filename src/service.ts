@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import type {
   Check,
   CheckLatency,
+  CheckLocationUptime,
   CheckState,
   CheckStateFields,
   CheckStatus,
@@ -11,6 +12,7 @@ import type {
   Incident,
   Location,
   LocationResult,
+  LocationUptime,
   MaintenanceWindow,
   Result,
   UptimeDay,
@@ -211,6 +213,20 @@ export interface Service {
   fillUptimeDay(checkId: string, day: number): boolean;
   /** Delete uptime tallies of days before the UTC day of `cutoff`, and of checks that no longer exist. */
   deleteExpiredUptime(cutoff: number): number;
+  /** The 90-day uptime of one active check per location; undefined when unknown or inactive. */
+  getCheckLocationUptime(id: string): CheckLocationUptime | undefined;
+  /**
+   * The closed days in the 90-day window of a check whose stored uptime tally has results but
+   * whose location tallies do not sum to it, ascending.
+   */
+  incompleteLocationDays(checkId: string): number[];
+  /**
+   * Rebuild the location tallies of one closed day from the results. False when the day is
+   * complete by now, has no uptime tally yet, or is not closed: nothing is written then.
+   */
+  fillLocationDay(checkId: string, day: number): boolean;
+  /** Delete location tallies of days before the UTC day of `cutoff`, and of checks that no longer exist. */
+  deleteExpiredLocationUptime(cutoff: number): number;
   /** True when the database answers a trivial query. */
   isDbReady(): boolean;
   /** Delete up to `limit` results older than `cutoff`, keeping the newest per check and location. Returns the count. */
@@ -274,6 +290,15 @@ interface IncidentRow {
 }
 
 /** A row of the daily uptime query. */
+/** UTF-16 code-unit order; equal names never occur in one list. */
+const compareCodeUnits = (a: string, b: string): number => (a < b ? -1 : 1);
+
+interface LocationDayRow {
+  location: string;
+  good: number;
+  total: number;
+}
+
 interface DayRow {
   day: number;
   good: number;
@@ -444,7 +469,10 @@ export function createService(
     // `at` is one past the stored timestamp: a generated sample may have moved across midnight.
     const day = dayOf(at - 1);
     // A day without a row (today, a future day, or one not filled yet) is counted when it is filled.
-    bumpUptimeDay.run(result.status === "down" ? 0 : 1, result.checkId, day);
+    const good = result.status === "down" ? 0 : 1;
+    const bumped = bumpUptimeDay.run(good, result.checkId, day);
+    // Only a filled closed day has location rows to keep in step; others are built when filled.
+    if (Number(bumped.changes) > 0) bumpLocationDay.run(result.checkId, day, result.location, good);
     closedTallies.get(result.checkId)?.delete(day);
     return {
       checkId: result.checkId,
@@ -585,6 +613,29 @@ export function createService(
   const deleteOldUptime = db.prepare("DELETE FROM uptime_daily WHERE day < ?");
   const deleteOrphanUptime = db.prepare(
     "DELETE FROM uptime_daily WHERE check_id NOT IN (SELECT id FROM checks)",
+  );
+  const bumpLocationDay = db.prepare(
+    `INSERT INTO uptime_location_daily (check_id, day, location, good, total) VALUES (?, ?, ?, ?, 1)
+     ON CONFLICT (check_id, day, location) DO UPDATE SET good = good + excluded.good, total = total + 1`,
+  );
+  const storedLocationDays = db.prepare(
+    `SELECT day, location, good, total FROM uptime_location_daily
+     WHERE check_id = ? AND day >= ? AND day < ?`,
+  );
+  const insertLocationDay = db.prepare(
+    "INSERT INTO uptime_location_daily (check_id, day, location, good, total) VALUES (?, ?, ?, ?, ?)",
+  );
+  const clearLocationDay = db.prepare(
+    "DELETE FROM uptime_location_daily WHERE check_id = ? AND day = ?",
+  );
+  const locationTally = db.prepare(
+    `SELECT location, SUM(status != 'down') AS good, COUNT(*) AS total
+     FROM results WHERE check_id = ? AND timestamp >= ? AND timestamp <= ?
+     GROUP BY location`,
+  );
+  const deleteOldLocationDays = db.prepare("DELETE FROM uptime_location_daily WHERE day < ?");
+  const deleteOrphanLocationDays = db.prepare(
+    "DELETE FROM uptime_location_daily WHERE check_id NOT IN (SELECT id FROM checks)",
   );
   const dayLatencies = db.prepare(
     `SELECT latency_ms FROM results
@@ -907,6 +958,102 @@ export function createService(
       });
     }
     return { checkId: id, days, uptime: total === 0 ? null : (good / total) * 100 };
+  }
+
+  /** Good and total per location of a check in `[from, to]` (epoch ms, both inclusive). */
+  function locationTallies(id: string, from: number, to: number): Map<string, Tally> {
+    const out = new Map<string, Tally>();
+    const rows = locationTally.all(id, from, to) as unknown as LocationDayRow[];
+    for (const r of rows) out.set(r.location, { good: Number(r.good), total: Number(r.total) });
+    return out;
+  }
+
+  /** Stored location rows of a check's closed days `firstDay .. today - 1`, per day. */
+  function storedLocationsByDay(
+    id: string,
+    firstDay: number,
+    today: number,
+  ): Map<number, Map<string, Tally>> {
+    const byDay = new Map<number, Map<string, Tally>>();
+    const rows = storedLocationDays.all(id, firstDay, today) as unknown as (LocationDayRow & {
+      day: number;
+    })[];
+    for (const r of rows) {
+      const day = Number(r.day);
+      const tallies = byDay.get(day) ?? new Map<string, Tally>();
+      tallies.set(r.location, { good: Number(r.good), total: Number(r.total) });
+      byDay.set(day, tallies);
+    }
+    return byDay;
+  }
+
+  const sumTotal = (tallies: Map<string, Tally> | undefined): number => {
+    let total = 0;
+    for (const t of tallies?.values() ?? []) total += t.total;
+    return total;
+  };
+
+  /** Closed days in the window whose location rows do not sum to the stored uptime total. */
+  function incompleteDays(id: string, loaded?: Map<number, Map<string, Tally>>): number[] {
+    const today = dayOf(now());
+    const firstDay = today - (UPTIME_DAYS - 1);
+    // The read path passes the rows it loaded, so the window is read once.
+    const stored = loaded ?? storedLocationsByDay(id, firstDay, today);
+    const rows = storedUptime.all(id, firstDay, today) as unknown as DayRow[];
+    return rows
+      .filter((r) => Number(r.total) > 0 && sumTotal(stored.get(Number(r.day))) !== Number(r.total))
+      .map((r) => Number(r.day))
+      .sort((a, b) => a - b);
+  }
+
+  /** Replace the location rows of one closed day with a tally from the results. */
+  function rebuildLocationDay(id: string, day: number): Map<string, Tally> {
+    const tallies = locationTallies(id, day * DAY_MS, (day + 1) * DAY_MS - 1);
+    transaction(() => {
+      clearLocationDay.run(id, day);
+      for (const [location, t] of tallies) {
+        insertLocationDay.run(id, day, location, t.good, t.total);
+      }
+    });
+    return tallies;
+  }
+
+  /** Every location of a check with a stored result at any age, in UTF-16 code-unit order. */
+  const sortedLocations = (id: string): string[] =>
+    (locationsOf.all(id, id) as unknown as { l: string }[])
+      .map(({ l }) => l)
+      // SQLite orders by UTF-8 bytes, which differs from UTF-16 code units above U+FFFF.
+      .sort(compareCodeUnits);
+
+  function locationUptimeOf(id: string): CheckLocationUptime {
+    // The aggregate read fills the missing uptime_daily rows first: the sum rule needs them.
+    uptimeOf(id);
+    const t = now();
+    const today = Math.floor(t / DAY_MS);
+    const firstDay = today - (UPTIME_DAYS - 1);
+    const byDay = storedLocationsByDay(id, firstDay, today);
+    for (const day of incompleteDays(id, new Map(byDay)))
+      byDay.set(day, rebuildLocationDay(id, day));
+    byDay.set(today, locationTallies(id, today * DAY_MS, t));
+    const sums = new Map<string, Tally>();
+    for (const tallies of byDay.values()) {
+      for (const [location, tally] of tallies) {
+        const sum = sums.get(location) ?? { good: 0, total: 0 };
+        sum.good += tally.good;
+        sum.total += tally.total;
+        sums.set(location, sum);
+      }
+    }
+    const locations: LocationUptime[] = sortedLocations(id).map((location) => {
+      const sum = sums.get(location) ?? { good: 0, total: 0 };
+      return {
+        location,
+        good: sum.good,
+        results: sum.total,
+        uptime: sum.total === 0 ? null : (sum.good / sum.total) * 100,
+      };
+    });
+    return { checkId: id, windowDays: UPTIME_DAYS, locations };
   }
 
   const activeCheckIds = (): string[] =>
@@ -1243,6 +1390,24 @@ export function createService(
     deleteExpiredUptime(cutoff) {
       const old = Number(deleteOldUptime.run(dayOf(cutoff)).changes);
       return old + Number(deleteOrphanUptime.run().changes);
+    },
+
+    getCheckLocationUptime(id) {
+      if (getActiveCheck.get(id) === null) return undefined;
+      return cached(`location-uptime:${id}`, () => locationUptimeOf(id));
+    },
+
+    incompleteLocationDays: (checkId: string) => incompleteDays(checkId),
+
+    fillLocationDay(checkId, day) {
+      if (day >= dayOf(now()) || !incompleteDays(checkId).includes(day)) return false;
+      rebuildLocationDay(checkId, day);
+      return true;
+    },
+
+    deleteExpiredLocationUptime(cutoff) {
+      const old = Number(deleteOldLocationDays.run(dayOf(cutoff)).changes);
+      return old + Number(deleteOrphanLocationDays.run().changes);
     },
 
     deleteExpiredResults(cutoff, limit) {

@@ -56,6 +56,34 @@ test("a fresh database file gets the full schema with all indexes, also when ope
   }
 });
 
+test("uptime_location_daily is created on open without a user_version step, also on a file without it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pulse-db-"));
+  try {
+    const path = join(dir, "t.db");
+    const version = (db: Database): unknown =>
+      (db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
+    const db = openDb(path);
+    assert.equal(version(db), 7);
+    db.run(
+      "INSERT INTO uptime_location_daily (check_id, day, location, good, total) VALUES ('a', 1, 'eu', 1, 2)",
+    );
+    db.close();
+    // A reopen keeps the rows; a file of an older release (table dropped) gets the table again.
+    const again = openDb(path);
+    assert.deepEqual(again.query("SELECT good, total FROM uptime_location_daily").all(), [
+      { good: 1, total: 2 },
+    ]);
+    again.run("DROP TABLE uptime_location_daily");
+    again.close();
+    const older = openDb(path);
+    assert.equal(version(older), 7);
+    assert.deepEqual(older.query("SELECT * FROM uptime_location_daily").all(), []);
+    older.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("foreign keys are enforced", () => {
   const db = openDb(":memory:");
   expect(() =>
