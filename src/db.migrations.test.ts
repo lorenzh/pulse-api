@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb, SchemaVersionError } from "./db.ts";
+import { createManualIncidentStore } from "./manual-incidents.ts";
 import { MIGRATIONS, SCHEMA_VERSION } from "./migrations.ts";
 
 let dir: string;
@@ -330,4 +331,67 @@ test("migration 2 removes duplicate results, keeps the first by rowid and logs t
   const quiet: string[] = [];
   openDb(path, undefined, (line) => quiet.push(line)).close();
   expect(quiet).toEqual([]);
+});
+
+test("migration 7: a step-6 file keeps its public manual incidents and check rows", () => {
+  const path = join(dir, "v6.db");
+  makeV0(path);
+  const v6 = openDb(path, MIGRATIONS.slice(0, 6));
+  v6.run(
+    `INSERT INTO manual_incidents (id, title, impact, component_ids_json, status, created_at, resolved_at)
+     VALUES (1, 'Old', 'minor', '["web"]', 'resolved', 1000, 2000),
+            (2, 'Open', 'major', '[]', 'investigating', 3000, NULL)`,
+  );
+  v6.run(
+    `INSERT INTO manual_incident_updates (incident_id, n, at, status, message)
+     VALUES (1, 0, 1000, 'investigating', 'a'), (1, 1, 2000, 'resolved', 'b'),
+            (2, 0, 3000, 'investigating', 'c')`,
+  );
+  v6.run(
+    "INSERT INTO check_definitions (id, check_json, created_at, updated_at) VALUES ('c', '{}', 1, 2)",
+  );
+  v6.run("UPDATE config_state SET database_generation = 4, file_revision = 'r' WHERE id = 1");
+  const checkRows = (db: Database): unknown[] => [
+    db.query("SELECT * FROM check_definitions").all(),
+    db.query("SELECT * FROM config_state").all(),
+  ];
+  const checksBefore = checkRows(v6);
+  v6.close();
+  const db = openDb(path, MIGRATIONS.slice(0, 7));
+  try {
+    expect(version(db)).toBe(7);
+    expect(checkRows(db)).toEqual(checksBefore);
+    const store = createManualIncidentStore(db, { now: () => 4000, componentIds: () => new Set() });
+    expect(store.list("all")).toEqual([
+      {
+        id: 2,
+        title: "Open",
+        componentIds: [],
+        impact: "major",
+        status: "investigating",
+        createdAt: 3000,
+        resolvedAt: null,
+        updates: [{ at: 3000, status: "investigating", message: "c" }],
+      },
+      {
+        id: 1,
+        title: "Old",
+        componentIds: ["web"],
+        impact: "minor",
+        status: "resolved",
+        createdAt: 1000,
+        resolvedAt: 2000,
+        updates: [
+          { at: 1000, status: "investigating", message: "a" },
+          { at: 2000, status: "resolved", message: "b" },
+        ],
+      },
+    ]);
+    expect(store.getInternal(1)).toMatchObject({ visibility: "public", publishedAt: 1000 });
+  } finally {
+    db.close();
+  }
+  expect(() => openDb(path, MIGRATIONS.slice(0, 6))).toThrow(
+    "database schema version 7 is newer than this program supports (6); downgrades are not supported",
+  );
 });
