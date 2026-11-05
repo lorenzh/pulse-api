@@ -178,8 +178,10 @@ export function createConfigReloader(deps: ReloaderDeps, initial: InitialConfig)
 
   const reject = (state: "invalid" | "unreadable", message: string): void => {
     status = { state, message };
-    deps.metrics.recordConfigReload("invalid");
-    warnOnce(`config reload rejected: ${path}: ${message}`);
+    const line = `config reload rejected: ${path}: ${message}`;
+    // A retried read failure is counted once, like its log line.
+    if (line !== lastWarning) deps.metrics.recordConfigReload("invalid");
+    warnOnce(line);
   };
 
   const applied = (next: string, at: number): void => {
@@ -248,7 +250,8 @@ export function createConfigReloader(deps: ReloaderDeps, initial: InitialConfig)
     revision: () => revision,
     poll() {
       const key = currentKey();
-      if (key === lastKey) return;
+      // A permission fix keeps the stamp, so an unreadable file is read again at every poll.
+      if (key === lastKey && status.state !== "unreadable") return;
       load(key, false);
     },
     reloadNow() {
