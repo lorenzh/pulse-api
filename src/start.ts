@@ -23,6 +23,7 @@ import { nodeConfigFs } from "./config-fs.ts";
 import { createConfigHolder, secretDigests } from "./config-holder.ts";
 import {
   type AppliedFile,
+  adminRevision,
   createConfigReloader,
   type InitialConfig,
   type ReloadFs,
@@ -35,6 +36,7 @@ import { createHeartbeatEvaluator, startHeartbeatEvaluator } from "./heartbeat.t
 import { startLatencyRollup } from "./latency-rollup.ts";
 import { readLocationSilentMs } from "./location-silence.ts";
 import { createMaintenanceStore } from "./maintenance-store.ts";
+import { createMaintenanceWriter, maintenanceList } from "./maintenance-write.ts";
 import { createManualIncidentStore } from "./manual-incidents.ts";
 import { createMetrics } from "./metrics.ts";
 import { readRetentionDays, startRetention } from "./retention.ts";
@@ -461,10 +463,28 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     lock: writeLock,
     now: deps.now,
   });
+  const maintenanceWriter = createMaintenanceWriter({
+    db,
+    store: windowStore,
+    generation: checkStore,
+    holder,
+    fileRevision: () => reloader.revision(),
+    audit: auditLog,
+    lock: writeLock,
+    now: deps.now,
+  });
   const adminHandler = createAdminHandler({
     writer,
     config: () => holder.get(),
     checks: checkWriter,
+    maintenance: maintenanceWriter,
+    maintenanceList: () =>
+      maintenanceList(
+        adminRevision(reloader.revision(), checkStore.generation()),
+        holder.file().maintenance,
+        holder.maintenance(),
+        deps.now(),
+      ),
     metrics,
     tokens: tokenStore,
     audit: auditLog,

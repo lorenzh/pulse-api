@@ -125,3 +125,13 @@ test("docs: the export is documented with redacted, restoration with new secrets
   assert.match(read("docs/troubleshooting.md"), /unknown key "redacted"/);
   assert.match(read("README.md"), /There is no import\./);
 });
+
+test("concepts: windows of both sources apply at a reload, not only at the next start", () => {
+  const doc = read("docs/concepts.md");
+  assert.doesNotMatch(
+    doc,
+    /Windows come from the checks file at start, so a changed file applies from the next start/,
+  );
+  assert.match(doc, /Windows come from the checks file and from the database/);
+  assert.match(doc, /The windows of the file change with every applied file, also at a reload/);
+});

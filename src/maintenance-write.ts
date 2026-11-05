@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import {
+  type AdminMaintenanceList,
   type AdminMaintenancePhase,
   type AdminMaintenanceWindow,
   type AdminMaintenanceWindowInput,
@@ -7,6 +8,7 @@ import {
 } from "@lorenzh/pulse-contract";
 import type { AuditLog } from "./audit-log.ts";
 import type { CheckStore } from "./check-store.ts";
+import type { FileMaintenanceWindow } from "./config.ts";
 import type { ConfigHolder } from "./config-holder.ts";
 import { adminRevision } from "./config-reload.ts";
 import {
@@ -15,6 +17,7 @@ import {
   type WriteActor,
   type WriteOutcome,
 } from "./config-write.ts";
+import type { EffectiveMaintenance } from "./effective-maintenance.ts";
 import type { MaintenanceStore, WindowDefinition } from "./maintenance-store.ts";
 import type { WriteLock } from "./write-lock.ts";
 
@@ -66,6 +69,41 @@ export function databaseWindowView(w: WindowDefinition, now: number): AdminMaint
     end: w.end,
     note: w.note,
     phase: maintenancePhase(w.start, w.end, now),
+  };
+}
+
+/** The admin view of a file window: read-only, addressed by its position in the applied file. */
+function fileWindowView(
+  w: FileMaintenanceWindow,
+  index: number,
+  now: number,
+): AdminMaintenanceWindow {
+  return {
+    id: w.id ?? null,
+    index,
+    source: "file",
+    checkIds: [w.checkId],
+    start: w.start,
+    end: w.end,
+    note: w.note,
+    phase: maintenancePhase(w.start, w.end, now),
+  };
+}
+
+/** `GET /admin/maintenance`: file windows in file order, then the unshadowed database windows. */
+export function maintenanceList(
+  revision: string,
+  file: readonly FileMaintenanceWindow[],
+  windows: EffectiveMaintenance,
+  now: number,
+): AdminMaintenanceList {
+  return {
+    revision,
+    windows: [
+      ...file.map((w, index) => fileWindowView(w, index, now)),
+      ...windows.effective.map((w) => databaseWindowView(w, now)),
+    ],
+    shadowed: windows.shadowed.map((w) => databaseWindowView(w, now)),
   };
 }
 
@@ -188,7 +226,6 @@ export function createMaintenanceWriter(deps: MaintenanceWriterDeps): Maintenanc
         edit.action === "delete" || stored === undefined
           ? undefined
           : databaseWindowView(stored, deps.now()),
-      index: undefined,
     };
   };
 

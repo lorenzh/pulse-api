@@ -205,14 +205,15 @@ The secret is kept in memory only. `GET /checks`, `/metrics`, incident reasons a
 
 `maintenance` is an array of windows. A missing key means no windows.
 
-| Field     | Required | Meaning                                                               |
-| --------- | -------- | --------------------------------------------------------------------- |
-| `checkId` | yes      | Id of a configured check.                                             |
-| `start`   | yes      | ISO 8601 string with an explicit offset (`Z` or `±hh:mm`), inclusive. |
-| `end`     | yes      | Same format, exclusive, must be after `start`.                        |
-| `note`    | yes      | Non-empty string shown with the maintenance state.                    |
+| Field     | Required | Meaning                                                                                                              |
+| --------- | -------- | -------------------------------------------------------------------------------------------------------------------- |
+| `id`      | no       | Window id: 1 to 64 characters of `a-z`, `0-9`, `.`, `_`, `-`, starting with a letter; unique among the file windows. |
+| `checkId` | yes      | Id of a configured check.                                                                                            |
+| `start`   | yes      | ISO 8601 string with an explicit offset (`Z` or `±hh:mm`), inclusive.                                                |
+| `end`     | yes      | Same format, exclusive, must be after `start`.                                                                       |
+| `note`    | yes      | Non-empty string shown with the maintenance state.                                                                   |
 
-`start` and `end` must be real calendar dates (`2030-02-30` is rejected, `2028-02-29` is fine), and `end` must be after `start`. A window with a missing note and a reversed range reports the note first: `maintenance[0].note is required and must be a non-empty string`. Windows change with every applied file (at start, at a reload or by an admin write): a removed window ends at once. See [Maintenance windows](concepts.md#maintenance-windows) for the rules.
+`start` and `end` must be real calendar dates (`2030-02-30` is rejected, `2028-02-29` is fine), and `end` must be after `start`. A window with a missing note and a reversed range reports the note first: `maintenance[0].note is required and must be a non-empty string`. A duplicate `id` stops the load: `maintenance[1].id: duplicate maintenance id "w"`. A window without `id` behaves as before. Windows of the file change with every applied file (at start or at a reload): a removed window ends at once. File windows are read-only through the admin API. Database windows are written through [`/admin/maintenance`](rest-api.md#admin-maintenance-routes); a file window with the same `id` shadows the whole database window. See [Maintenance windows](concepts.md#maintenance-windows) for the rules.
 
 ### components
 
@@ -227,7 +228,7 @@ The secret is kept in memory only. `GET /checks`, `/metrics`, incident reasons a
 | `checkIds`           | yes      | Non-empty list of configured check ids without duplicates.                                                          |
 | `availabilityTarget` | no       | As on a check: 90 up to, but not including, 100, percent. The availability of a component merges its member checks. |
 
-A check may be in several components. Components and maintenance windows may reference only checks of the file, not database checks. A component id may equal a check id. An unknown key, an unknown check id or a duplicate component id stops the start, for example `components[0].checkIds[1] must reference a configured check`. A change to components applies without a restart, like the rest of the file (see [Changing checks](operation.md#changing-checks)); an invalid file is not applied and the running components stay.
+A check may be in several components. Components and file maintenance windows may reference only checks of the file, not database checks; a database window may name file and database checks. A component id may equal a check id. An unknown key, an unknown check id or a duplicate component id stops the start, for example `components[0].checkIds[1] must reference a configured check`. A change to components applies without a restart, like the rest of the file (see [Changing checks](operation.md#changing-checks)); an invalid file is not applied and the running components stay.
 
 ## Token import
 

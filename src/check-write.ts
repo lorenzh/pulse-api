@@ -262,7 +262,6 @@ export function createCheckWriter(deps: CheckWriterDeps): CheckWriter {
     return {
       revision: revision(generation),
       entity: parsed === undefined ? undefined : checkView(parsed.check, "database"),
-      index: undefined,
     };
   };
 

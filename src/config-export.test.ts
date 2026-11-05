@@ -361,3 +361,24 @@ test("export: file windows, then effective database windows flattened; no id, no
     },
   ]);
 });
+
+test("time boundary: a window created over HTTP at the largest end exports a four-digit year", async () => {
+  const b = await boot(BASE);
+  const created = await b.write("POST", "/admin/maintenance", {
+    id: "w",
+    checkIds: ["file-a"],
+    start: 253402300799998,
+    end: 253402300799999,
+    note: "x",
+  });
+  assert.equal(created.status, 201);
+  const { text } = await exported(b);
+  const doc = JSON.parse(text) as unknown;
+  assert.equal(validateAdminConfigExport(doc).ok, true);
+  assert.deepEqual(valid(text).maintenance.at(-1), {
+    checkId: "file-a",
+    start: "9999-12-31T23:59:59.998Z",
+    end: "9999-12-31T23:59:59.999Z",
+    note: "x",
+  });
+});
