@@ -160,6 +160,18 @@ CREATE TABLE manual_incident_notes (
 );
 CREATE INDEX manual_incident_notes_by_incident ON manual_incident_notes (incident_id, at, id);
 `,
+  // 8: maintenance windows written through the admin API. Nothing is copied from the file.
+  `
+CREATE TABLE maintenance_definitions (
+  id TEXT PRIMARY KEY,
+  check_ids_json TEXT NOT NULL,
+  start_ms INTEGER NOT NULL,
+  end_ms INTEGER NOT NULL,
+  note TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+`,
 ];
 
 /** The step that adds the unique sample index; `openDb` counts the duplicates it removes. */

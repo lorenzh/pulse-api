@@ -34,6 +34,7 @@ import { createConfigWriter } from "./config-write.ts";
 import { createHeartbeatEvaluator, startHeartbeatEvaluator } from "./heartbeat.ts";
 import { startLatencyRollup } from "./latency-rollup.ts";
 import { readLocationSilentMs } from "./location-silence.ts";
+import { createMaintenanceStore } from "./maintenance-store.ts";
 import { createManualIncidentStore } from "./manual-incidents.ts";
 import { createMetrics } from "./metrics.ts";
 import { readRetentionDays, startRetention } from "./retention.ts";
@@ -311,7 +312,13 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
   );
   const { initial } = start;
   const { maintenance, components } = initial.config;
-  const holder = createConfigHolder(initial.config, checkStore.list(), start.digests);
+  const windowStore = createMaintenanceStore({ db, now: deps.now });
+  const holder = createConfigHolder(
+    initial.config,
+    checkStore.list(),
+    start.digests,
+    windowStore.list(),
+  );
   const { checks } = holder.get();
   const { store: tokenStore, isAdminEnabled } = bootstrapTokens(
     deps,
@@ -506,6 +513,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     port: boundPort,
     checks: checks.length,
     maintenanceWindows: maintenance.length,
+    databaseMaintenanceWindows: holder.windowDefinitions().length,
     components: components.length,
     checksFile,
     db: dbPath,

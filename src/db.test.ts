@@ -63,7 +63,7 @@ test("uptime_location_daily is created on open without a user_version step, also
     const version = (db: Database): unknown =>
       (db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
     const db = openDb(path);
-    assert.equal(version(db), 7);
+    assert.equal(version(db), 8);
     db.run(
       "INSERT INTO uptime_location_daily (check_id, day, location, good, total) VALUES ('a', 1, 'eu', 1, 2)",
     );
@@ -76,7 +76,7 @@ test("uptime_location_daily is created on open without a user_version step, also
     again.run("DROP TABLE uptime_location_daily");
     again.close();
     const older = openDb(path);
-    assert.equal(version(older), 7);
+    assert.equal(version(older), 8);
     assert.deepEqual(older.query("SELECT * FROM uptime_location_daily").all(), []);
     older.close();
   } finally {

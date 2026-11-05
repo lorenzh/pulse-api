@@ -15,6 +15,7 @@ import { type Config, ConfigError, parseConfig } from "./config.ts";
 import type { ConfigHolder } from "./config-holder.ts";
 import { adminRevision, type ConfigReloader, revisionOf } from "./config-reload.ts";
 import { effectiveChecks } from "./effective-checks.ts";
+import { publicWindow } from "./effective-maintenance.ts";
 import { createWriteLock, type WriteLock } from "./write-lock.ts";
 
 export type ConfigKind = "check" | "component" | "maintenance";
@@ -178,7 +179,8 @@ export function configView(
     checks: merged.checks.map((check) => checkView(check, merged.sources.get(check.id) ?? "file")),
     shadowed: merged.shadowed.map((d) => checkView(d.check, "database")),
     components: config.components.map((c) => ({ ...c })),
-    maintenance: config.maintenance.map((w, index) => ({ ...w, index })),
+    // The response shape has no window id; old consoles validate it strictly.
+    maintenance: config.maintenance.map((w, index) => ({ ...publicWindow(w), index })),
     file: { ...file },
   };
 }
@@ -376,7 +378,7 @@ function entityOf(edit: ConfigEdit, config: Config, index: number): AdminWriteRe
     case "maintenance": {
       const window = config.maintenance[index];
       const view: AdminMaintenanceView | undefined =
-        window === undefined ? undefined : { ...window, index };
+        window === undefined ? undefined : { ...publicWindow(window), index };
       return view;
     }
     default: {

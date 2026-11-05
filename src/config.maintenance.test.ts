@@ -67,3 +67,39 @@ test("config: loadConfig reads a file", () => {
   assert.equal(loadConfig(path).maintenance.length, 1);
   assert.throws(() => loadConfig(`${path}.missing`), ConfigError);
 });
+
+test("config: a window id loads, a window without one loads unchanged", () => {
+  const { maintenance } = parseConfig({ checks: [check], maintenance: [{ ...win, id: "w" }, win] });
+  assert.deepEqual(
+    maintenance.map((w) => w.id),
+    ["w", undefined],
+  );
+  assert.equal(Object.hasOwn(maintenance[1] ?? {}, "id"), false);
+});
+
+test("config: a duplicate or malformed window id is refused", () => {
+  assert.throws(
+    () =>
+      parseConfig({
+        checks: [check],
+        maintenance: [
+          { ...win, id: "w" },
+          { ...win, id: "w" },
+        ],
+      }),
+    { name: "ConfigError", message: 'maintenance[1].id: duplicate maintenance id "w"' },
+  );
+  for (const id of ["0", "Web", "-a", "", "a".repeat(65), 7]) {
+    assert.throws(
+      () => parseConfig({ checks: [check], maintenance: [{ ...win, id }] }),
+      ConfigError,
+      String(id),
+    );
+  }
+});
+
+test("config: a file note keeps no length cap", () => {
+  const note = "n".repeat(600);
+  const { maintenance } = parseConfig({ checks: [check], maintenance: [{ ...win, note }] });
+  assert.equal(maintenance[0]?.note, note);
+});

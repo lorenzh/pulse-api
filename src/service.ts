@@ -399,10 +399,13 @@ function columnsOf(c: Check): Column[] {
   return Object.values(row);
 }
 
+// One array for every call: a new array would clear the read cache.
+const NO_WINDOWS: readonly MaintenanceWindow[] = [];
+
 export function createService(
   db: Database,
   {
-    maintenance = () => [],
+    maintenance = () => NO_WINDOWS,
     now = Date.now,
     log = () => undefined,
     onIncident = () => undefined,
@@ -413,10 +416,14 @@ export function createService(
   // Sorted once per configuration: a reload hands over a new array, an unchanged one is reused.
   let sourceWindows: readonly MaintenanceWindow[] | undefined;
   let sortedWindows: MaintenanceWindow[] = [];
+  // Raised with each new window array; a cached answer of an older one is stale, also when only
+  // the end or the note of a window changed.
+  let windowsVersion = 0;
   const windows = (): MaintenanceWindow[] => {
     const current = maintenance();
     if (current !== sourceWindows) {
       sourceWindows = current;
+      windowsVersion += 1;
       sortedWindows = [...current].sort(
         // eslint-disable-next-line sonarjs/no-nested-conditional -- tie-break comparator reads clearest as one expression; refactor out of scope
         (a, b) => a.start - b.start || (a.checkId < b.checkId ? -1 : a.checkId > b.checkId ? 1 : 0),
@@ -505,10 +512,10 @@ export function createService(
     const hit = cache.get(key);
     const t = now();
     // A window that opens or closes changes the displayed state, so it also ends a cached answer.
-    const active = windows()
+    const active = `${windows()
       .filter((w) => w.start <= t && t < w.end)
       .map((w) => `${w.checkId}@${w.start}`)
-      .join("|");
+      .join("|")}#${windowsVersion}`;
     if (hit !== undefined && hit.windows === active && t >= hit.at && t - hit.at < CACHE_TTL_MS) {
       return hit.value as T;
     }

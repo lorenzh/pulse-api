@@ -6,6 +6,8 @@ import {
   type DnsCheck,
   type DomainCheck,
   type HttpCheck,
+  MAINTENANCE_WINDOW_ID,
+  MAX_MAINTENANCE_WINDOW_ID,
   MAX_TIMER_MS,
   MAX_WARN_DAYS,
   type MaintenanceWindow,
@@ -403,14 +405,27 @@ export interface Config {
   checks: Check[];
   /** Ping secret per heartbeat check id. */
   secrets: Map<string, string>;
-  maintenance: MaintenanceWindow[];
+  /** File windows with their optional id; in `holder.get()` the effective windows, without ids. */
+  maintenance: FileMaintenanceWindow[];
   /** Customer-facing groups of checks, in configured order. Read only by the component routes. */
   components: Component[];
 }
 
-function maintenanceSchema(ids: ReadonlySet<string>): z.ZodArray<z.ZodType<MaintenanceWindow>> {
+/** A window of the checks file; the optional `id` names it apart from the database windows. */
+export type FileMaintenanceWindow = MaintenanceWindow & { id?: string };
+
+const WINDOW_ID_TEXT = `must be 1..${MAX_MAINTENANCE_WINDOW_ID} characters matching ${MAINTENANCE_WINDOW_ID.source}`;
+
+/** True when `value` is a window id: the file and the database share the syntax. */
+export function isWindowId(value: string): boolean {
+  return value.length <= MAX_MAINTENANCE_WINDOW_ID && MAINTENANCE_WINDOW_ID.test(value);
+}
+
+// The return type is inferred: Zod types the optional id as `string | undefined`.
+function maintenanceSchema(ids: ReadonlySet<string>) {
   const window = z.strictObject(
     {
+      id: z.string({ error: WINDOW_ID_TEXT }).refine(isWindowId, WINDOW_ID_TEXT).optional(),
       checkId: requiredText("must reference a configured check").refine(
         (v) => ids.has(v),
         "must reference a configured check",
@@ -424,14 +439,24 @@ function maintenanceSchema(ids: ReadonlySet<string>): z.ZodArray<z.ZodType<Maint
   return z.array(window);
 }
 
-function parseMaintenance(raw: unknown, ids: ReadonlySet<string>): MaintenanceWindow[] {
+function parseMaintenance(raw: unknown, ids: ReadonlySet<string>): FileMaintenanceWindow[] {
   if (raw === undefined) return [];
   if (!Array.isArray(raw)) throw new ConfigError('"maintenance" must be an array');
   const parsed = maintenanceSchema(ids).safeParse(raw);
   if (!parsed.success) return failWith(parsed.error, ["maintenance"]);
-  const maintenance = parsed.data;
+  const maintenance: FileMaintenanceWindow[] = parsed.data.map(({ id, ...w }) =>
+    id === undefined ? w : { ...w, id },
+  );
   maintenance.forEach((w, i) => {
     if (w.end <= w.start) throw new ConfigError(`maintenance[${i}].end must be after start`);
+  });
+  const seen = new Set<string>();
+  maintenance.forEach((w, i) => {
+    if (w.id === undefined) return;
+    if (seen.has(w.id)) {
+      throw new ConfigError(`maintenance[${i}].id: duplicate maintenance id "${w.id}"`);
+    }
+    seen.add(w.id);
   });
   return maintenance;
 }

@@ -2,7 +2,9 @@ import { test } from "bun:test";
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import type { Check, MaintenanceWindow, Result } from "@lorenzh/pulse-contract";
+import { createConfigHolder } from "./config-holder.ts";
 import { openDb } from "./db.ts";
+import type { WindowDefinition } from "./maintenance-store.ts";
 import { createApiServer } from "./server.ts";
 import { createService } from "./service.ts";
 
@@ -160,4 +162,68 @@ test("maintenance quorum: a late-arriving down inside a past window stays exclud
   for (const t of [200, 201, 202]) s.ingest(at(t, "b", "down")); // a is still up for the quorum
   assert.equal(s.listChecks()[0]!.state, "up");
   assert.deepEqual(s.listIncidents(), []);
+});
+
+function stored(note: string, end = 2000): WindowDefinition {
+  return { id: "w", checkIds: ["c1"], start: 1000, end, note, createdAt: 1, updatedAt: 1 };
+}
+
+function setupStored(fileWindows: MaintenanceWindow[] = []) {
+  const clock = { t: 1500 };
+  const holder = createConfigHolder(
+    { checks: [c1, c2], secrets: new Map(), maintenance: fileWindows, components: [] },
+    [],
+    new Map(),
+    [stored("db upgrade")],
+  );
+  const s = createService(openDb(":memory:"), {
+    maintenance: () => holder.get().maintenance,
+    now: () => clock.t,
+  });
+  s.upsertChecks([c1, c2]);
+  return { s, clock, holder };
+}
+
+test("maintenance cache: a new window array with the same start shows its note and end at once", () => {
+  const { s, holder } = setupStored();
+  assert.deepEqual(s.listChecks()[0]?.maintenance, {
+    checkId: "c1",
+    start: 1000,
+    end: 2000,
+    note: "db upgrade",
+  });
+  holder.setWindowDefinitions([stored("edited", 3000)]);
+  assert.deepEqual(s.listChecks()[0]?.maintenance, {
+    checkId: "c1",
+    start: 1000,
+    end: 3000,
+    note: "edited",
+  });
+  holder.setWindowDefinitions([]);
+  const c = s.listChecks()[0];
+  assert.equal(c?.state, "unknown");
+  assert.equal(c?.maintenance, undefined);
+});
+
+test("maintenance: a database window [1000, 2000) excludes a down at 1999 and counts one at 2000", () => {
+  const { s, clock } = setupStored();
+  clock.t = 2100;
+  s.ingest(res(1999, "down"));
+  assert.equal(s.listChecks()[0]?.consecutiveDown, 0);
+  s.ingest(res(2000, "down"));
+  assert.equal(s.listChecks()[0]?.consecutiveDown, 1);
+});
+
+test("maintenance: a file window wins an equal-start tie with a database window", () => {
+  const { s } = setupStored([{ checkId: "c1", start: 1000, end: 1800, note: "file" }]);
+  const c = s.listChecks()[0];
+  assert.equal(c?.maintenance?.note, "file");
+  assert.deepEqual(Object.keys(c?.maintenance ?? {}), ["checkId", "start", "end", "note"]);
+  assert.deepEqual(
+    s.listMaintenance().map((w) => Object.keys(w)),
+    [
+      ["checkId", "start", "end", "note"],
+      ["checkId", "start", "end", "note"],
+    ],
+  );
 });

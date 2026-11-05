@@ -2,11 +2,11 @@ import type { Database } from "bun:sqlite";
 import {
   type Check,
   type Component,
-  type MaintenanceWindow,
   validateCheck,
   validateComponent,
   validateMaintenanceWindow,
 } from "@lorenzh/pulse-contract";
+import { type FileMaintenanceWindow, isWindowId } from "./config.ts";
 
 /** A stored database check: the check as it runs, and the digest of a heartbeat secret. */
 export interface CheckDefinition {
@@ -25,7 +25,8 @@ export interface FileSnapshot {
   /** Hex SHA-256 of the ping secret per heartbeat check id. */
   secretDigests: Record<string, string>;
   components: Component[];
-  maintenance: MaintenanceWindow[];
+  /** File windows with their optional id; a snapshot written before ids existed has none. */
+  maintenance: FileMaintenanceWindow[];
 }
 
 /** A value the store refuses to keep; the message never quotes a value. */
@@ -104,8 +105,12 @@ function assertSnapshot(s: FileSnapshot): void {
     if (!v.ok) throw new CheckStoreError(v.error);
   });
   s.maintenance.forEach((w, i) => {
-    const v = validateMaintenanceWindow(w, `snapshot.maintenance[${i}]`);
+    const { id, ...window } = w;
+    const v = validateMaintenanceWindow(window, `snapshot.maintenance[${i}]`);
     if (!v.ok) throw new CheckStoreError(v.error);
+    if (id !== undefined && (typeof id !== "string" || !isWindowId(id))) {
+      throw new CheckStoreError(`snapshot.maintenance[${i}].id is not a window id`);
+    }
   });
 }
 
