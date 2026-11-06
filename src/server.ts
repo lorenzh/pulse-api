@@ -37,6 +37,7 @@ import {
   type Service,
   UnknownCheckError,
 } from "./service.ts";
+import { type StatusPath, statusPathOf, statusRouteOf } from "./status-settings-routes.ts";
 import { tokenPathOf, tokenRouteOf } from "./token-routes.ts";
 import { canUse } from "./token-scopes.ts";
 import type { Actor, TokenStore } from "./token-store.ts";
@@ -237,6 +238,8 @@ function routeOf(rawUrl: string | undefined): string {
   if (audit !== null) return auditRouteOf(audit);
   const token = tokenPathOf(path);
   if (token !== null) return tokenRouteOf(token);
+  const status = statusPathOf(path);
+  if (status !== null) return statusRouteOf(status);
   const admin = ADMIN_ROUTE.exec(path);
   if (admin?.[1] !== undefined)
     return admin[2] === undefined ? `/admin/${admin[1]}` : `/admin/${admin[1]}/:id`;
@@ -246,6 +249,12 @@ function routeOf(rawUrl: string | undefined): string {
   }
   return ROUTES.find((r) => r === path) ?? "unmatched";
 }
+
+type RuntimeHandler = (
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: StatusPath,
+) => Promise<void>;
 
 type LogFn = (message: string, fields: Record<string, string>) => void;
 
@@ -264,6 +273,8 @@ type Ops = {
   warn: LogFn;
   /** Handles `/admin/*`; undefined when the config writes are off. */
   admin: ((req: IncomingMessage, res: ServerResponse) => Promise<boolean>) | undefined;
+  /** Handles `/service/status/*`; undefined without the runtime settings. */
+  runtime: RuntimeHandler | undefined;
 };
 
 function digest(text: string): Buffer {
@@ -647,6 +658,14 @@ async function handle(
     };
     return serveManualIncidentRoutes(deps, req, res, url);
   }
+  if (path.startsWith("/service/")) {
+    // Before the read paths: a service route never falls through to a public read.
+    const status = statusPathOf(path);
+    if (status === null || status === "admin-settings" || ops.runtime === undefined) {
+      throw new HttpError(404, "not found");
+    }
+    return ops.runtime(req, res, status);
+  }
   if (path.startsWith("/admin/")) {
     // Before the admin bootstrap, or without a writer, the routes do not exist.
     if ((await ops.admin?.(req, res)) !== true) throw new HttpError(404, "not found");
@@ -823,6 +842,8 @@ export type ApiServerOptions = {
   warn?: LogFn;
   /** Handler of `/admin/*` (see admin-routes.ts). Without it those paths answer 404. */
   admin?: (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
+  /** Handler of `/service/*` (see status-settings-routes.ts). Without it those paths answer 404. */
+  runtime?: RuntimeHandler;
 };
 
 function emptyManualIncidents(): ManualIncidentStore {
@@ -884,6 +905,7 @@ export function createApiServer(service: Service, options: ApiServerOptions): Se
     info: options.info ?? ignore,
     warn: options.warn ?? ignore,
     admin: options.admin,
+    runtime: options.runtime,
   };
   const logError = options.logError ?? ((_message, err) => console.error(err));
   return createServer((req, res) => {

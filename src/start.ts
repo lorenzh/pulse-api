@@ -40,8 +40,10 @@ import { createMaintenanceWriter, maintenanceList } from "./maintenance-write.ts
 import { createManualIncidentStore } from "./manual-incidents.ts";
 import { createMetrics } from "./metrics.ts";
 import { readRetentionDays, startRetention } from "./retention.ts";
+import { createRuntimeStore } from "./runtime-store.ts";
 import { createApiServer } from "./server.ts";
 import { createService } from "./service.ts";
+import { createStatusRoutes } from "./status-settings-routes.ts";
 import { openTokenStore, readBootstrap } from "./token-import.ts";
 import { isActive } from "./token-scopes.ts";
 import { generateSecret, generateTokenId, type TokenStore } from "./token-store.ts";
@@ -473,6 +475,16 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     lock: writeLock,
     now: deps.now,
   });
+  const statusRoutes = createStatusRoutes({
+    db,
+    store: createRuntimeStore(db),
+    lock: writeLock,
+    audit: auditLog,
+    componentIds: () => new Set(holder.get().components.map((c) => c.id)),
+    throttle: authThrottle,
+    now: deps.now,
+    info,
+  });
   const adminHandler = createAdminHandler({
     writer,
     config: () => holder.get(),
@@ -493,6 +505,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     warn,
     authFailures,
     authThrottle,
+    status: statusRoutes,
   });
 
   let isShuttingDown = false;
@@ -502,7 +515,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     heartbeatDigests: () => holder.heartbeatDigests(),
     components: () => holder.get().components,
     manualIncidents,
-    ...(isAdminEnabled ? { admin: adminHandler } : {}),
+    ...(isAdminEnabled ? { admin: adminHandler, runtime: statusRoutes } : {}),
     adminAuthFailures: authFailures,
     adminAuthThrottle: authThrottle,
     info,

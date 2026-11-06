@@ -32,6 +32,7 @@ import type {
 import { ConfigWriteError } from "./config-write.ts";
 import type { MaintenanceWriter, WindowEdit } from "./maintenance-write.ts";
 import type { ConfigWriteAction, ConfigWriteResult, Metrics } from "./metrics.ts";
+import { type StatusPath, statusPathOf } from "./status-settings-routes.ts";
 import { handleTokenRoute, type TokenPath, tokenPathOf, tokenRouteOf } from "./token-routes.ts";
 import type { Permission } from "./token-scopes.ts";
 import type { AuthenticatedToken, TokenStore } from "./token-store.ts";
@@ -58,6 +59,8 @@ export interface AdminRoutesDeps {
   authFailures: AdminAuthFailures;
   /** Shared with the manual-incident routes; defaults to an instance of its own. */
   authThrottle?: AdminAuthThrottle;
+  /** Serves `/admin/status/settings`; without it that path is not an admin route. */
+  status?: (req: IncomingMessage, res: ServerResponse, path: StatusPath) => Promise<void>;
 }
 
 const ADMIN_PATH = /^\/admin\/(config|checks|components|maintenance)(?:\/([^/]+))?$/;
@@ -332,6 +335,11 @@ export function createAdminHandler(
     res: ServerResponse,
     url: URL,
   ): Promise<boolean> => {
+    const statusPath = statusPathOf(url.pathname);
+    if (statusPath === "admin-settings" && deps.status !== undefined) {
+      await deps.status(req, res, statusPath);
+      return true;
+    }
     const auditPath = auditPathOf(url.pathname);
     if (auditPath !== null) {
       await auditRoute(req, res, url, auditPath);

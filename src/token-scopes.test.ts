@@ -21,6 +21,18 @@ test.each<[TokenScope[], Permission, boolean]>([
   [["admin"], "token-admin", true],
   [["read", "checks", "incidents"], "token-admin", false],
   [["admin"], "audit-read", true],
+  [["admin"], "runtime-admin", true],
+  [["read", "checks", "incidents"], "runtime-admin", false],
+  [["status"], "runtime-admin", false],
+  [["notify"], "runtime-admin", false],
+  [["probe"], "runtime-admin", false],
+  [["status"], "status-service", true],
+  [["notify"], "status-service", false],
+  [["admin"], "status-service", false],
+  [["status", "admin"], "status-service", false],
+  [["notify"], "notify-service", true],
+  [["status"], "notify-service", false],
+  [ALL, "notify-service", false],
 ])("canUse(%p, %p) is %p", (scopes, permission, expected) => {
   expect(canUse(scopes, permission)).toBe(expected);
 });
@@ -31,6 +43,13 @@ test("grant rule: a caller grants only scopes it holds, probe counts as checks",
   expect(canGrant(["admin", "checks"], ALL)).toBe(false);
   expect(canGrant(["admin", "checks"], ["probe"])).toBe(true);
   expect(canGrant(ALL, ALL)).toBe(true);
+});
+
+test("grant rule: status and notify count as admin", () => {
+  expect(canGrant(["admin"], ["status"])).toBe(true);
+  expect(canGrant(["admin"], ["notify"])).toBe(true);
+  expect(canGrant(["read", "checks", "incidents"], ["status"])).toBe(false);
+  expect(canGrant(["checks"], ["notify"])).toBe(false);
 });
 
 const T = 1_800_000_000_000;

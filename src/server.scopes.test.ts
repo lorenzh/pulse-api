@@ -43,6 +43,8 @@ const SCOPED: Record<string, TokenScope[]> = {
   "admin,checks": ["admin", "checks"],
   incidents: ["incidents"],
   revoked: ["read", "checks"],
+  status: ["status"],
+  notify: ["notify"],
 };
 
 beforeAll(async () => {
@@ -159,6 +161,20 @@ test("the D1 matrix on the existing routes", async () => {
     ["read,checks", "GET", "/admin/tokens", 403],
     ["admin", "GET", "/admin/tokens", 200],
     ["revoked", "GET", "/admin/tokens", 401],
+    ["admin", "GET", "/admin/status/settings", 200],
+    ["read,checks", "GET", "/admin/status/settings", 403],
+    ["status", "GET", "/admin/status/settings", 403],
+    ["notify", "GET", "/admin/status/settings", 403],
+    ["probe", "GET", "/admin/status/settings", 403],
+    ["status", "GET", "/admin/config", 403],
+    ["notify", "GET", "/admin/tokens", 403],
+    ["status", "GET", "/checks", 200],
+    ["status", "GET", "/service/status/settings", 200],
+    ["notify", "GET", "/service/status/settings", 403],
+    ["admin", "GET", "/service/status/settings", 403],
+    ["read", "GET", "/service/status/settings", 403],
+    ["probe", "GET", "/service/status/settings", 403],
+    ["unknown", "GET", "/service/status/settings", 401],
   ];
   for (const [name, method, path, status, body] of rows) {
     clock += 60_000;

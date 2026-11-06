@@ -118,3 +118,25 @@ test("admin answers 405 after auth with Allow by path shape", async () => {
     assert.equal(item.status, 401);
   }
 });
+
+test("the status routes answer 405 after auth with their Allow", async () => {
+  const made = await fetch(`${base}/admin/tokens`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${ADMIN_TOKEN}`, "content-type": "application/json" },
+    body: JSON.stringify({ name: "status", scopes: ["status"] }),
+  });
+  assert.equal(made.status, 201);
+  const { secret } = (await made.json()) as { secret: string };
+  for (const method of ["POST", "DELETE", "PATCH"]) {
+    await expect405(method, "/admin/status/settings", "GET, PUT", ADMIN_TOKEN);
+  }
+  for (const method of ["PUT", "POST", "DELETE"]) {
+    await expect405(method, "/service/status/settings", "GET", secret);
+  }
+  for (const method of ["GET", "POST", "DELETE"]) {
+    await expect405(method, "/service/status/report", "PUT", secret);
+  }
+  for (const path of ["/admin/status/settings", "/service/status/settings"]) {
+    assert.equal((await fetch(`${base}${path}`, { method: "PATCH" })).status, 401, path);
+  }
+});

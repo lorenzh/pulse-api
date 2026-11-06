@@ -1,21 +1,32 @@
 import { ADMIN_MIN_TOKEN_LENGTH } from "./admin-tokens.ts";
 import type { Metrics } from "./metrics.ts";
-import { canUse, type Permission } from "./token-scopes.ts";
+import { canUse, isServicePermission, isServiceToken, type Permission } from "./token-scopes.ts";
 import type { AuthenticatedToken, TokenStore } from "./token-store.ts";
 import { bearerSecret } from "./tokens.ts";
 
 /**
  * Why an admin-side authentication failed (D2): no Bearer header, a credential nobody knows, an
  * expired, revoked or retired one, a probe token, an admin-side secret shorter than
- * ADMIN_MIN_TOKEN_LENGTH, or an admin-side token without the scope.
+ * ADMIN_MIN_TOKEN_LENGTH, or an admin-side token without the scope. `service` is a `status` or
+ * `notify` token on an admin route.
  */
-export type AdminAuthTokenKind = "missing" | "unknown" | "inactive" | "probe" | "short" | "scope";
+export type AdminAuthTokenKind =
+  | "missing"
+  | "unknown"
+  | "inactive"
+  | "probe"
+  | "service"
+  | "short"
+  | "scope";
 
 export type AdminAccess =
   | { kind: "ok"; token: AuthenticatedToken }
   | { kind: "denied"; status: 401 | 403; token: AdminAuthTokenKind };
 
-/** Authenticate `header` for an admin-side route that needs `permission`. */
+/**
+ * Authenticate `header` for an admin-side route that needs `permission`. A `/service/*` route
+ * takes only its own service token; every other route refuses a service token with 403.
+ */
 export function adminAccess(
   store: Pick<TokenStore, "authenticate">,
   header: string | undefined,
@@ -25,7 +36,14 @@ export function adminAccess(
   if (secret === undefined) return { kind: "denied", status: 401, token: "missing" };
   const auth = store.authenticate(secret);
   if (auth.kind !== "ok") return { kind: "denied", status: 401, token: auth.kind };
-  if (auth.token.scopes.includes("probe")) return { kind: "denied", status: 403, token: "probe" };
+  const { scopes } = auth.token;
+  if (isServicePermission(permission)) {
+    // Service secrets are made by the api, so the admin length rule does not apply to them.
+    if (canUse(scopes, permission)) return { kind: "ok", token: auth.token };
+    return { kind: "denied", status: 403, token: "scope" };
+  }
+  if (scopes.includes("probe")) return { kind: "denied", status: 403, token: "probe" };
+  if (isServiceToken(scopes)) return { kind: "denied", status: 403, token: "service" };
   // Stored digests carry no length, so the rule runs on the presented secret, after the probe check.
   if (secret.length < ADMIN_MIN_TOKEN_LENGTH)
     return { kind: "denied", status: 401, token: "short" };
@@ -52,7 +70,7 @@ export interface AdminAuthFailuresDeps {
 /**
  * Count every failure and log at most one line per (route, status, token) key and window. The
  * line carries the number of failures dropped for its key since that key's previous line. Keys are
- * route patterns, so the map stays small (at most 12 routes x 2 statuses x 6 kinds).
+ * route patterns, so the map stays small (at most 40 routes x 2 statuses x 7 kinds).
  */
 export function createAdminAuthFailures(deps: AdminAuthFailuresDeps): AdminAuthFailures {
   const keys = new Map<string, { lastLoggedAt: number; suppressed: number }>();

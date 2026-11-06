@@ -88,6 +88,7 @@ test("backup at a quiet point: an intact copy with the source's counts and one r
     s.ingest(result(2000, "down"));
     s.ingest(result(3000, "down"));
     s.ingest(result(4000, "down"));
+    db.run(`INSERT INTO status_settings (id, settings_json) VALUES (1, '{"name":"Acme"}')`);
     const expected = countsOf(db);
     assert.ok(expected.incidents >= 1);
 
@@ -104,6 +105,24 @@ test("backup at a quiet point: an intact copy with the source's counts and one r
     const copy = openDb(target);
     assert.equal(integrityOf(copy), "ok");
     assert.deepEqual(countsOf(copy), expected);
+    assert.deepEqual(
+      copy
+        .query(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('status_settings', 'notify_channels', 'service_reports', 'resend_commands', 'resend_requests', 'runtime_state') ORDER BY name",
+        )
+        .all(),
+      [
+        { name: "notify_channels" },
+        { name: "resend_commands" },
+        { name: "resend_requests" },
+        { name: "runtime_state" },
+        { name: "service_reports" },
+        { name: "status_settings" },
+      ],
+    );
+    assert.deepEqual(copy.query("SELECT settings_json FROM status_settings").all(), [
+      { settings_json: '{"name":"Acme"}' },
+    ]);
     copy.close();
     assert.deepEqual(tempFilesIn(dir), []);
   } finally {
