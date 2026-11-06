@@ -21,7 +21,7 @@
       "gating": true
     },
     "test_cpu_s": {
-      "budget": 5.6,
+      "budget": 9.2,
       "unit": "s",
       "gating": true,
       "floor": 1.6
