@@ -376,7 +376,7 @@ export function createNotifyRoutes(
     if (path === "admin-channel") {
       await remove(req, caller, id);
       deps.info("notify channel write", { token: caller.name, action: "delete" });
-      res.writeHead(204).end();
+      res.writeHead(204, { [ADMIN_ETAG_HEADER]: etagOf(revision()) }).end();
       return;
     }
     await report(req);

@@ -280,6 +280,11 @@ test("create 201 with location, replace 200, delete 204, with audit rows and no 
     headers: { "if-match": etag },
   });
   assert.equal(deleted.status, 204);
+  assert.equal(
+    deleted.headers.get("etag"),
+    '"sha256-48d4da57d59b83aa78309cec3c97b03bd8afb56dea3e06a78efcdc60259acd65"',
+  );
+  assert.equal(deleted.headers.get("etag"), await etagNow());
   assert.deepEqual((await adminView()).view.channels, []);
   const rows = auditRows().filter((r) => r.target_kind === "notify-channel");
   assert.deepEqual(
