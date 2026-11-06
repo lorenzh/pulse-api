@@ -11,6 +11,7 @@ import {
   retentionCutoff,
   startRetention,
 } from "./retention.ts";
+import { createResendStore } from "./runtime-store.ts";
 import { createApiServer } from "./server.ts";
 import { createService } from "./service.ts";
 
@@ -346,4 +347,63 @@ test("scheduler: the failure line is warn, the deleted line is info", async () =
     ["retention failed: boom", "warn"],
     ["retention: deleted 5 results", "info"],
   ]);
+});
+
+test("cleanupResults: resend commands in any state and request rows go by their own createdAt after 7 days", async () => {
+  const { db, service } = setup();
+  const resends = createResendStore(db);
+  const kept = NOW - 604_800_000;
+  const gone = NOW - 604_800_001;
+  const states = ["queued", "claimed", "admitted", "delivered"] as const;
+  for (const [i, state] of states.entries()) {
+    for (const [tag, at] of [
+      ["k", kept],
+      ["d", gone],
+    ] as const) {
+      resends.insertCommand({
+        id: `${tag}${state}`.padEnd(24, "0"),
+        channelId: "a",
+        key: `${i}:opened`,
+        requestId: `${tag}request${state}`.padEnd(16, "0"),
+        state,
+        createdAt: at,
+        updatedAt: at,
+      });
+    }
+  }
+  // A reuse row younger than its command stays; an old row of a young command goes.
+  resends.insertRequest({
+    requestId: "young-request-0001",
+    commandId: "dqueued".padEnd(24, "0"),
+    channelId: "a",
+    key: "0:opened",
+    createdAt: kept,
+  });
+  resends.insertRequest({
+    requestId: "old-request-000001",
+    commandId: "kqueued".padEnd(24, "0"),
+    channelId: "a",
+    key: "0:opened",
+    createdAt: gone,
+  });
+  const deleted = await cleanupResults(service, {
+    now: () => NOW,
+    retentionDays: 90,
+    sleep: () => Promise.resolve(),
+    deleteResends: (cutoff) => resends.deleteCreatedBefore(cutoff),
+  });
+  // Four commands and one request row, plus the four results of days 100 and 91.
+  assert.equal(deleted, 4 + 1 + 4);
+  const ids = db.query<{ id: string }, []>("SELECT id FROM resend_commands ORDER BY id").all();
+  assert.deepEqual(
+    ids.map((r) => r.id),
+    [
+      "kadmitted000000000000000",
+      "kclaimed0000000000000000",
+      "kdelivered00000000000000",
+      "kqueued00000000000000000",
+    ],
+  );
+  assert.equal(resends.request("young-request-0001")?.commandId, "dqueued00000000000000000");
+  assert.equal(resends.request("old-request-000001"), null);
 });

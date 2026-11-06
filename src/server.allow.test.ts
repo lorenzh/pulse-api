@@ -118,3 +118,59 @@ test("admin answers 405 after auth with Allow by path shape", async () => {
     assert.equal(item.status, 401);
   }
 });
+
+test("the status routes answer 405 after auth with their Allow", async () => {
+  const made = await fetch(`${base}/admin/tokens`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${ADMIN_TOKEN}`, "content-type": "application/json" },
+    body: JSON.stringify({ name: "status", scopes: ["status"] }),
+  });
+  assert.equal(made.status, 201);
+  const { secret } = (await made.json()) as { secret: string };
+  for (const method of ["POST", "DELETE", "PATCH"]) {
+    await expect405(method, "/admin/status/settings", "GET, PUT", ADMIN_TOKEN);
+  }
+  for (const method of ["PUT", "POST", "DELETE"]) {
+    await expect405(method, "/service/status/settings", "GET", secret);
+  }
+  for (const method of ["GET", "POST", "DELETE"]) {
+    await expect405(method, "/service/status/report", "PUT", secret);
+  }
+  for (const path of ["/admin/status/settings", "/service/status/settings"]) {
+    assert.equal((await fetch(`${base}${path}`, { method: "PATCH" })).status, 401, path);
+  }
+});
+
+test("the notify routes answer 405 after auth with their Allow", async () => {
+  const made = await fetch(`${base}/admin/tokens`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${ADMIN_TOKEN}`, "content-type": "application/json" },
+    body: JSON.stringify({ name: "notify", scopes: ["notify"] }),
+  });
+  assert.equal(made.status, 201);
+  const { secret } = (await made.json()) as { secret: string };
+  for (const method of ["PUT", "DELETE", "PATCH"]) {
+    await expect405(method, "/admin/notify/channels", "GET, POST", ADMIN_TOKEN);
+  }
+  for (const method of ["GET", "POST", "PATCH"]) {
+    await expect405(method, "/admin/notify/channels/ops", "PUT, DELETE", ADMIN_TOKEN);
+  }
+  for (const method of ["POST", "PUT", "DELETE"]) {
+    await expect405(method, "/admin/notify/failed", "GET", ADMIN_TOKEN);
+    await expect405(method, "/service/notify/channels", "GET", secret);
+  }
+  for (const method of ["GET", "POST", "DELETE"]) {
+    await expect405(method, "/service/notify/report", "PUT", secret);
+  }
+  for (const method of ["GET", "PUT", "DELETE"]) {
+    await expect405(method, "/admin/notify/resends", "POST", ADMIN_TOKEN);
+    await expect405(method, "/service/notify/resends/claim", "POST", secret);
+    await expect405(method, "/service/notify/resends/c1/result", "POST", secret);
+  }
+  for (const method of ["POST", "PUT", "DELETE"]) {
+    await expect405(method, "/admin/notify/resends/c1", "GET", ADMIN_TOKEN);
+  }
+  for (const path of ["/admin/notify/channels", "/service/notify/channels"]) {
+    assert.equal((await fetch(`${base}${path}`, { method: "PATCH" })).status, 401, path);
+  }
+});

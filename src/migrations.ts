@@ -172,6 +172,51 @@ CREATE TABLE maintenance_definitions (
   updated_at INTEGER NOT NULL
 );
 `,
+  // 9: status settings, notify channels, service reports and resend commands written through the
+  // admin and service APIs. `resend_requests.command_id` has no foreign key: a request row must
+  // outlive the command it points to, so a retry learns that the command was handled.
+  `
+CREATE TABLE status_settings (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  settings_json TEXT NOT NULL
+);
+CREATE TABLE notify_channels (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT NOT NULL UNIQUE,
+  definition_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE service_reports (
+  service TEXT PRIMARY KEY CHECK (service IN ('status', 'notify')),
+  report_json TEXT NOT NULL,
+  received_at INTEGER NOT NULL
+);
+CREATE TABLE resend_commands (
+  id TEXT PRIMARY KEY,
+  request_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  key TEXT NOT NULL,
+  state TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  claimed_at INTEGER
+);
+CREATE INDEX resend_commands_by_delivery ON resend_commands (channel_id, key);
+CREATE TABLE resend_requests (
+  request_id TEXT PRIMARY KEY,
+  command_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  key TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE runtime_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  status_generation INTEGER NOT NULL,
+  notify_generation INTEGER NOT NULL
+);
+INSERT INTO runtime_state (id, status_generation, notify_generation) VALUES (1, 0, 0);
+`,
 ];
 
 /** The step that adds the unique sample index; `openDb` counts the duplicates it removes. */

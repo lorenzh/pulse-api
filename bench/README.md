@@ -73,12 +73,31 @@ Reads once re-read all of today's results after every ingest, so they cost more 
 ## Running it
 
 ```sh
-bun bench/run.ts --a <ref> --b <ref> [--rounds n] [--others-ref <ref>] [--out <dir>]
+bun bench/run.ts --a <ref> --b <ref> [--rounds n] [--others-ref <ref>] [--b-ref <repo>=<ref>]...
+  [--simulate-services | --service-tokens] [--expect-report status|notify]... [--out <dir>]
 ```
 
 Needs Docker with Compose, `git` and network access to the public pulse repositories. `--a` and `--b` are refs of the api (defaults: `baseline` and `main`). For the other repositories, A is the newest `v*` tag (else the SHA in `bench/baseline.json`) and B is `main`; `--others-ref <ref>` pins all of them to one ref on both sides. A run is 5 rounds per side, alternating A, B, A, B (10 runs), and the result per metric is the median. Plan on 40 minutes: a 5-round run with the cold-read phase took 32 minutes on the hosted runner, about 3 minutes per side and round of it in the cold-read phase. With the end-of-day phase, a 5-round run took 35 minutes on the hosted runner; the phase takes about 40 s per round on side A (20 cycles of about 1.6 s CPU, plus seeding and settle) and about 10 s on side B. A local run prints a warning: the numbers are comparable only on one machine.
 
 For an A = B check: `bun bench/run.ts --a <sha> --b <sha> --others-ref main`.
+
+### Controlled refs
+
+Before the first round the harness resolves every ref of both sides to a full commit SHA, once per repository and ref (`git fetch origin <ref>`, then `git rev-parse FETCH_HEAD^{commit}`). Every checkout uses that SHA, so a `main` that moves during the run changes nothing. After each checkout it compares `git rev-parse HEAD` of the worktree with the resolved SHA. It logs one line per repository, `ref <repo> a=<sha> b=<sha>`. With `--others-ref`, every repository but the api and the `--b-ref` ones must have the same SHA on both sides. A difference is exit `2` with `ref mismatch: <repo> <side>`.
+
+`--b-ref <repo>=<ref>` sets only the B side of one repository other than the api; A keeps the `--others-ref` ref. It may repeat. The api, an unknown or repeated repository, and `--b-ref` without `--others-ref` are usage errors (exit `2`).
+
+### Runtime configuration traffic
+
+The api gets a fixed bench admin token (`PULSE_API_ADMIN_TOKENS_FILE`, `BENCH_ADMIN_TOKEN` in `bench/runtime-fixture.ts`). Without the next two options no token is created, `BENCH_STATUS_TOKEN_FILE` and `BENCH_NOTIFY_TOKEN_FILE` stay empty, and the run is unchanged.
+
+With either option, after the api of a side is ready and before probe, status and notify start, the harness creates a `status` and a `notify` token, PUTs one status settings document (`name`, `showLatency: false`) and creates five webhook channels (`urlEnv: PULSE_NOTIFY_SECRET_BENCH`, `checks: ["c0"]`). Any other answer than `201` (or `200` for the settings) is exit `2`.
+
+- `--simulate-services`: the real status and notify get no token. During the 60 s window the harness sends their traffic itself: `GET /service/status/settings` and `GET /service/notify/channels` at 0, 15, 30 and 45 s, `POST /service/notify/resends/claim` every 5 s from 0 to 55 s, and one `PUT /service/status/report` and one `PUT /service/notify/report` at 0 s and after the last load request. A late timer only delays a request, it never drops one. Every answer must be `200`, `204` or `304` and valid, and the counts must be exactly 4, 4, 12, 2 and 2, else exit `2` `service traffic not observed on <side>`. The log line is `service traffic (<side>): 4 status reads, 4 channel reads, 12 claims, 2 status reports, 2 notify reports`. On B the token creation must give `201`. On A only the answer of an api without the new scopes turns the simulation off: `400` with a JSON string `error` that starts with `token.scopes[0]: must be one of ` and does not list the requested scope in quotes. The run then logs `service traffic: not available on a`. Every other answer is exit `2` `service tokens: <status> on <side>`.
+- `--service-tokens`: `201` is required on both sides. The secrets go to `<run dir>/service-tokens/{status,notify}` (mode 0644), mounted read-only at `/service-tokens`, and the real containers get `PULSE_STATUS_API_TOKEN_FILE` and `PULSE_NOTIFY_API_TOKEN_FILE`. The two options exclude each other (exit `2`).
+- `--expect-report status|notify` (repeatable): after the window the harness reads `GET /admin/status/settings` or `GET /admin/notify/channels`. On B `service.state` must be `fresh` and `service.report.appliedRevision` must equal `revision`, else exit `2` `<service> report not observed on b`. On A the state is only logged.
+
+Commands of the runtime configuration feature: before the api merges, `bun bench/run.ts --a <api main SHA> --b <api branch SHA> --others-ref main --simulate-services`; after it merged, for status (or notify), `bun bench/run.ts --a <api main SHA> --b <api main SHA> --others-ref main --b-ref status=<branch SHA> --service-tokens --expect-report status`.
 
 The workspace is `.bench/` (git-ignored). The output is the table (also in `$GITHUB_STEP_SUMMARY`), `table.json` and `samples.json` in `--out` (default `bench-out/`). The workflow takes the same options as the inputs `a`, `b` and `others`. The exit code is `1` on a gating failure and `2` on a harness error (a failed run or a missing metric fails the whole run).
 
@@ -105,7 +124,7 @@ The load generator keeps pooled keep-alive connections. The api closes an idle o
 bun run bench:selftest
 ```
 
-The scripts in `bench/selftest/check-*.ts` use `node:assert` and cover the median, the failure rule, the table, the budgets schema, the ref resolution and the closed-connection handling of the load, the seed rows, settle rule and limit check of the cold-read phase, and the p95, midnight wait, limit check, checks file and day-change retry of the end-of-day phase. CI runs them, and checks `docker compose -f bench/compose.bench.yaml config --quiet`.
+The scripts in `bench/selftest/check-*.ts` use `node:assert` and cover the median, the failure rule, the table, the budgets schema, the ref resolution, `--b-ref` and the ref checks, the service token answers, fixture and report check, the simulated traffic schedule and counts, and the closed-connection handling of the load, the seed rows, settle rule and limit check of the cold-read phase, and the p95, midnight wait, limit check, checks file and day-change retry of the end-of-day phase. CI runs them, and checks `docker compose -f bench/compose.bench.yaml config --quiet`.
 
 ## Initial budgets
 

@@ -401,10 +401,61 @@ test("migration 8: a step-7 file gets an empty maintenance_definitions table", (
   const path = join(dir, "v7.db");
   makeV0(path);
   openDb(path, MIGRATIONS.slice(0, 7)).close();
-  const db = openDb(path);
+  const db = openDb(path, MIGRATIONS.slice(0, 8));
   try {
     expect(version(db)).toBe(8);
     expect(db.query("SELECT COUNT(*) AS n FROM maintenance_definitions").get()).toEqual({ n: 0 });
+  } finally {
+    db.close();
+  }
+});
+
+test("migration 9: a step-8 file keeps checks, tokens, incidents and windows and gets the runtime tables", () => {
+  const path = join(dir, "v8.db");
+  makeV0(path);
+  const old = openDb(path, MIGRATIONS.slice(0, 8));
+  old.run(
+    `INSERT INTO api_tokens (id, name, scopes_json, source, created_at) VALUES ('tok_a', 'ops', '["admin"]', 'api', 1);
+     INSERT INTO token_secrets (secret_sha256, token_id, created_at) VALUES ('ab', 'tok_a', 1);
+     INSERT INTO manual_incidents (title, impact, component_ids_json, status, created_at) VALUES ('t', 'minor', '[]', 'investigating', 1);
+     INSERT INTO maintenance_definitions (id, check_ids_json, start_ms, end_ms, note, created_at, updated_at) VALUES ('w1', '["h"]', 1, 2, 'n', 1, 1);
+     INSERT INTO check_definitions (id, check_json, created_at, updated_at) VALUES ('d', '{}', 1, 1);`,
+  );
+  const tables = [
+    "checks",
+    "results",
+    "incidents",
+    "api_tokens",
+    "token_secrets",
+    "manual_incidents",
+    "maintenance_definitions",
+    "check_definitions",
+    "config_state",
+  ];
+  const rows = (db: Database) => tables.map((t) => db.query(`SELECT * FROM ${t}`).all());
+  const before = rows(old);
+  old.close();
+  const db = openDb(path);
+  try {
+    expect(version(db)).toBe(9);
+    expect(rows(db)).toEqual(before);
+    expect(db.query("SELECT COUNT(*) AS n FROM checks").get()).toEqual({ n: 3 });
+    expect(db.query("SELECT COUNT(*) AS n FROM api_tokens").get()).toEqual({ n: 1 });
+    expect(db.query("SELECT COUNT(*) AS n FROM manual_incidents").get()).toEqual({ n: 1 });
+    expect(db.query("SELECT COUNT(*) AS n FROM maintenance_definitions").get()).toEqual({ n: 1 });
+    for (const t of [
+      "status_settings",
+      "notify_channels",
+      "service_reports",
+      "resend_commands",
+      "resend_requests",
+    ]) {
+      expect(db.query(`SELECT COUNT(*) AS n FROM ${t}`).get()).toEqual({ n: 0 });
+    }
+    expect(db.query("SELECT * FROM runtime_state").all()).toEqual([
+      { id: 1, status_generation: 0, notify_generation: 0 },
+    ]);
+    expect(db.query("PRAGMA foreign_key_list(resend_requests)").all()).toEqual([]);
   } finally {
     db.close();
   }

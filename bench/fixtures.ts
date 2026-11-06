@@ -1,5 +1,7 @@
 // Fixture files of the bench stack, generated from the load constants so they cannot drift.
+
 import { AVAILABILITY_TARGET, benchTokens, CHECK_INTERVAL_MS, checkIds } from "./load.ts";
+import { BENCH_ADMIN_TOKEN } from "./runtime-fixture.ts";
 
 function benchChecks() {
   return checkIds().map((id, i) => ({
@@ -53,4 +55,9 @@ export function eodChecksFileJson(): string {
 export function tokensFileJson(): string {
   const { simulated, real } = benchTokens();
   return JSON.stringify({ tokens: [...simulated, real] }, null, 2);
+}
+
+/** The admin tokens file of the api: one fixed bench admin token (at least 32 characters). */
+export function adminTokensFileJson(): string {
+  return JSON.stringify({ tokens: [{ name: "bench admin", token: BENCH_ADMIN_TOKEN }] }, null, 2);
 }

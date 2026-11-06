@@ -238,6 +238,7 @@ Tokens live in the database as SHA-256 digests (see [Scopes](rest-api.md#scopes)
 - **Admin tokens.** At the first start with `PULSE_API_ADMIN_TOKENS_FILE` set, each entry becomes a token with its name and `["read","checks","incidents","admin"]`, the same access as before. This first import turns the admin routes on for good: removing the file later, or revoking every admin, does not turn them off.
 - Each imported token keeps its secret and gets one `token.import` [audit entry](rest-api.md#audit-log) by `bootstrap`. A failed import rolls back and fails the start; the next start tries again.
 - After an import, its file is never opened again: it may be missing, and edits to it change nothing. A revoked or rotated token does not come back from the file. If the setting is set, the start logs `<setting> ignored: tokens are stored in the database`. New tokens come from [`POST /admin/tokens`](rest-api.md#tokens).
+- **Service tokens.** The status service reads its settings with a token of exactly `["status"]` and notify reads its database channels with a token of exactly `["notify"]`. They are never imported from a file: an admin creates one with `POST /admin/tokens` `{"name":"status","scopes":["status"]}`. Roll out the console (and this api) before the service gets its token: until then the service keeps its local settings.
 
 ## tokens.json
 

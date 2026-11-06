@@ -32,6 +32,13 @@ The API serves JSON over HTTP. The types come from [pulse-contract](https://gith
 | `POST`, `PUT`, `DELETE`        | `/admin/checks[/:id]`, `/admin/components[/:id]`, `/admin/maintenance[/:id]`          | `admin` and `checks`    | see [Admin config routes](#admin-config-routes)                                   |
 | `GET`, `POST`                  | `/admin/tokens[/self\|/:id[/…]]`                                                      | `admin`                 | see [Tokens](#tokens)                                                             |
 | `GET`                          | `/admin/audit[/export]`                                                               | `admin`                 | see [Audit log](#audit-log)                                                       |
+| `GET`, `PUT`                   | `/admin/status/settings`                                                              | `admin`                 | see [Status settings](#status-settings)                                           |
+| `GET`                          | `/service/status/settings`                                                            | only `status`           | see [Status settings](#status-settings)                                           |
+| `PUT`                          | `/service/status/report`                                                              | only `status`           | see [Status settings](#status-settings)                                           |
+| `GET`, `POST`, `PUT`, `DELETE` | `/admin/notify/channels[/:id]`, `/admin/notify/failed`                                | `admin`                 | see [Notify channels](#notify-channels)                                           |
+| `GET`, `PUT`                   | `/service/notify/channels`, `/service/notify/report`                                  | only `notify`           | see [Notify channels](#notify-channels)                                           |
+| `GET`, `POST`                  | `/admin/notify/resends[/:id]`                                                         | `admin`                 | see [Resend](#resend)                                                             |
+| `POST`                         | `/service/notify/resends/claim`, `/service/notify/resends/:id/result`                 | only `notify`           | see [Resend](#resend)                                                             |
 
 General rules:
 
@@ -441,7 +448,7 @@ An export with `redacted` cannot be loaded as a checks file: the file parser ref
 
 ## Scopes
 
-Tokens are stored in the database as SHA-256 digests only. Each token has one or more scopes, in the order `read`, `checks`, `incidents`, `admin`, `probe`. A probe token has exactly `["probe"]` and a `location`. An admin-side token has 1 to 4 of the other scopes and no location.
+Tokens are stored in the database as SHA-256 digests only. Each token has one or more scopes, in the order `read`, `checks`, `incidents`, `admin`, `probe`, `status`, `notify`. A probe token has exactly `["probe"]` and a `location`. A service token has exactly `["status"]` or `["notify"]` and no location. An admin-side token has 1 to 4 of `read`, `checks`, `incidents` and `admin`, and no location.
 
 | Route                                                                            | Passes when the token holds  |
 | -------------------------------------------------------------------------------- | ---------------------------- |
@@ -452,8 +459,14 @@ Tokens are stored in the database as SHA-256 digests only. Each token has one or
 | `GET /admin/tokens`, `GET /admin/tokens/self`, `GET /admin/tokens/:id`           | `admin`                      |
 | `POST /admin/tokens`, `.../rotate`, `.../revoke`                                 | `admin`, plus the grant rule |
 | `GET /admin/audit`, `GET /admin/audit/export`                                    | `admin`                      |
+| `GET`/`PUT /admin/status/settings`                                               | `admin`                      |
+| `GET /service/status/settings`, `PUT /service/status/report`                     | exactly `["status"]`         |
+| `/admin/notify/channels[/:id]`, `GET /admin/notify/failed`                       | `admin`                      |
+| `GET /service/notify/channels`, `PUT /service/notify/report`                     | exactly `["notify"]`         |
+| `POST /admin/notify/resends`, `GET /admin/notify/resends/:id`                    | `admin`                      |
+| `POST /service/notify/resends/claim`, `POST /service/notify/resends/:id/result`  | exactly `["notify"]`         |
 
-Statuses on admin routes: `404` before the first admin import, then `401` `{"error":"unauthorized"}` with `WWW-Authenticate: Bearer` for a missing, unknown, expired, revoked or rotated-out token (the body never says which), then `403` `{"error":"forbidden"}` for a probe token, then `401` `{"error":"unauthorized"}` with `WWW-Authenticate: Bearer` for an admin-side secret shorter than 32 characters (the failure log says `token` `short`), then `403` `{"error":"forbidden"}` for a valid token without the scope, then the route's own statuses. The throttle check comes before all auth statuses: a blocked client gets `429` before its token is read.
+Statuses on admin routes: `404` before the first admin import, then `401` `{"error":"unauthorized"}` with `WWW-Authenticate: Bearer` for a missing, unknown, expired, revoked or rotated-out token (the body never says which), then `403` `{"error":"forbidden"}` for a probe, `status` or `notify` token, then `401` `{"error":"unauthorized"}` with `WWW-Authenticate: Bearer` for an admin-side secret shorter than 32 characters (the failure log says `token` `short`), then `403` `{"error":"forbidden"}` for a valid token without the scope, then the route's own statuses. The throttle check comes before all auth statuses: a blocked client gets `429` before its token is read.
 
 ### Admin maintenance routes
 
@@ -474,7 +487,7 @@ Each write adds one audit entry `maintenance.create`, `maintenance.replace` or `
 
 ### Admin auth throttle
 
-The config, token and audit routes under `/admin/*` and the manual-incident writes (`POST /manual-incidents`, `/manual-incidents/:id/updates`, `/manual-incidents/:id/resolve`, `DELETE /manual-incidents/:id`) share one budget per client:
+The config, token, audit, status and notify routes under `/admin/*`, the `/service/*` routes, and the manual-incident writes (`POST /manual-incidents`, `/manual-incidents/:id/updates`, `/manual-incidents/:id/resolve`, `DELETE /manual-incidents/:id`) share one budget per client:
 
 - 10 failed authentications (every `401` and `403` above, also `short` and a missing scope) per client in a fixed window of 60 s that starts at the client's first failure. A success does not count and does not reset the window.
 - After the 10th failure every request of that client to these routes answers `429` `{"error":"too many requests"}` with `Retry-After: <seconds>` (rounded up, 1 to 60) until the window ends, also with a valid token. The token is not checked, no body is read and nothing is written. Blocked requests do not extend the window. There is no `WWW-Authenticate` header; token and audit routes keep `Cache-Control: no-store`.
@@ -482,7 +495,7 @@ The config, token and audit routes under `/admin/*` and the manual-incident writ
 - Answers that come before auth are not throttled or counted: `404` before the first admin import, unknown `/admin/*` paths, `405`, a bad manual-incident id. Public reads, ops, probe and heartbeat routes are never throttled.
 - Every `429` is counted in `pulse_api_admin_auth_throttled_total{route}`, not in `pulse_api_admin_auth_failures_total`. Limits and overflow: see [Operation](operation.md#admin-auth-throttle).
 
-**Grant rule:** a caller may create, rotate or revoke a token only when it holds every scope of that token, where `probe` counts as `checks` (a probe token reads check headers and bodies). Otherwise `403`.
+**Grant rule:** a caller may create, rotate or revoke a token only when it holds every scope of that token, where `probe` counts as `checks` (a probe token reads check headers and bodies), and `status` and `notify` count as `admin` (their tokens read runtime settings). Otherwise `403`.
 
 **Last-admin rule:** revoking the last active token with `admin` answers `409` `{"error":"cannot revoke the last active admin token"}`. A token is active when it is not revoked and not expired. Expiry can still lock everyone out; the recovery is a [backup restore](operation.md#backup-and-restore).
 
@@ -515,9 +528,79 @@ curl -sS -X POST "$API/admin/tokens/<id>/rotate" -H "Authorization: Bearer $TOKE
 curl -sS -X POST "$API/admin/tokens/<id>/revoke" -H "Authorization: Bearer $TOKEN"
 ```
 
+## Status settings
+
+The console edits the status page settings in the database; the status service reads them and reports what it applied. The settings have their own revision, apart from the checks revision: a status save never makes a check write stale, and a check write never makes a status save stale.
+
+| Route                          | Token                | Answer                                                                                                                                                        |
+| ------------------------------ | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /admin/status/settings`   | `admin`              | `200` `AdminStatusSettingsView` `{revision, settings, service}`, `ETag`, `cache-control: no-store`; never `304`, because `service` changes without a revision |
+| `PUT /admin/status/settings`   | `admin`              | body `StatusSettings`, `If-Match` required; `200` view with the new `ETag`                                                                                    |
+| `GET /service/status/settings` | exactly `["status"]` | `200` `ServiceStatusSettings` `{revision, settings}` with `ETag`; `304` on a matching `If-None-Match`                                                         |
+| `PUT /service/status/report`   | exactly `["status"]` | body `StatusServiceReport`; `204`                                                                                                                             |
+- Other methods answer `405` with `Allow` (`GET, PUT`, `GET`, `PUT`), after auth.
+- Statuses, first match wins: `429`, `401`, `403` (also an admin token on `/service/*` and a `status` or `notify` token on `/admin/*`), `413` body over 1 MiB (also on `GET`), `400` bad JSON or a malformed `If-Match`, `428` `If-Match` missing, `412` `the settings changed: reload them and retry`, `422`.
+- `422` answers a document that the contract refuses (field rules, more than 65 536 bytes as JSON, a repeated component id) and a `componentOrder` id that is not a current component (`settings.componentOrder[1]: must reference a current component`).
+- A `PUT` replaces the whole document: an absent field takes its default. The settings, the new revision and one `status-settings.replace` audit entry commit in one transaction. The entry holds no settings value.
+- A report body is limited to 524 288 bytes (`413` beyond; the stored report stays). A valid report replaces the last one, whole; `receivedAt` is the api clock. A report bumps no revision and writes no audit entry. The service part of the admin view is `never` without a report, `fresh` up to 180 000 ms after `receivedAt`, and `stale` after that.
+- Service routes use the admin auth throttle and log one `service report` line without values.
+
+```sh
+curl -sS "$API/admin/status/settings" -H "Authorization: Bearer $ADMIN_TOKEN" -D - -o /dev/null | grep -i etag
+curl -sS -X PUT "$API/admin/status/settings" -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' -H 'If-Match: "sha256-<hex>"' -d '{"name":"Acme status"}'
+curl -sS "$API/service/status/settings" -H "Authorization: Bearer $STATUS_TOKEN"
+```
+
+## Notify channels
+
+The console edits database notify channels; notify reads them and reports what it applied. A file channel of notify wins over a database channel with the same id, which is then shadowed. The api stores no file channel and never reads a secret: a channel holds reference names only (`urlEnv`, `urlFile`, `secretEnv`, `secretFile`, `smtp.passwordEnv`, `smtp.passwordFile`). The channels have their own revision, apart from the checks and the status revisions.
+
+| Route                               | Token                | Answer                                                                                                                                    |
+| ----------------------------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /admin/notify/channels`        | `admin`              | `200` `AdminNotifyChannelsView` `{revision, channels, shadowed, service}`, `ETag`, `cache-control: no-store`; never `304`                 |
+| `POST /admin/notify/channels`       | `admin`              | body `NotifyChannelDefinition`, `If-Match` required; `201` view with `Location: /admin/notify/channels/<id>` and the new `ETag`           |
+| `PUT /admin/notify/channels/:id`    | `admin`              | body `NotifyChannelDefinition`, `If-Match` required; `200` view                                                                           |
+| `DELETE /admin/notify/channels/:id` | `admin`              | `If-Match` required; `204`, also for a shadowed channel                                                                                   |
+| `GET /admin/notify/failed`          | `admin`              | `200` `AdminNotifyFailedView` `{state, receivedAt, failed, failedTotal}` from the last report, `cache-control: no-store`                  |
+| `GET /service/notify/channels`      | exactly `["notify"]` | `200` `ServiceNotifyChannels` `{revision, channels}`: every database channel, shadowed ones included, in creation order; `304` on a match |
+| `PUT /service/notify/report`        | exactly `["notify"]` | body `NotifyServiceReport`; `204`                                                                                                         |
+- Other methods answer `405` with `Allow`, after auth.
+- Statuses, first match wins: `429`, `401`, `403`, `413` (1 MiB; 524 288 bytes on the report), `400` bad JSON, a malformed `If-Match` or a `PUT` body `id` that differs from the path, `428`, `412` `the settings changed: reload them and retry`, `422`, `409`, `404`.
+- `422`: a definition that the contract refuses (also a literal `url`, `password` or `secret`, type `file`, or more than 16 384 bytes as JSON), a 101st channel (`channels: must hold at most 100 channels`), or a total over 262 144 bytes of all definitions as JSON, with the candidate in place of its old version (`channels: must be at most 262144 bytes as JSON in total`).
+- `409`: a create whose id exists in the database or among the `fileChannels` ids of the last report, and a `PUT` of a shadowed channel (only delete is allowed). A file id beyond the 200 a report lists cannot be checked; such a channel is created and then shows under `shadowed`.
+- `404`: a `PUT` or `DELETE` of an id that is not a database channel, also one that exists only as a file channel.
+- `shadowed` holds the channels whose id is in the last report's `shadowedIds`, also when that report is stale; every database channel is in exactly one of `channels` and `shadowed`. Without a report `shadowed` is `[]` and `service.state` is `never`. File channels appear only in `service.report.fileChannels`.
+- Each write commits the channel, the new revision and one audit entry `notify-channel.create`, `notify-channel.replace` or `notify-channel.delete` (target `{kind: "notify-channel", id}`) in one transaction. The entry holds no reference name or value.
+- A report replaces the last one, whole, bumps no revision and writes no audit entry. Fresh, stale and never follow the status rules.
+
+### Resend
+
+The console asks for a resend of a failed delivery; notify claims the command, executes it and posts the outcome. No resend route uses `If-Match` or bumps a revision.
+
+| Route                                     | Token                | Answer                                                                                        |
+| ----------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------- |
+| `POST /admin/notify/resends`              | `admin`              | body `ResendRequest` `{channelId, key, requestId}`; `202` new `ResendCommand`; `200` existing |
+| `GET /admin/notify/resends/:id`           | `admin`              | `200` `ResendCommand`; `404`                                                                  |
+| `POST /service/notify/resends/claim`      | exactly `["notify"]` | `200` `ResendClaimResponse` `{commands}`                                                      |
+| `POST /service/notify/resends/:id/result` | exactly `["notify"]` | body `ResendResultInput` `{state}`; `204`; `409`; `404`; `422`                                |
+- Other methods answer `405` with `Allow`, after auth. Bodies are at most 1 MiB (`413`).
+- A create runs under the write lock in one transaction, after `422` for an invalid body, in this order:
+  1. a stored `requestId`: `409` `requestId was used for another delivery` for another `(channelId, key)`; `200` with its command in whatever state; `409` `the resend request was already handled; reload the failed list` when its command is gone;
+  2. an open (`queued`, `claimed`, `admitted`) command of the same delivery: the `requestId` is stored for it and the answer is `200`, or `503` `too many resend requests` when 10 000 request ids are stored;
+  3. `503` `pulse-notify has not reported recently` when the notify report is stale (older than 180 000 ms) or missing;
+  4. `409` `not a failed delivery` when the report does not list `(channelId, key)` as failed;
+  5. `503` `too many resend requests` (`retry-after: 60`) at 10 000 stored request ids; at 1000 commands the one finished command with the smallest `updatedAt`, then `id`, is deleted, or `503` `too many open resend commands` (`retry-after: 60`) when none is finished;
+  6. a new `queued` command with a random 24-character id, its request row and one audit entry `notify-resend.create` (target `{kind: "notify-resend", id: <command id>}`): `202`.
+     A `409` or `503` stores nothing. Only a `202` writes an audit entry.
+- A claim first returns every `claimed` command claimed at least 60 000 ms ago to `queued`, then claims up to 20 `queued` commands, oldest first. `admitted` commands are never claimed again.
+- A result `S` over the stored state `T`: `204` when `S` = `T`; when `T` is `queued` or `claimed` (stores `S`); when `T` is `admitted` and `S` is `delivered`, `failed` or `dropped` (stores `S`); when `T` is final and `S` is `admitted` (no change). Any other pair is `409` `result <S> does not follow <T>`. `queued` and `claimed` as `S` are `422`.
+- Retention deletes commands in any state and request rows whose own `createdAt` is more than 604 800 000 ms (7 days) old.
+- The service routes log one info line without values: route, service, and for a result the command id and state.
+
 ## Audit log
 
-Every admin write is stored as an `AuditEntry` `{id, at, actor: {tokenId, name}, action, target: {kind, id}, revision}`. `actor.name` is the token name at write time. `action` is one of `check.*`, `component.*`, `maintenance.*` (`create`, `replace`, `delete`), `manual-incident.*` (`create`, `update`, `resolve`, `delete`, `edit`, `draft-save`, `draft-discard`, `publish`, `note-add`, `note-delete`) and `token.*` (`create`, `rotate`, `revoke`, `import`). `target.id` is the check or component id unchanged (any length), the window id (older entries of file window writes hold the window index as text), the incident id as text, or the token id. `revision` is the checks file revision after a config write, else `null`. An entry never holds a body, title, message, header, heartbeat secret, URL, token value or digest. Rejected attempts and automatic work (results, pings, reloads, retention) are not audited. Entries are never deleted.
+Every admin write is stored as an `AuditEntry` `{id, at, actor: {tokenId, name}, action, target: {kind, id}, revision}`. `actor.name` is the token name at write time. `action` is one of `check.*`, `component.*`, `maintenance.*` (`create`, `replace`, `delete`), `manual-incident.*` (`create`, `update`, `resolve`, `delete`, `edit`, `draft-save`, `draft-discard`, `publish`, `note-add`, `note-delete`) `token.*` (`create`, `rotate`, `revoke`, `import`) `notify-channel.*` (`create`, `replace`, `delete`; target `{kind: "notify-channel", id}`, `revision` the new notify revision) `notify-resend.create` (target `{kind: "notify-resend", id: <command id>}`, `revision` the current notify revision, only for a `202`) and `status-settings.replace` (target `{kind: "status-settings", id: "status"}`, `revision` the new status revision). `target.id` is the check or component id unchanged (any length), the window id (older entries of file window writes hold the window index as text), the incident id as text, or the token id. `revision` is the checks file revision after a config write, else `null`. An entry never holds a body, title, message, header, heartbeat secret, URL, token value or digest. Rejected attempts and automatic work (results, pings, reloads, retention, resend claims and results) are not audited. Entries are never deleted.
 
 ### GET /admin/audit
 

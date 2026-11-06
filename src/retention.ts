@@ -1,3 +1,4 @@
+import { RESEND_RETENTION_MS } from "@lorenzh/pulse-contract";
 import { type Env, readInt } from "@lorenzh/pulse-kit";
 import { DAY_MS, type Service, UPTIME_DAYS } from "./service.ts";
 
@@ -33,6 +34,8 @@ export interface CleanupDeps {
   deleteUptimeRollups?: (cutoff: number) => number;
   /** Deletes location uptime tallies before the cutoff day and those of removed checks; returns how many. */
   deleteLocationUptimeRollups?: (cutoff: number) => number;
+  /** Deletes resend commands and request rows created before the cutoff; returns how many. */
+  deleteResends?: (cutoff: number) => number;
 }
 
 /** Delete expired results in short batches, yielding between them, and resolved manual incidents of the same age. Returns the rows deleted. */
@@ -48,6 +51,7 @@ export async function cleanupResults(
     deleteLatencyRollups,
     deleteUptimeRollups,
     deleteLocationUptimeRollups,
+    deleteResends,
   }: CleanupDeps,
 ): Promise<number> {
   const cutoff = retentionCutoff(now(), retentionDays);
@@ -56,6 +60,8 @@ export async function cleanupResults(
   total += deleteLatencyRollups?.(cutoff) ?? 0;
   total += deleteUptimeRollups?.(cutoff) ?? 0;
   total += deleteLocationUptimeRollups?.(cutoff) ?? 0;
+  // Resend rows keep 7 days from their own createdAt, in any state; exactly 7 days is kept.
+  total += deleteResends?.(now() - RESEND_RETENTION_MS) ?? 0;
   for (;;) {
     const deleted = service.deleteExpiredResults(cutoff, batchSize);
     total += deleted;

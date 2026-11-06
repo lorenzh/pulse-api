@@ -1,4 +1,6 @@
-// Entry point: bun bench/run.ts --a <ref> --b <ref> [--rounds n] [--others-ref <ref>] [--out <dir>]
+// Entry point: bun bench/run.ts --a <ref> --b <ref> [--rounds n] [--others-ref <ref>]
+//   [--b-ref <repo>=<ref>]... [--simulate-services | --service-tokens]
+//   [--expect-report status|notify]... [--out <dir>]
 // Interleaved A/B comparison of CPU time and memory per service. See bench/README.md.
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -18,12 +20,19 @@ import { OPTIONAL_ROUTES, routesMissingAt } from "./load.ts";
 import { runChecked } from "./measure.ts";
 import {
   type Baseline,
+  checkoutMismatch,
   containsCommit,
+  parseBRefs,
   REPOS,
   type RepoName,
+  refLines,
   repoUrl,
   resolveRefs,
+  resolveShas,
+  sameShaMismatch,
+  UsageError,
 } from "./refs.ts";
+import { RUNTIME_SERVICES, type RuntimeService, runtimeMode } from "./runtime-fixture.ts";
 import {
   buildImages,
   imageSizeMB,
@@ -32,6 +41,7 @@ import {
   runStack,
   SERVICES,
   type SideDirs,
+  type StackRuntime,
 } from "./stack.ts";
 
 const COLD_METRICS = [
@@ -55,33 +65,66 @@ interface Args {
   b: string;
   rounds: number;
   othersRef?: string;
+  bRefs: Partial<Record<RepoName, string>>;
+  runtime: StackRuntime;
   out: string;
 }
 
-function parseArgs(argv: readonly string[]): Args {
-  const values = new Map<string, string>();
-  for (let i = 0; i < argv.length; i += 2) {
-    const key = argv[i];
+const VALUE_OPTIONS = ["a", "b", "rounds", "others-ref", "out", "b-ref", "expect-report"];
+const FLAG_OPTIONS = ["simulate-services", "service-tokens"];
+const REPEATABLE = ["b-ref", "expect-report"];
+
+function readOptions(argv: readonly string[]): {
+  values: Map<string, string[]>;
+  flags: Set<string>;
+} {
+  const values = new Map<string, string[]>();
+  const flags = new Set<string>();
+  for (let i = 0; i < argv.length; i++) {
+    const key = argv[i]?.startsWith("--") ? argv[i]?.slice(2) : undefined;
+    if (key !== undefined && FLAG_OPTIONS.includes(key)) {
+      flags.add(key);
+      continue;
+    }
     const value = argv[i + 1];
-    if (key === undefined || !key.startsWith("--") || value === undefined || value === "") {
-      throw new Error(`bad argument near "${key ?? ""}"`);
+    if (key === undefined || !VALUE_OPTIONS.includes(key)) {
+      throw new UsageError(`unknown option ${argv[i] ?? ""}`);
     }
-    values.set(key.slice(2), value);
+    if (value === undefined || value === "") throw new UsageError(`--${key} needs a value`);
+    const list = values.get(key) ?? [];
+    if (list.length > 0 && !REPEATABLE.includes(key)) throw new UsageError(`--${key} given twice`);
+    values.set(key, [...list, value]);
+    i++;
   }
-  for (const key of values.keys()) {
-    if (!["a", "b", "rounds", "others-ref", "out"].includes(key)) {
-      throw new Error(`unknown option --${key}`);
-    }
-  }
-  const rounds = Number(values.get("rounds") ?? 5);
-  if (!Number.isInteger(rounds) || rounds < 1) throw new Error("--rounds must be an integer >= 1");
-  const othersRef = values.get("others-ref");
+  return { values, flags };
+}
+
+function expectedReports(values: readonly string[]): RuntimeService[] {
+  return values.map((value) => {
+    const service = RUNTIME_SERVICES.find((s) => s === value);
+    if (service === undefined) throw new UsageError("--expect-report takes status or notify");
+    return service;
+  });
+}
+
+function parseArgs(argv: readonly string[]): Args {
+  const { values, flags } = readOptions(argv);
+  const one = (key: string): string | undefined => values.get(key)?.[0];
+  const rounds = Number(one("rounds") ?? 5);
+  if (!Number.isInteger(rounds) || rounds < 1)
+    throw new UsageError("--rounds must be an integer >= 1");
+  const othersRef = one("others-ref");
   return {
-    a: values.get("a") ?? "baseline",
-    b: values.get("b") ?? "main",
+    a: one("a") ?? "baseline",
+    b: one("b") ?? "main",
     rounds,
     ...(othersRef === undefined ? {} : { othersRef }),
-    out: resolve(values.get("out") ?? join(ROOT, "bench-out")),
+    bRefs: parseBRefs(values.get("b-ref") ?? [], othersRef),
+    runtime: {
+      mode: runtimeMode(flags.has("simulate-services"), flags.has("service-tokens")),
+      expectReports: expectedReports(values.get("expect-report") ?? []),
+    },
+    out: resolve(one("out") ?? join(ROOT, "bench-out")),
   };
 }
 
@@ -102,20 +145,33 @@ async function lsRemoteTags(url: string): Promise<string> {
   return stdout;
 }
 
-/** Clone once, then add a worktree of `ref` and install its dependencies. */
-async function checkout(name: RepoName, side: Side, ref: string): Promise<string> {
+async function ensureClone(name: RepoName): Promise<string> {
   const clone = join(WORK_ROOT, "repos", name);
-  if (await Bun.file(join(clone, ".git", "HEAD")).exists()) {
-    await runChecked("git", ["fetch", "origin", ref], { cwd: clone });
-  } else {
+  if (!(await Bun.file(join(clone, ".git", "HEAD")).exists())) {
     await mkdir(dirname(clone), { recursive: true });
     await runChecked("git", ["clone", "--filter=blob:none", "--no-checkout", repoUrl(name), clone]);
-    await runChecked("git", ["fetch", "origin", ref], { cwd: clone });
   }
+  return clone;
+}
+
+/** Fetches `ref` once and returns its full commit SHA; later rounds never resolve it again. */
+async function resolveSha(name: RepoName, ref: string): Promise<string> {
+  const clone = await ensureClone(name);
+  await runChecked("git", ["fetch", "origin", ref], { cwd: clone });
+  const { stdout } = await runChecked("git", ["rev-parse", "FETCH_HEAD^{commit}"], { cwd: clone });
+  return stdout.trim();
+}
+
+/** Adds a worktree of the resolved `sha`, verifies its HEAD and installs its dependencies. */
+async function checkout(name: RepoName, side: Side, sha: string): Promise<string> {
+  const clone = await ensureClone(name);
   const dir = join(WORK_ROOT, "work", side, name);
   await runChecked("rm", ["-rf", dir]);
   await runChecked("git", ["worktree", "prune"], { cwd: clone });
-  await runChecked("git", ["worktree", "add", "--detach", dir, "FETCH_HEAD"], { cwd: clone });
+  await runChecked("git", ["worktree", "add", "--detach", dir, sha], { cwd: clone });
+  const head = await runChecked("git", ["rev-parse", "HEAD"], { cwd: dir });
+  const mismatch = checkoutMismatch(name, side, sha, head.stdout);
+  if (mismatch !== undefined) throw new Error(mismatch);
   await runChecked("bun", ["install", "--frozen-lockfile"], { cwd: dir });
   return dir;
 }
@@ -176,10 +232,11 @@ async function measureStack(
   samples: Samples,
   failureLogFile: string,
   missingOnA: Set<string>,
+  runtime: StackRuntime,
 ): Promise<void> {
   const runDir = join(WORK_ROOT, "run", dirs.side);
   await runChecked("rm", ["-rf", runDir]);
-  const m = await runStack(dirs, COMPOSE_FILE, runDir, log, failureLogFile);
+  const m = await runStack(dirs, COMPOSE_FILE, runDir, log, failureLogFile, runtime);
   for (const service of SERVICES) {
     add(samples, service, "startup_cpu_ms", m.startupCpuMs[service]);
     add(samples, service, "startup_wall_ms", m.startupWallMs[service]);
@@ -224,17 +281,25 @@ async function main(): Promise<number> {
   const missing = missingBudgets(budgets, EMITTED_METRICS);
   if (missing.length > 0) throw new Error(`budgets.json lacks: ${missing.join(", ")}`);
   const baseline = (await readJson(join(BENCH_DIR, "baseline.json"))) as Baseline;
-  const refs = await resolveRefs(
+  const names = await resolveRefs(
     {
       a: args.a,
       b: args.b,
       ...(args.othersRef === undefined ? {} : { othersRef: args.othersRef }),
+      bRefs: args.bRefs,
     },
     baseline,
     lsRemoteTags,
   );
-  log(`A: ${JSON.stringify(refs.a)}`);
-  log(`B: ${JSON.stringify(refs.b)}`);
+  log(`A: ${JSON.stringify(names.a)}`);
+  log(`B: ${JSON.stringify(names.b)}`);
+  // Resolved once, before round 1: a ref that moves later cannot change what a side runs.
+  const refs = await resolveShas(names, resolveSha);
+  for (const line of refLines(refs)) log(line);
+  if (args.othersRef !== undefined) {
+    const mismatch = sameShaMismatch(refs, args.bRefs);
+    if (mismatch !== undefined) throw new Error(mismatch);
+  }
   const dirs = {
     a: await prepareSide("a", refs.a),
     b: await prepareSide("b", refs.b),
@@ -245,7 +310,7 @@ async function main(): Promise<number> {
     for (const side of SIDES) {
       log(`round ${round}/${args.rounds} side ${side}`);
       const failureLog = join(args.out, `failure-round${round}-${side}.log`);
-      await measureStack(dirs[side], samples[side], failureLog, missingOnA);
+      await measureStack(dirs[side], samples[side], failureLog, missingOnA, args.runtime);
       await measureRepoScripts(dirs[side], samples[side]);
     }
   }
@@ -253,7 +318,10 @@ async function main(): Promise<number> {
   const table = renderTable(rows);
   console.log(table);
   await mkdir(args.out, { recursive: true });
-  await writeFile(join(args.out, "samples.json"), JSON.stringify({ refs, samples }, null, 2));
+  await writeFile(
+    join(args.out, "samples.json"),
+    JSON.stringify({ refs: names, shas: refs, samples }, null, 2),
+  );
   await writeFile(join(args.out, "table.json"), JSON.stringify(rows, null, 2));
   await writeFile(join(args.out, "table.md"), table);
   const summary = process.env.GITHUB_STEP_SUMMARY;

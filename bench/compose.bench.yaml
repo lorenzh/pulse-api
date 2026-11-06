@@ -18,9 +18,11 @@ services:
     environment:
       PULSE_CHECKS_FILE: /config/checks.json
       PULSE_TOKENS_FILE: /config/tokens.json
+      PULSE_API_ADMIN_TOKENS_FILE: /config/admin-tokens.json
     volumes:
       - ${BENCH_RUN_DIR:-.}/config/checks.json:/config/checks.json:ro
       - ${BENCH_RUN_DIR:-.}/config/tokens.json:/config/tokens.json:ro
+      - ${BENCH_RUN_DIR:-.}/config/admin-tokens.json:/config/admin-tokens.json:ro
       - ${BENCH_RUN_DIR:-.}/api-data:/data
     ports:
       - "127.0.0.1::3000"
@@ -53,6 +55,10 @@ services:
       disable: true
     environment:
       PULSE_API_URL: http://api:3000
+      # Empty unless the harness runs with --service-tokens.
+      PULSE_STATUS_API_TOKEN_FILE: ${BENCH_STATUS_TOKEN_FILE:-}
+    volumes:
+      - ${BENCH_RUN_DIR:-.}/service-tokens:/service-tokens:ro
     ports:
       - "127.0.0.1::8080"
     depends_on:
@@ -70,7 +76,12 @@ services:
       PULSE_NOTIFY_CONFIG: /config/notify.json
       PULSE_HEALTH_HOST: 0.0.0.0
       PULSE_HEALTH_PORT: "9100"
+      # Empty unless the harness runs with --service-tokens.
+      PULSE_NOTIFY_API_TOKEN_FILE: ${BENCH_NOTIFY_TOKEN_FILE:-}
+      # The URL that the five bench webhook channels reference.
+      PULSE_NOTIFY_SECRET_BENCH: http://bench-target:8080/notify
     volumes:
+      - ${BENCH_RUN_DIR:-.}/service-tokens:/service-tokens:ro
       - ./fixtures/notify.json:/config/notify.json:ro
       - ${BENCH_RUN_DIR:-.}/notify-data:/data
     ports:
