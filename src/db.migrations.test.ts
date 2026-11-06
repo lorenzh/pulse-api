@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb, SchemaVersionError } from "./db.ts";
+import { createMaintenanceStore, MaintenanceStoreError } from "./maintenance-store.ts";
 import { createManualIncidentStore } from "./manual-incidents.ts";
 import { MIGRATIONS, SCHEMA_VERSION } from "./migrations.ts";
 
@@ -394,4 +395,58 @@ test("migration 7: a step-6 file keeps its public manual incidents and check row
   expect(() => openDb(path, MIGRATIONS.slice(0, 6))).toThrow(
     "database schema version 7 is newer than this program supports (6); downgrades are not supported",
   );
+});
+
+test("migration 8: a step-7 file gets an empty maintenance_definitions table", () => {
+  const path = join(dir, "v7.db");
+  makeV0(path);
+  openDb(path, MIGRATIONS.slice(0, 7)).close();
+  const db = openDb(path);
+  try {
+    expect(version(db)).toBe(8);
+    expect(db.query("SELECT COUNT(*) AS n FROM maintenance_definitions").get()).toEqual({ n: 0 });
+  } finally {
+    db.close();
+  }
+});
+
+test("maintenance store: creation order, in-place replace, delete and rollback", () => {
+  const db = openDb(":memory:");
+  let t = 10;
+  const store = createMaintenanceStore({ db, now: () => t });
+  const w = (id: string, note = "n") => ({ id, checkIds: ["a", "b"], start: 1, end: 2, note });
+  try {
+    store.create(w("z"));
+    t = 20;
+    store.create(w("a"));
+    expect(() => store.create(w("a"))).toThrow(MaintenanceStoreError);
+    t = 30;
+    expect(store.replace(w("z", "edited"))).toEqual({
+      ...w("z", "edited"),
+      createdAt: 10,
+      updatedAt: 30,
+    });
+    expect(store.replace(w("nope"))).toBeNull();
+    expect(store.list().map((d) => [d.id, d.note])).toEqual([
+      ["z", "edited"],
+      ["a", "n"],
+    ]);
+    expect(store.get("a")?.checkIds).toEqual(["a", "b"]);
+    expect(store.count()).toBe(2);
+    const before = store.list();
+    expect(() =>
+      db.transaction(() => {
+        store.delete("z");
+        store.create(w("c"));
+        throw new Error("audit failed");
+      })(),
+    ).toThrow("audit failed");
+    expect(store.list()).toEqual(before);
+    expect(() => store.create({ ...w("x"), note: " x" })).toThrow(MaintenanceStoreError);
+    expect(store.delete("a")).toBe(true);
+    expect(store.delete("a")).toBe(false);
+    expect(store.get("a")).toBeNull();
+  } finally {
+    db.close();
+  }
 });

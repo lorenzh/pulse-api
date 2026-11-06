@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   ADMIN_ETAG_HEADER,
   ADMIN_MAX_BODY_BYTES,
+  type AdminMaintenanceList,
   type ErrorResponse,
   isAdminRevision,
 } from "@lorenzh/pulse-contract";
@@ -23,11 +24,13 @@ import type {
   ConfigEdit,
   ConfigKind,
   ConfigWriter,
+  FileKind,
   WriteActor,
   WriteFailure,
   WriteOutcome,
 } from "./config-write.ts";
 import { ConfigWriteError } from "./config-write.ts";
+import type { MaintenanceWriter, WindowEdit } from "./maintenance-write.ts";
 import type { ConfigWriteAction, ConfigWriteResult, Metrics } from "./metrics.ts";
 import { handleTokenRoute, type TokenPath, tokenPathOf, tokenRouteOf } from "./token-routes.ts";
 import type { Permission } from "./token-scopes.ts";
@@ -39,6 +42,10 @@ export interface AdminRoutesDeps {
   config: () => Omit<Config, "secrets">;
   /** Writes of `/admin/checks`: database checks, never the checks file. */
   checks: CheckWriter;
+  /** Writes of `/admin/maintenance`: database windows, never the checks file. */
+  maintenance: MaintenanceWriter;
+  /** `GET /admin/maintenance`: the effective and shadowed windows with the admin revision. */
+  maintenanceList: () => AdminMaintenanceList;
   metrics: Pick<Metrics, "recordConfigWrite">;
   /** Authenticates the Bearer credential and serves `/admin/tokens*`. */
   tokens: TokenStore;
@@ -130,17 +137,14 @@ async function readBodyJson(req: IncomingMessage, isDelete: boolean): Promise<un
   }
 }
 
-// eslint-disable-next-line sonarjs/function-return-type -- an id is text, a window position is a number
-function decodeRef(kind: ConfigKind, raw: string): string | number {
-  // A malformed escape or a non-numeric index names nothing: the writer answers 404 for it after
-  // the checks that come first in the status order.
-  let text: string;
+function decodeRef(raw: string): string {
+  // A malformed escape names nothing: the writer answers 404 for it after the checks that come
+  // first in the status order.
   try {
-    text = decodeURIComponent(raw);
+    return decodeURIComponent(raw);
   } catch {
     return raw;
   }
-  return kind === "maintenance" && /^\d{1,9}$/.test(text) ? Number(text) : text;
 }
 
 function bodyId(body: unknown): unknown {
@@ -153,8 +157,8 @@ const SEGMENT: Record<ConfigKind, string> = {
   maintenance: "maintenance",
 };
 
-function locationOf(kind: ConfigKind, ref: string | number): string {
-  return `/admin/${SEGMENT[kind]}/${encodeURIComponent(String(ref))}`;
+function locationOf(kind: ConfigKind, ref: string): string {
+  return `/admin/${SEGMENT[kind]}/${encodeURIComponent(ref)}`;
 }
 
 function sendError(res: ServerResponse, status: number, error: string, headers = {}): void {
@@ -162,13 +166,10 @@ function sendError(res: ServerResponse, status: number, error: string, headers =
   sendJson(res, status, body, headers);
 }
 
-/** A check or component id, or a window index. */
-type Ref = string | number;
-
 interface Target {
   kind: ConfigKind;
   /** Undefined on the collection path. */
-  ref: Ref | undefined;
+  ref: string | undefined;
 }
 
 /** Handle `/admin/*`. Returns false for a path that is not an admin route. */
@@ -208,13 +209,16 @@ export function createAdminHandler(
   const applyWrite = (
     kind: ConfigKind,
     action: ConfigWriteAction,
-    ref: Ref | undefined,
+    ref: string | undefined,
     body: unknown,
     ifMatch: string,
     actor: WriteActor,
   ): Promise<WriteOutcome> => {
-    // A database check write never touches the file, so it needs no writable directory.
+    // Database check and window writes never touch the file, so they need no writable directory.
     if (kind === "check") return deps.checks.apply(checkEditOf(action, ref, body), ifMatch, actor);
+    if (kind === "maintenance") {
+      return deps.maintenance.apply(windowEditOf(action, ref, body), ifMatch, actor);
+    }
     try {
       deps.writer.assertWritable();
     } catch (err) {
@@ -233,15 +237,14 @@ export function createAdminHandler(
     const { kind, ref } = target;
     const body = await readBodyJson(req, action === "delete");
     const ifMatch = ifMatchOf(req.headers["if-match"]);
-    if (action === "replace" && kind !== "maintenance" && bodyId(body) !== ref) {
+    if (action === "replace" && bodyId(body) !== ref) {
       throw new RouteError(400, "body id must equal the id in the path");
     }
     if (ifMatch === undefined) throw new RouteError(428, "If-Match is required");
     const actor = { tokenId: caller.id, name: caller.name };
     const outcome = await applyWrite(kind, action, ref, body, ifMatch, actor);
     deps.metrics.recordConfigWrite(kind, action, "ok");
-    const created = kind === "maintenance" ? (outcome.index ?? 0) : bodyId(body);
-    const id = String((action === "create" ? created : ref) ?? "");
+    const id = String((action === "create" ? bodyId(body) : ref) ?? "");
     deps.info("config write", { token: caller.name, kind, action, id });
     const headers = etag(outcome.revision);
     if (action === "delete") {
@@ -249,7 +252,7 @@ export function createAdminHandler(
     } else if (action === "create") {
       sendJson(res, 201, outcome.entity, {
         ...headers,
-        location: locationOf(kind, typeof created === "number" ? created : String(created)),
+        location: locationOf(kind, id),
       });
     } else {
       sendJson(res, 200, outcome.entity, headers);
@@ -365,6 +368,17 @@ export function createAdminHandler(
       .end(exportBytes(configExport(deps.config())));
   };
 
+  const serveMaintenanceList = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+    url: URL,
+  ): Promise<void> => {
+    await discardBody(req);
+    if (url.search !== "") throw new RouteError(400, "maintenance takes no query parameters");
+    const list = deps.maintenanceList();
+    sendJson(res, 200, list, { "cache-control": "no-store", ...etag(list.revision) });
+  };
+
   return async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (await otherRoute(req, res, url)) return true;
@@ -375,22 +389,26 @@ export function createAdminHandler(
     let target: Target | undefined;
     let action: ConfigWriteAction | undefined;
     try {
-      const caller = authorize(req, ...routeAccess(section, match[2]));
+      const caller = authorize(req, ...routeAccess(section, match[2], method));
       if (section === "config") {
         await serveConfig(req, res, url, match[2]);
+        return true;
+      }
+      if (isMaintenanceList(section, match[2], method)) {
+        await serveMaintenanceList(req, res, url);
         return true;
       }
       const kind = KINDS[section];
       action = ACTION_OF_METHOD[method];
       if (kind === undefined || action === undefined) {
-        throw new RouteError(405, "method not allowed", { Allow: allowOf(match[2]) });
+        throw new RouteError(405, "method not allowed", { Allow: allowOf(kind, match[2]) });
       }
       target = {
         kind,
-        ref: match[2] === undefined ? undefined : decodeRef(kind, match[2]),
+        ref: match[2] === undefined ? undefined : decodeRef(match[2]),
       };
       if ((action === "create") !== (target.ref === undefined)) {
-        throw new RouteError(405, "method not allowed", { Allow: allowOf(target.ref) });
+        throw new RouteError(405, "method not allowed", { Allow: allowOf(kind, target.ref) });
       }
       await write(req, res, target, action, caller);
     } catch (err) {
@@ -402,20 +420,31 @@ export function createAdminHandler(
 }
 
 /** The route pattern of the request metric (never the raw path), and the permission it needs. */
-function routeAccess(section: string, id: string | undefined): [string, Permission] {
+function routeAccess(
+  section: string,
+  id: string | undefined,
+  method: string,
+): [string, Permission] {
   const route = `/admin/${section}${id === undefined ? "" : "/:id"}`;
-  return [route, section === "config" ? "config-read" : "config-write"];
+  const isRead = section === "config" || isMaintenanceList(section, id, method);
+  return [route, isRead ? "config-read" : "config-write"];
+}
+
+/** `GET /admin/maintenance` reads like `GET /admin/config`; every other window method writes. */
+function isMaintenanceList(section: string, id: string | undefined, method: string): boolean {
+  return section === "maintenance" && id === undefined && method === "GET";
 }
 
 /** The methods of a list path (no item ref) or an item path. */
-function allowOf(ref: unknown): string {
-  return ref === undefined ? "POST" : "PUT, DELETE";
+function allowOf(kind: ConfigKind | undefined, ref: unknown): string {
+  if (ref !== undefined) return "PUT, DELETE";
+  return kind === "maintenance" ? "GET, POST" : "POST";
 }
 
 function editOf(
-  kind: ConfigKind,
+  kind: FileKind,
   action: ConfigWriteAction,
-  ref: string | number | undefined,
+  ref: string | undefined,
   body: unknown,
 ): ConfigEdit {
   if (action === "create") return { kind, action, body };
@@ -423,8 +452,18 @@ function editOf(
   return action === "replace" ? { kind, action, ref, body } : { kind, action, ref };
 }
 
-function checkEditOf(action: ConfigWriteAction, ref: Ref | undefined, body: unknown): CheckEdit {
+function windowEditOf(
+  action: ConfigWriteAction,
+  ref: string | undefined,
+  body: unknown,
+): WindowEdit {
+  if (action === "create") return { action, body };
+  if (ref === undefined) throw new RouteError(405, "method not allowed", { Allow: "GET, POST" });
+  return action === "replace" ? { action, ref, body } : { action, ref };
+}
+
+function checkEditOf(action: ConfigWriteAction, ref: string | undefined, body: unknown): CheckEdit {
   if (action === "create") return { action, body };
   if (ref === undefined) throw new RouteError(405, "method not allowed", { Allow: "POST" });
-  return action === "replace" ? { action, ref: String(ref), body } : { action, ref: String(ref) };
+  return action === "replace" ? { action, ref, body } : { action, ref };
 }

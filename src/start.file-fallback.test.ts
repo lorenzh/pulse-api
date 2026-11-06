@@ -12,6 +12,7 @@ import {
 } from "@lorenzh/pulse-contract";
 import { StartupError } from "@lorenzh/pulse-kit";
 import { openDb } from "./db.ts";
+import { createMaintenanceStore } from "./maintenance-store.ts";
 import { type RunningApi, startApi } from "./start.ts";
 
 const PROBE = "probe-token-0123456789abcdef";
@@ -233,4 +234,64 @@ test("the snapshot holds the file heartbeat digest, never its secret", async () 
   } finally {
     db.close();
   }
+});
+
+const maintenanceOf = async (s: Started): Promise<unknown> =>
+  (await fetch(`${s.base}/maintenance`)).json();
+
+test("stored windows: a file id shadows them, also from the snapshot; a file without it restores them", async () => {
+  const db = openDb(dbPath);
+  createMaintenanceStore({ db, now: () => NOW }).create({
+    id: "w",
+    checkIds: ["web", "fhb"],
+    start: NOW - 1000,
+    end: NOW + 3_600_000,
+    note: "db upgrade",
+  });
+  db.close();
+  const fileWindow = {
+    id: "w",
+    checkId: "web",
+    start: new Date(NOW - 500).toISOString(),
+    end: new Date(NOW + 1000).toISOString(),
+    note: "file note",
+  };
+  const shadowedOnly = [{ checkId: "web", start: NOW - 500, end: NOW + 1000, note: "file note" }];
+  writeFileSync(file, JSON.stringify({ ...FILE, maintenance: [fileWindow] }));
+  const first = await start();
+  assert.deepEqual(await maintenanceOf(first), shadowedOnly);
+  assert.equal(listening(first.lines).databaseMaintenanceWindows, 1);
+  await stop(first);
+
+  writeFileSync(file, '{"checks": [');
+  const fallback = await start();
+  assert.equal((await fallback.config()).view.file.state, "invalid");
+  assert.deepEqual(await maintenanceOf(fallback), shadowedOnly, "the snapshot keeps the file id");
+  await stop(fallback);
+
+  writeFileSync(file, JSON.stringify(FILE));
+  const again = await start();
+  const stored = { start: NOW - 1000, end: NOW + 3_600_000, note: "db upgrade" };
+  assert.deepEqual(await maintenanceOf(again), [
+    { checkId: "fhb", ...stored },
+    { checkId: "web", ...stored },
+  ]);
+});
+
+test("a snapshot written before window ids loads unchanged", async () => {
+  writeFileSync(file, JSON.stringify({ ...FILE, maintenance: [] }));
+  await stop(await start());
+  const db = openDb(dbPath);
+  const window = { checkId: "web", start: NOW - 1, end: NOW + 1000, note: "old" };
+  const raw = db
+    .query<{ json: string }, []>("SELECT file_snapshot_json AS json FROM config_state")
+    .get();
+  const snapshot = JSON.parse(raw?.json ?? "{}") as Record<string, unknown>;
+  db.run("UPDATE config_state SET file_snapshot_json = ?", [
+    JSON.stringify({ ...snapshot, maintenance: [window] }),
+  ]);
+  db.close();
+  writeFileSync(file, '{"checks": [');
+  const s = await start();
+  assert.deepEqual(await maintenanceOf(s), [window]);
 });

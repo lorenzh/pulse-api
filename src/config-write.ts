@@ -4,7 +4,6 @@ import type {
   AdminComponent,
   AdminConfigResponse,
   AdminFileStatus,
-  AdminMaintenanceView,
   AdminWriteResponse,
   Check,
 } from "@lorenzh/pulse-contract";
@@ -15,16 +14,20 @@ import { type Config, ConfigError, parseConfig } from "./config.ts";
 import type { ConfigHolder } from "./config-holder.ts";
 import { adminRevision, type ConfigReloader, revisionOf } from "./config-reload.ts";
 import { effectiveChecks } from "./effective-checks.ts";
+import { publicWindow } from "./effective-maintenance.ts";
 import { createWriteLock, type WriteLock } from "./write-lock.ts";
 
 export type ConfigKind = "check" | "component" | "maintenance";
 export type ConfigAction = "create" | "replace" | "delete";
 
-/** What the writer does to the checks file. `ref` is a check or component id, or a window index. */
+/** The kinds the checks file writer edits; windows are written to the database only. */
+export type FileKind = Exclude<ConfigKind, "maintenance">;
+
+/** What the writer does to the checks file. `ref` is a check or component id. */
 export type ConfigEdit =
-  | { kind: ConfigKind; action: "create"; body: unknown }
-  | { kind: ConfigKind; action: "replace"; ref: string | number; body: unknown }
-  | { kind: ConfigKind; action: "delete"; ref: string | number };
+  | { kind: FileKind; action: "create"; body: unknown }
+  | { kind: FileKind; action: "replace"; ref: string; body: unknown }
+  | { kind: FileKind; action: "delete"; ref: string };
 
 /** Why a write failed; the HTTP layer maps `code` to a status. */
 export type WriteFailure = "stale" | "invalid" | "conflict" | "not-found" | "readonly" | "error";
@@ -87,8 +90,6 @@ export interface WriteOutcome {
   revision: string;
   /** The stored entity, redacted; absent after a delete. */
   entity: AdminWriteResponse | undefined;
-  /** Position of a created or replaced maintenance window. */
-  index: number | undefined;
 }
 
 export interface ConfigWriter {
@@ -178,7 +179,8 @@ export function configView(
     checks: merged.checks.map((check) => checkView(check, merged.sources.get(check.id) ?? "file")),
     shadowed: merged.shadowed.map((d) => checkView(d.check, "database")),
     components: config.components.map((c) => ({ ...c })),
-    maintenance: config.maintenance.map((w, index) => ({ ...w, index })),
+    // The response shape has no window id; old consoles validate it strictly.
+    maintenance: config.maintenance.map((w, index) => ({ ...publicWindow(w), index })),
     file: { ...file },
   };
 }
@@ -212,19 +214,6 @@ function parseDoc(bytes: Buffer): Doc {
   return doc;
 }
 
-/** Window times may come as epoch ms (the contract's form); the file holds ISO strings. */
-function windowBody(body: unknown): unknown {
-  if (!isRecord(body)) return body;
-  const out: Doc = { ...body };
-  for (const key of ["start", "end"]) {
-    const v = out[key];
-    if (typeof v === "number" && Number.isFinite(v) && Math.abs(v) <= 8.64e15) {
-      out[key] = new Date(v).toISOString();
-    }
-  }
-  return out;
-}
-
 /** Run the file parsers on the candidate; a failure is a 422. Messages never quote values. */
 function validated(doc: Doc): Config {
   try {
@@ -235,7 +224,7 @@ function validated(doc: Doc): Config {
   }
 }
 
-function mustBeObject(kind: ConfigKind, body: unknown): Doc {
+function mustBeObject(kind: FileKind, body: unknown): Doc {
   if (!isRecord(body)) throw invalid(`${kind} must be an object`);
   return body;
 }
@@ -248,18 +237,13 @@ function keepSecret(old: unknown, body: Doc): Doc {
 }
 
 /** The list a kind lives in, and how its entries are addressed. */
-const LIST_KEY = { check: "checks", component: "components", maintenance: "maintenance" } as const;
+const LIST_KEY = { check: "checks", component: "components" } as const;
 
-function listKey(kind: ConfigKind): "checks" | "components" | "maintenance" {
+function listKey(kind: FileKind): "checks" | "components" {
   return LIST_KEY[kind];
 }
 
-function locate(kind: ConfigKind, list: unknown[], ref: string | number): number {
-  if (kind === "maintenance") {
-    return typeof ref === "number" && Number.isInteger(ref) && ref >= 0 && ref < list.length
-      ? ref
-      : -1;
-  }
+function locate(list: unknown[], ref: string): number {
   return list.findIndex((item) => idOf(item) === ref);
 }
 
@@ -281,8 +265,8 @@ interface Applied {
 }
 
 /** The request body of a create or replace, in the shape of the file. */
-function fileBody(kind: ConfigKind, raw: unknown): Doc {
-  return mustBeObject(kind, kind === "maintenance" ? windowBody(raw) : raw);
+function fileBody(kind: FileKind, raw: unknown): Doc {
+  return mustBeObject(kind, raw);
 }
 
 function createEntry(edit: ConfigEdit, doc: Doc): Applied {
@@ -290,7 +274,7 @@ function createEntry(edit: ConfigEdit, doc: Doc): Applied {
   const { kind } = edit;
   const body = fileBody(kind, edit.body);
   const list = listOf(doc, listKey(kind));
-  const existing = kind === "maintenance" ? -1 : list.findIndex((i) => idOf(i) === body.id);
+  const existing = list.findIndex((i) => idOf(i) === body.id);
   if (existing < 0) {
     list.push(body);
     return { doc, index: list.length - 1 };
@@ -307,18 +291,14 @@ function replaceEntry(edit: ConfigEdit, doc: Doc): Applied {
   const key = listKey(kind);
   const list = listOf(doc, key);
   const given = fileBody(kind, edit.body);
-  const at = locate(kind, list, edit.ref);
+  const at = locate(list, edit.ref);
   if (at < 0) {
     // Validate first: a bad body is a 422 also when the id is unknown.
     validated({ ...doc, [key]: [...list, given] });
-    throw new ConfigWriteError("not-found", `unknown ${kind} ${notFoundRef(kind, edit.ref)}`);
+    throw new ConfigWriteError("not-found", `unknown ${kind} "${edit.ref}"`);
   }
   list[at] = kind === "check" ? keepSecret(list[at], given) : given;
   return { doc, index: at };
-}
-
-function notFoundRef(kind: ConfigKind, ref: string | number): string {
-  return kind === "maintenance" ? `index ${String(ref)}` : `"${String(ref)}"`;
 }
 
 function deleteEntry(
@@ -329,8 +309,8 @@ function deleteEntry(
   if (edit.action !== "delete") throw new TypeError("not a delete");
   const { kind, ref } = edit;
   const list = listOf(doc, listKey(kind));
-  const at = locate(kind, list, ref);
-  if (at < 0) throw new ConfigWriteError("not-found", `unknown ${kind} ${notFoundRef(kind, ref)}`);
+  const at = locate(list, ref);
+  if (at < 0) throw new ConfigWriteError("not-found", `unknown ${kind} "${ref}"`);
   if (kind === "check") {
     const holder = referenceOf(doc, String(ref));
     if (holder !== undefined) {
@@ -373,12 +353,6 @@ function entityOf(edit: ConfigEdit, config: Config, index: number): AdminWriteRe
       const component: AdminComponent | undefined = config.components[index];
       return component === undefined ? undefined : { ...component };
     }
-    case "maintenance": {
-      const window = config.maintenance[index];
-      const view: AdminMaintenanceView | undefined =
-        window === undefined ? undefined : { ...window, index };
-      return view;
-    }
     default: {
       const never: never = edit.kind;
       return never;
@@ -386,9 +360,8 @@ function entityOf(edit: ConfigEdit, config: Config, index: number): AdminWriteRe
   }
 }
 
-/** The audit target id: a check or component id unchanged, a window index as decimal text. */
+/** The audit target id: a check or component id unchanged. */
 function targetIdOf(edit: ConfigEdit, doc: Doc, index: number): string {
-  if (edit.kind === "maintenance") return String(index);
   if (edit.action === "delete") return String(edit.ref);
   return String(idOf(listOf(doc, listKey(edit.kind))[index]));
 }
@@ -602,7 +575,7 @@ export function createConfigWriter(deps: WriterDeps): ConfigWriter {
       target: { kind: edit.kind, id: targetIdOf(edit, doc, index) },
       revision,
     });
-    return { revision, entity: entityOf(edit, config, index), index };
+    return { revision, entity: entityOf(edit, config, index) };
   };
 
   return {

@@ -326,7 +326,7 @@ test("v0.1.0 upgrade: a short admin file fails after migration, a fixed file the
   assertShortRefused(await startFails(BOTH()));
   const db = new Database(dbPath);
   try {
-    assert.deepEqual(db.query("PRAGMA user_version").get(), { user_version: 7 });
+    assert.deepEqual(db.query("PRAGMA user_version").get(), { user_version: 8 });
   } finally {
     db.close();
   }

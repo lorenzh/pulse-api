@@ -106,10 +106,12 @@ test("the heartbeat answers 405 with Allow: GET, POST for any id", async () => {
 
 test("admin answers 405 after auth with Allow by path shape", async () => {
   for (const section of ["checks", "components", "maintenance"]) {
-    await expect405("GET", `/admin/${section}`, "POST", ADMIN_TOKEN);
+    // The window collection also serves GET (the admin list).
+    const allow = section === "maintenance" ? "GET, POST" : "POST";
+    if (section !== "maintenance") await expect405("GET", `/admin/${section}`, allow, ADMIN_TOKEN);
     await expect405("PATCH", `/admin/${section}/a`, "PUT, DELETE", ADMIN_TOKEN);
     await expect405("POST", `/admin/${section}/a`, "PUT, DELETE", ADMIN_TOKEN);
-    await expect405("PUT", `/admin/${section}`, "POST", ADMIN_TOKEN);
+    await expect405("PUT", `/admin/${section}`, allow, ADMIN_TOKEN);
     const unauthorized = await fetch(`${base}/admin/${section}`, { method: "GET" });
     assert.equal(unauthorized.status, 401);
     const item = await fetch(`${base}/admin/${section}/a`, { method: "PATCH" });

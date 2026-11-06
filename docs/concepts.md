@@ -43,7 +43,7 @@ Details:
 
 ### Maintenance and quorum
 
-Whether a `down` result lies in a maintenance window is decided by its own timestamp (`start <= t < end`), not by the arrival time. Such a down never counts in a quorum window, also when it arrives after the window ended. A down at `end` counts. Windows come from the checks file at start, so a changed file applies from the next start.
+Whether a `down` result lies in a maintenance window is decided by its own timestamp (`start <= t < end`), not by the arrival time. Such a down never counts in a quorum window, also when it arrives after the window ended. A down at `end` counts. Windows come from the checks file and from the database. The windows of the file change with every applied file, also at a reload; a database window applies at once after its admin write.
 
 ### Late results
 
@@ -121,7 +121,7 @@ The gauge `pulse_api_slo_budget_remaining_ratio{check}` and `{component}` carrie
 
 ## Maintenance windows
 
-Maintenance windows are listed in `checks.json` (see [maintenance](configuration.md#maintenance)). A result is classified by its own timestamp.
+Maintenance windows come from two sources: the `maintenance` list of `checks.json` (see [maintenance](configuration.md#maintenance)) and the database windows written through [`/admin/maintenance`](rest-api.md#admin-maintenance-routes). A database window names one or more checks, of the file or of the database. The windows in effect are the file windows, then the database windows whose id no file window holds. A file window with the same `id` wins over the whole database window, which is kept as _shadowed_ and comes back into effect when the file no longer holds the id. A check id of a database window that is not in effect right now (the check was removed or deleted) is skipped, not removed from the window; it applies again when a check with that id is back. A result is classified by its own timestamp.
 
 - A `down` result inside a window is stored and updates `lastResultAt` and `lastReason`. It leaves the stored state, the counter and the incidents untouched.
 - An `up` or `degraded` result is processed as usual: it goes through the quorum evaluation. Example: two of three locations are down and open an incident. A third location then reports `up` during maintenance. Two locations are still down, so the combined status stays `down` and the incident stays open.

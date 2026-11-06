@@ -20,7 +20,6 @@ import {
   validateAdminComponent,
   validateAdminConfigResponse,
   validateAdminConfigSummary,
-  validateAdminMaintenanceView,
 } from "@lorenzh/pulse-contract";
 import type { LogLevel } from "@lorenzh/pulse-kit";
 import { nodeConfigFs } from "./config-fs.ts";
@@ -484,33 +483,24 @@ test("admin: components and maintenance windows", async () => {
   assert.equal(putComp.status, 200);
   rev = putComp.headers.get("etag") ?? "";
 
-  const win = await b.call("POST", "/admin/maintenance", {
-    body: {
-      checkId: "web",
-      start: Date.parse("2028-01-01T00:00:00Z"),
-      end: Date.parse("2028-01-01T01:00:00Z"),
-      note: "later",
-    },
-    ifMatch: rev,
+  // File windows are read-only: the old file-window writes end, and the file stays as it is.
+  const before = readFileSync(file, "utf8");
+  const oldWindow = {
+    checkId: "web",
+    start: Date.parse("2028-01-01T00:00:00Z"),
+    end: Date.parse("2028-01-01T01:00:00Z"),
+    note: "later",
+  };
+  const oldPost = await b.call("POST", "/admin/maintenance", { body: oldWindow, ifMatch: rev });
+  assert.equal(oldPost.status, 422);
+  const oldPut = await b.call("PUT", "/admin/maintenance/0", { body: oldWindow, ifMatch: rev });
+  assert.equal(oldPut.status, 400);
+  const oldDelete = await b.call("DELETE", "/admin/maintenance/0", { ifMatch: rev });
+  assert.equal(oldDelete.status, 409);
+  assert.deepEqual(await oldDelete.json(), {
+    error: "file maintenance windows are read-only; edit the checks file",
   });
-  assert.equal(win.status, 201);
-  assert.equal(win.headers.get("location"), "/admin/maintenance/1");
-  const winView = await win.json();
-  assert.ok(validateAdminMaintenanceView(winView).ok);
-  rev = win.headers.get("etag") ?? "";
-  const putWin = await b.call("PUT", "/admin/maintenance/1", {
-    body: {
-      checkId: "web",
-      start: "2028-01-01T00:00:00Z",
-      end: "2028-01-01T02:00:00Z",
-      note: "longer",
-    },
-    ifMatch: rev,
-  });
-  assert.equal(putWin.status, 200);
-  rev = putWin.headers.get("etag") ?? "";
-  assert.equal((await b.call("DELETE", "/admin/maintenance/1", { ifMatch: rev })).status, 204);
-  rev = await b.revision();
+  assert.equal(readFileSync(file, "utf8"), before);
   assert.equal((await b.call("DELETE", "/admin/components/db", { ifMatch: rev })).status, 204);
   const config = (await (await b.call("GET", "/admin/config")).json()) as AdminConfigResponse;
   assert.equal(config.maintenance.length, 1);
@@ -1029,7 +1019,6 @@ test("file writes: a disk that differs from the applied file is 412 naming its s
     for (const [method, path, body] of [
       ["POST", "/admin/components", NEW_COMPONENT],
       ["PUT", "/admin/components/site", { id: "site", name: "Renamed", checkIds: ["web"] }],
-      ["DELETE", "/admin/maintenance/0", undefined],
     ] as const) {
       const r = await b.call(method, path, { body, ifMatch: rev });
       assert.equal(r.status, 412, `${c.name} ${method} ${path}`);

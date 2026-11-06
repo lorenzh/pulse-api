@@ -228,8 +228,12 @@ function call(
   });
 }
 
-async function expectAdminMethod(path: string, allow: string): Promise<void> {
-  for (const method of ["GET", "PATCH"]) {
+async function expectAdminMethod(
+  path: string,
+  allow: string,
+  methods = ["GET", "PATCH"],
+): Promise<void> {
+  for (const method of methods) {
     for (const [token, expected] of [
       [undefined, 401],
       ["wrong-token", 401],
@@ -247,7 +251,13 @@ async function expectAdminMethod(path: string, allow: string): Promise<void> {
 test("security HTTP: admin auth precedes method and malformed-body checks on all changed shapes", async () => {
   for (const section of ["checks", "components", "maintenance"]) {
     for (const suffix of ["", "/web", "/missing", "/%ZZ", "/%2e%2e%2f"]) {
-      await expectAdminMethod(`/admin/${section}${suffix}`, suffix === "" ? "POST" : "PUT, DELETE");
+      const path = `/admin/${section}${suffix}`;
+      if (section === "maintenance" && suffix === "") {
+        // GET of the window collection is the admin list, not a 405.
+        await expectAdminMethod(path, "GET, POST", ["PATCH"]);
+      } else {
+        await expectAdminMethod(path, suffix === "" ? "POST" : "PUT, DELETE");
+      }
     }
   }
 });

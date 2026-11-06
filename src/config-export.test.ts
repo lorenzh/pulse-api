@@ -6,10 +6,12 @@ import { join } from "node:path";
 import {
   type AdminConfigExport,
   validateAdminConfigExport,
+  validateAdminConfigResponse,
   validateTokenSecretResponse,
 } from "@lorenzh/pulse-contract";
 import { parseConfig } from "./config.ts";
 import { openDb } from "./db.ts";
+import { createMaintenanceStore } from "./maintenance-store.ts";
 import { type RunningApi, startApi } from "./start.ts";
 
 const PROBE = "probe-token-0123456789abcdef";
@@ -91,13 +93,13 @@ interface Booted {
   write(method: string, path: string, body: unknown): Promise<Response>;
 }
 
-async function boot(content: unknown): Promise<Booted> {
+async function boot(content: unknown, dbPath = ":memory:"): Promise<Booted> {
   writeFileSync(file, `${JSON.stringify(content, null, 2)}\n`);
   const signals: (() => void)[] = [];
   const api = await startApi({
     env: {
       PORT: "0",
-      PULSE_DB: ":memory:",
+      PULSE_DB: dbPath,
       PULSE_CHECKS_FILE: file,
       PULSE_TOKENS_FILE: join(dir, "tokens.json"),
       PULSE_API_ADMIN_TOKENS_FILE: join(dir, "admin.json"),
@@ -300,4 +302,83 @@ test("export refuses any query with 400 and other methods with 405 Allow GET", a
   }
   const other = await b.call("GET", "/admin/config/other");
   assert.equal(other.status, 404);
+});
+
+/** A database file with stored windows, as the window writer will leave it. */
+function seededDb(): string {
+  const path = join(dir, "seeded.db");
+  const db = openDb(path);
+  const store = createMaintenanceStore({ db, now: () => NOW });
+  store.create({
+    id: "late",
+    checkIds: ["file-a"],
+    start: 253402300799998,
+    end: 253402300799999,
+    note: "far",
+  });
+  store.create({ id: "w", checkIds: ["file-a", "gone"], start: 1000, end: 2000, note: "db" });
+  store.create({ id: "f", checkIds: ["file-a"], start: 5, end: 6, note: "shadowed" });
+  db.close();
+  return path;
+}
+
+test("export: file windows, then effective database windows flattened; no id, nothing shadowed", async () => {
+  const b = await boot({ ...BASE, maintenance: [{ ...BASE.maintenance[0], id: "f" }] }, seededDb());
+  const { r, text } = await exported(b);
+  assert.equal(r.status, 200);
+  const doc = JSON.parse(text) as unknown;
+  assert.deepEqual(validateAdminConfigExport(doc).ok, true);
+  assert.deepEqual(valid(text).maintenance, [
+    {
+      checkId: "file-a",
+      start: "2027-01-01T00:00:00.000Z",
+      end: "2027-01-01T01:30:00.000Z",
+      note: "n",
+    },
+    {
+      checkId: "file-a",
+      start: "9999-12-31T23:59:59.998Z",
+      end: "9999-12-31T23:59:59.999Z",
+      note: "far",
+    },
+    {
+      checkId: "file-a",
+      start: "1970-01-01T00:00:01.000Z",
+      end: "1970-01-01T00:00:02.000Z",
+      note: "db",
+    },
+  ]);
+
+  const config = await (await b.call("GET", "/admin/config")).json();
+  assert.equal(validateAdminConfigResponse(config).ok, true);
+  assert.deepEqual((config as { maintenance: unknown }).maintenance, [
+    {
+      checkId: "file-a",
+      start: Date.parse("2027-01-01T00:00:00Z"),
+      end: Date.parse("2027-01-01T01:30:00Z"),
+      note: "n",
+      index: 0,
+    },
+  ]);
+});
+
+test("time boundary: a window created over HTTP at the largest end exports a four-digit year", async () => {
+  const b = await boot(BASE);
+  const created = await b.write("POST", "/admin/maintenance", {
+    id: "w",
+    checkIds: ["file-a"],
+    start: 253402300799998,
+    end: 253402300799999,
+    note: "x",
+  });
+  assert.equal(created.status, 201);
+  const { text } = await exported(b);
+  const doc = JSON.parse(text) as unknown;
+  assert.equal(validateAdminConfigExport(doc).ok, true);
+  assert.deepEqual(valid(text).maintenance.at(-1), {
+    checkId: "file-a",
+    start: "9999-12-31T23:59:59.998Z",
+    end: "9999-12-31T23:59:59.999Z",
+    note: "x",
+  });
 });
