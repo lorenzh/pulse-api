@@ -33,6 +33,7 @@ import { ConfigWriteError } from "./config-write.ts";
 import type { MaintenanceWriter, WindowEdit } from "./maintenance-write.ts";
 import type { ConfigWriteAction, ConfigWriteResult, Metrics } from "./metrics.ts";
 import { isServiceNotifyPath, type NotifyMatch, notifyPathOf } from "./notify-channel-routes.ts";
+import { isServiceResendPath, type ResendMatch, resendPathOf } from "./resend-routes.ts";
 import { type StatusPath, statusPathOf } from "./status-settings-routes.ts";
 import { handleTokenRoute, type TokenPath, tokenPathOf, tokenRouteOf } from "./token-routes.ts";
 import type { Permission } from "./token-scopes.ts";
@@ -64,6 +65,8 @@ export interface AdminRoutesDeps {
   status?: (req: IncomingMessage, res: ServerResponse, path: StatusPath) => Promise<void>;
   /** Serves `/admin/notify/*`; without it those paths are not admin routes. */
   notify?: (req: IncomingMessage, res: ServerResponse, match: NotifyMatch) => Promise<void>;
+  /** Serves `/admin/notify/resends*`; without it those paths are not admin routes. */
+  resend?: (req: IncomingMessage, res: ServerResponse, match: ResendMatch) => Promise<void>;
 }
 
 const ADMIN_PATH = /^\/admin\/(config|checks|components|maintenance)(?:\/([^/]+))?$/;
@@ -350,6 +353,15 @@ export function createAdminHandler(
       deps.notify !== undefined
     ) {
       await deps.notify(req, res, notifyMatch);
+      return true;
+    }
+    const resendMatch = resendPathOf(url.pathname);
+    if (
+      resendMatch !== null &&
+      !isServiceResendPath(resendMatch.path) &&
+      deps.resend !== undefined
+    ) {
+      await deps.resend(req, res, resendMatch);
       return true;
     }
     const auditPath = auditPathOf(url.pathname);

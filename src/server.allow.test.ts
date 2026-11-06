@@ -162,6 +162,14 @@ test("the notify routes answer 405 after auth with their Allow", async () => {
   for (const method of ["GET", "POST", "DELETE"]) {
     await expect405(method, "/service/notify/report", "PUT", secret);
   }
+  for (const method of ["GET", "PUT", "DELETE"]) {
+    await expect405(method, "/admin/notify/resends", "POST", ADMIN_TOKEN);
+    await expect405(method, "/service/notify/resends/claim", "POST", secret);
+    await expect405(method, "/service/notify/resends/c1/result", "POST", secret);
+  }
+  for (const method of ["POST", "PUT", "DELETE"]) {
+    await expect405(method, "/admin/notify/resends/c1", "GET", ADMIN_TOKEN);
+  }
   for (const path of ["/admin/notify/channels", "/service/notify/channels"]) {
     assert.equal((await fetch(`${base}${path}`, { method: "PATCH" })).status, 401, path);
   }

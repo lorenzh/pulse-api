@@ -69,7 +69,7 @@ The console reads and saves the status page settings with `GET`/`PUT /admin/stat
 
 ## Notify channels
 
-The console creates, replaces and deletes database notify channels through `/admin/notify/channels[/:id]` (`admin`, `If-Match` required) and reads failed deliveries with `GET /admin/notify/failed`. Notify reads the channels with `GET /service/notify/channels` and reports with `PUT /service/notify/report`, with a token whose only scope is `notify`. A channel holds secret reference names only, never values. At most 100 channels, 16 384 bytes per definition and 262 144 bytes in total. A file channel of notify with the same id shadows a database channel. See [REST API](docs/rest-api.md#notify-channels).
+The console creates, replaces and deletes database notify channels through `/admin/notify/channels[/:id]` (`admin`, `If-Match` required) and reads failed deliveries with `GET /admin/notify/failed`. Notify reads the channels with `GET /service/notify/channels` and reports with `PUT /service/notify/report`, with a token whose only scope is `notify`. A channel holds secret reference names only, never values. At most 100 channels, 16 384 bytes per definition and 262 144 bytes in total. A file channel of notify with the same id shadows a database channel. The console resends a failed delivery with `POST /admin/notify/resends`; notify claims commands with `POST /service/notify/resends/claim` and posts outcomes to `/service/notify/resends/:id/result`. A repeated `requestId` gets the same command again. See [REST API](docs/rest-api.md#notify-channels) and [Resend](docs/rest-api.md#resend).
 
 ## Health and metrics
 

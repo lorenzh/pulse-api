@@ -1,6 +1,11 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { SERVICE_REPORT_STALE_MS, type StatusSettings } from "@lorenzh/pulse-contract";
+import {
+  type ResendCommand,
+  type ResendCommandState,
+  SERVICE_REPORT_STALE_MS,
+  type StatusSettings,
+} from "@lorenzh/pulse-contract";
 
 /** A service that reports to the api over `/service/<name>/report`. */
 export type ReportingService = "status" | "notify";
@@ -136,6 +141,165 @@ export function createRuntimeStore(db: Database): RuntimeStore {
     },
     deleteNotifyChannel(id) {
       return db.run("DELETE FROM notify_channels WHERE id = ?", [id]).changes > 0;
+    },
+  };
+}
+
+/** A stored `requestId` and the command it was answered with. */
+export interface StoredResendRequest {
+  requestId: string;
+  commandId: string;
+  channelId: string;
+  key: string;
+  createdAt: number;
+}
+
+/** The SQL of `resend_commands` and `resend_requests`; call the writes inside a transaction. */
+export interface ResendStore {
+  request(requestId: string): StoredResendRequest | null;
+  command(id: string): ResendCommand | null;
+  /** The open (`queued`, `claimed`, `admitted`) command of a delivery, or null. */
+  openCommandFor(channelId: string, key: string): ResendCommand | null;
+  requestCount(): number;
+  commandCount(): number;
+  /** Delete the finished command with the smallest `updatedAt`, then `id`; false when none. */
+  deleteOldestFinished(): boolean;
+  insertCommand(command: ResendCommand): void;
+  insertRequest(request: StoredResendRequest): void;
+  /** Requeue claims at least `timeoutMs` old, then claim up to `limit` oldest queued commands. */
+  claim(now: number, timeoutMs: number, limit: number): ResendCommand[];
+  setState(id: string, state: ResendCommandState, now: number): void;
+  /** Delete commands and request rows whose own `createdAt` is before `cutoff`; the count. */
+  deleteCreatedBefore(cutoff: number): number;
+}
+
+interface CommandRow {
+  id: string;
+  request_id: string;
+  channel_id: string;
+  key: string;
+  state: string;
+  created_at: number;
+  updated_at: number;
+}
+
+const COMMAND_COLUMNS = "id, request_id, channel_id, key, state, created_at, updated_at";
+const OPEN_STATES = "('queued', 'claimed', 'admitted')";
+
+function commandOf(r: CommandRow): ResendCommand {
+  return {
+    id: r.id,
+    channelId: r.channel_id,
+    key: r.key,
+    requestId: r.request_id,
+    // Only contract states are stored.
+    state: r.state as ResendCommandState,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+export function createResendStore(db: Database): ResendStore {
+  const count = (table: string): number =>
+    db.query<{ n: number }, []>(`SELECT COUNT(*) AS n FROM ${table}`).get()?.n ?? 0;
+  return {
+    request(requestId) {
+      const r = db
+        .query<
+          {
+            request_id: string;
+            command_id: string;
+            channel_id: string;
+            key: string;
+            created_at: number;
+          },
+          [string]
+        >(
+          "SELECT request_id, command_id, channel_id, key, created_at FROM resend_requests WHERE request_id = ?",
+        )
+        .get(requestId);
+      return r === null
+        ? null
+        : {
+            requestId: r.request_id,
+            commandId: r.command_id,
+            channelId: r.channel_id,
+            key: r.key,
+            createdAt: r.created_at,
+          };
+    },
+    command(id) {
+      const r = db
+        .query<CommandRow, [string]>(`SELECT ${COMMAND_COLUMNS} FROM resend_commands WHERE id = ?`)
+        .get(id);
+      return r === null ? null : commandOf(r);
+    },
+    openCommandFor(channelId, key) {
+      const r = db
+        .query<CommandRow, [string, string]>(
+          `SELECT ${COMMAND_COLUMNS} FROM resend_commands
+           WHERE channel_id = ? AND key = ? AND state IN ${OPEN_STATES}
+           ORDER BY created_at, id LIMIT 1`,
+        )
+        .get(channelId, key);
+      return r === null ? null : commandOf(r);
+    },
+    requestCount: () => count("resend_requests"),
+    commandCount: () => count("resend_commands"),
+    deleteOldestFinished() {
+      return (
+        db.run(
+          `DELETE FROM resend_commands WHERE id = (
+             SELECT id FROM resend_commands WHERE state NOT IN ${OPEN_STATES}
+             ORDER BY updated_at, id LIMIT 1)`,
+        ).changes > 0
+      );
+    },
+    insertCommand(c) {
+      db.run(
+        `INSERT INTO resend_commands (${COMMAND_COLUMNS}, claimed_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
+        [c.id, c.requestId, c.channelId, c.key, c.state, c.createdAt, c.updatedAt],
+      );
+    },
+    insertRequest(r) {
+      db.run(
+        `INSERT INTO resend_requests (request_id, command_id, channel_id, key, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+        [r.requestId, r.commandId, r.channelId, r.key, r.createdAt],
+      );
+    },
+    claim(now, timeoutMs, limit) {
+      db.run(
+        `UPDATE resend_commands SET state = 'queued', claimed_at = NULL, updated_at = ?
+         WHERE state = 'claimed' AND claimed_at <= ?`,
+        [now, now - timeoutMs],
+      );
+      const ids = db
+        .query<{ id: string }, [number]>(
+          "SELECT id FROM resend_commands WHERE state = 'queued' ORDER BY created_at, id LIMIT ?",
+        )
+        .all(limit)
+        .map((r) => r.id);
+      const claimed: ResendCommand[] = [];
+      for (const id of ids) {
+        db.run(
+          "UPDATE resend_commands SET state = 'claimed', claimed_at = ?, updated_at = ? WHERE id = ?",
+          [now, now, id],
+        );
+        const c = this.command(id);
+        if (c !== null) claimed.push(c);
+      }
+      return claimed;
+    },
+    setState(id, state, now) {
+      db.run("UPDATE resend_commands SET state = ?, updated_at = ? WHERE id = ?", [state, now, id]);
+    },
+    deleteCreatedBefore(cutoff) {
+      return db.transaction(
+        () =>
+          db.run("DELETE FROM resend_commands WHERE created_at < ?", [cutoff]).changes +
+          db.run("DELETE FROM resend_requests WHERE created_at < ?", [cutoff]).changes,
+      )();
     },
   };
 }

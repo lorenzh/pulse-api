@@ -186,6 +186,10 @@ test("the D1 matrix on the existing routes", async () => {
     ["admin", "GET", "/service/notify/channels", 403],
     ["read", "GET", "/service/notify/channels", 403],
     ["unknown", "GET", "/service/notify/channels", 401],
+    ["admin", "GET", "/admin/notify/resends/unknown", 404],
+    ["notify", "GET", "/admin/notify/resends/unknown", 403],
+    ["status", "GET", "/admin/notify/resends/unknown", 403],
+    ["read,checks", "GET", "/admin/notify/resends/unknown", 403],
   ];
   for (const [name, method, path, status, body] of rows) {
     clock += 60_000;

@@ -40,8 +40,9 @@ import { createMaintenanceWriter, maintenanceList } from "./maintenance-write.ts
 import { createManualIncidentStore } from "./manual-incidents.ts";
 import { createMetrics } from "./metrics.ts";
 import { createNotifyRoutes } from "./notify-channel-routes.ts";
+import { createResendRoutes } from "./resend-routes.ts";
 import { readRetentionDays, startRetention } from "./retention.ts";
-import { createRuntimeStore } from "./runtime-store.ts";
+import { createResendStore, createRuntimeStore } from "./runtime-store.ts";
 import { createApiServer } from "./server.ts";
 import { createService } from "./service.ts";
 import { createStatusRoutes } from "./status-settings-routes.ts";
@@ -90,6 +91,8 @@ export interface StartDeps {
   generateTokenId?: () => string;
   /** Time between retention runs; a test hook, the production interval is fixed at one hour. */
   retentionIntervalMs?: number;
+  /** Makes resend command ids; defaults to 24 random base64url characters. */
+  newResendId?: () => string;
 }
 
 export interface RunningApi {
@@ -376,6 +379,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     },
   });
 
+  const resendStore = createResendStore(db);
   const retention = startRetention({
     service,
     now: deps.now,
@@ -389,6 +393,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     deleteLatencyRollups: (cutoff) => service.deleteExpiredLatency(cutoff),
     deleteUptimeRollups: (cutoff) => service.deleteExpiredUptime(cutoff),
     deleteLocationUptimeRollups: (cutoff) => service.deleteExpiredLocationUptime(cutoff),
+    deleteResends: (cutoff) => resendStore.deleteCreatedBefore(cutoff),
   });
 
   const heartbeat = startHeartbeatEvaluator({
@@ -477,6 +482,17 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     now: deps.now,
   });
   const runtimeStore = createRuntimeStore(db);
+  const resendRoutes = createResendRoutes({
+    db,
+    store: runtimeStore,
+    resends: resendStore,
+    lock: writeLock,
+    audit: auditLog,
+    throttle: authThrottle,
+    now: deps.now,
+    newId: deps.newResendId ?? (() => randomBytes(18).toString("base64url")),
+    info,
+  });
   const notifyRoutes = createNotifyRoutes({
     db,
     store: runtimeStore,
@@ -518,6 +534,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     authThrottle,
     status: statusRoutes,
     notify: notifyRoutes,
+    resend: resendRoutes,
   });
 
   let isShuttingDown = false;
@@ -527,7 +544,14 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     heartbeatDigests: () => holder.heartbeatDigests(),
     components: () => holder.get().components,
     manualIncidents,
-    ...(isAdminEnabled ? { admin: adminHandler, runtime: statusRoutes, notify: notifyRoutes } : {}),
+    ...(isAdminEnabled
+      ? {
+          admin: adminHandler,
+          runtime: statusRoutes,
+          notify: notifyRoutes,
+          resend: resendRoutes,
+        }
+      : {}),
     adminAuthFailures: authFailures,
     adminAuthThrottle: authThrottle,
     info,
