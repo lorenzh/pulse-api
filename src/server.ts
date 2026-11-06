@@ -32,6 +32,12 @@ import {
 } from "./manual-incidents.ts";
 import { createMetrics, type Metrics } from "./metrics.ts";
 import {
+  isServiceNotifyPath,
+  type NotifyMatch,
+  notifyPathOf,
+  notifyRouteOf,
+} from "./notify-channel-routes.ts";
+import {
   DEFAULT_LOCATION,
   HEARTBEAT_LOCATION,
   type Service,
@@ -240,6 +246,8 @@ function routeOf(rawUrl: string | undefined): string {
   if (token !== null) return tokenRouteOf(token);
   const status = statusPathOf(path);
   if (status !== null) return statusRouteOf(status);
+  const notify = notifyPathOf(path);
+  if (notify !== null) return notifyRouteOf(notify.path);
   const admin = ADMIN_ROUTE.exec(path);
   if (admin?.[1] !== undefined)
     return admin[2] === undefined ? `/admin/${admin[1]}` : `/admin/${admin[1]}/:id`;
@@ -254,6 +262,12 @@ type RuntimeHandler = (
   req: IncomingMessage,
   res: ServerResponse,
   path: StatusPath,
+) => Promise<void>;
+
+type NotifyHandler = (
+  req: IncomingMessage,
+  res: ServerResponse,
+  match: NotifyMatch,
 ) => Promise<void>;
 
 type LogFn = (message: string, fields: Record<string, string>) => void;
@@ -275,7 +289,27 @@ type Ops = {
   admin: ((req: IncomingMessage, res: ServerResponse) => Promise<boolean>) | undefined;
   /** Handles `/service/status/*`; undefined without the runtime settings. */
   runtime: RuntimeHandler | undefined;
+  /** Handles `/service/notify/*`; undefined without the runtime settings. */
+  notify: NotifyHandler | undefined;
 };
+
+/** A `/service/*` route: status or notify, else 404. */
+function serveServiceRoute(
+  ops: Ops,
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+): Promise<void> {
+  const status = statusPathOf(path);
+  if (status !== null && status !== "admin-settings" && ops.runtime !== undefined) {
+    return ops.runtime(req, res, status);
+  }
+  const notify = notifyPathOf(path);
+  if (notify !== null && isServiceNotifyPath(notify.path) && ops.notify !== undefined) {
+    return ops.notify(req, res, notify);
+  }
+  throw new HttpError(404, "not found");
+}
 
 function digest(text: string): Buffer {
   return createHash("sha256").update(text).digest();
@@ -660,11 +694,7 @@ async function handle(
   }
   if (path.startsWith("/service/")) {
     // Before the read paths: a service route never falls through to a public read.
-    const status = statusPathOf(path);
-    if (status === null || status === "admin-settings" || ops.runtime === undefined) {
-      throw new HttpError(404, "not found");
-    }
-    return ops.runtime(req, res, status);
+    return serveServiceRoute(ops, req, res, path);
   }
   if (path.startsWith("/admin/")) {
     // Before the admin bootstrap, or without a writer, the routes do not exist.
@@ -844,6 +874,8 @@ export type ApiServerOptions = {
   admin?: (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
   /** Handler of `/service/*` (see status-settings-routes.ts). Without it those paths answer 404. */
   runtime?: RuntimeHandler;
+  /** Handler of `/service/notify/*` (see notify-channel-routes.ts). Without it they answer 404. */
+  notify?: NotifyHandler;
 };
 
 function emptyManualIncidents(): ManualIncidentStore {
@@ -906,6 +938,7 @@ export function createApiServer(service: Service, options: ApiServerOptions): Se
     warn: options.warn ?? ignore,
     admin: options.admin,
     runtime: options.runtime,
+    notify: options.notify,
   };
   const logError = options.logError ?? ((_message, err) => console.error(err));
   return createServer((req, res) => {

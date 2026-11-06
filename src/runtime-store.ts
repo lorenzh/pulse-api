@@ -27,6 +27,22 @@ export interface RuntimeStore {
   report(service: ReportingService): StoredReport | null;
   /** Replace the last report of `service`; the JSON must be validated already. */
   replaceReport(service: ReportingService, report: StoredReport): void;
+  /** Every database notify channel, in creation order. */
+  notifyChannels(): StoredChannel[];
+  /** Insert a new channel; the id must be free. */
+  insertNotifyChannel(channel: StoredChannel): void;
+  /** Replace the definition of an existing channel; keeps its place and `createdAt`. */
+  replaceNotifyChannel(id: string, definitionJson: string, updatedAt: number): void;
+  /** Delete a channel; true when it existed. */
+  deleteNotifyChannel(id: string): boolean;
+}
+
+/** A database notify channel: its validated definition as JSON text and its times. */
+export interface StoredChannel {
+  id: string;
+  definitionJson: string;
+  createdAt: number;
+  updatedAt: number;
 }
 
 /** `sha256-` + hex SHA-256 of `<resource>\n<generation>`: independent of the check revision. */
@@ -90,6 +106,36 @@ export function createRuntimeStore(db: Database): RuntimeStore {
            received_at = excluded.received_at`,
         [service, report.json, report.receivedAt],
       );
+    },
+    notifyChannels() {
+      return db
+        .query<{ id: string; definition_json: string; created_at: number; updated_at: number }, []>(
+          "SELECT id, definition_json, created_at, updated_at FROM notify_channels ORDER BY seq",
+        )
+        .all()
+        .map((r) => ({
+          id: r.id,
+          definitionJson: r.definition_json,
+          createdAt: r.created_at,
+          updatedAt: r.updated_at,
+        }));
+    },
+    insertNotifyChannel(c) {
+      db.run(
+        `INSERT INTO notify_channels (id, definition_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?)`,
+        [c.id, c.definitionJson, c.createdAt, c.updatedAt],
+      );
+    },
+    replaceNotifyChannel(id, definitionJson, updatedAt) {
+      db.run("UPDATE notify_channels SET definition_json = ?, updated_at = ? WHERE id = ?", [
+        definitionJson,
+        updatedAt,
+        id,
+      ]);
+    },
+    deleteNotifyChannel(id) {
+      return db.run("DELETE FROM notify_channels WHERE id = ?", [id]).changes > 0;
     },
   };
 }

@@ -67,6 +67,10 @@ Probe and admin tokens are stored in the database as SHA-256 digests, with scope
 
 The console reads and saves the status page settings with `GET`/`PUT /admin/status/settings` (`admin`, `If-Match` required on `PUT`). The status service reads them with `GET /service/status/settings` and reports what it applied with `PUT /service/status/report`, with a token whose only scope is `status`. The settings have their own revision, so status saves and check writes never make each other stale. Create the `status` token after the console and this api are rolled out. See [REST API](docs/rest-api.md#status-settings).
 
+## Notify channels
+
+The console creates, replaces and deletes database notify channels through `/admin/notify/channels[/:id]` (`admin`, `If-Match` required) and reads failed deliveries with `GET /admin/notify/failed`. Notify reads the channels with `GET /service/notify/channels` and reports with `PUT /service/notify/report`, with a token whose only scope is `notify`. A channel holds secret reference names only, never values. At most 100 channels, 16 384 bytes per definition and 262 144 bytes in total. A file channel of notify with the same id shadows a database channel. See [REST API](docs/rest-api.md#notify-channels).
+
 ## Health and metrics
 
 `GET /locations` (no token) lists the probe locations as `reporting` or `silent`; `PULSE_LOCATION_SILENT_MS` sets the threshold (default derived from the check intervals) and the metric `pulse_api_location_last_result_timestamp_seconds{location}` mirrors it. `POST /results` is idempotent on (check, location, timestamp), so a probe may re-send. See [REST API](docs/rest-api.md#get-locations).

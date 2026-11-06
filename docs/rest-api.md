@@ -35,6 +35,8 @@ The API serves JSON over HTTP. The types come from [pulse-contract](https://gith
 | `GET`, `PUT`                   | `/admin/status/settings`                                                              | `admin`                 | see [Status settings](#status-settings)                                           |
 | `GET`                          | `/service/status/settings`                                                            | only `status`           | see [Status settings](#status-settings)                                           |
 | `PUT`                          | `/service/status/report`                                                              | only `status`           | see [Status settings](#status-settings)                                           |
+| `GET`, `POST`, `PUT`, `DELETE` | `/admin/notify/channels[/:id]`, `/admin/notify/failed`                                | `admin`                 | see [Notify channels](#notify-channels)                                           |
+| `GET`, `PUT`                   | `/service/notify/channels`, `/service/notify/report`                                  | only `notify`           | see [Notify channels](#notify-channels)                                           |
 
 General rules:
 
@@ -457,6 +459,8 @@ Tokens are stored in the database as SHA-256 digests only. Each token has one or
 | `GET /admin/audit`, `GET /admin/audit/export`                                    | `admin`                      |
 | `GET`/`PUT /admin/status/settings`                                               | `admin`                      |
 | `GET /service/status/settings`, `PUT /service/status/report`                     | exactly `["status"]`         |
+| `/admin/notify/channels[/:id]`, `GET /admin/notify/failed`                       | `admin`                      |
+| `GET /service/notify/channels`, `PUT /service/notify/report`                     | exactly `["notify"]`         |
 
 Statuses on admin routes: `404` before the first admin import, then `401` `{"error":"unauthorized"}` with `WWW-Authenticate: Bearer` for a missing, unknown, expired, revoked or rotated-out token (the body never says which), then `403` `{"error":"forbidden"}` for a probe, `status` or `notify` token, then `401` `{"error":"unauthorized"}` with `WWW-Authenticate: Bearer` for an admin-side secret shorter than 32 characters (the failure log says `token` `short`), then `403` `{"error":"forbidden"}` for a valid token without the scope, then the route's own statuses. The throttle check comes before all auth statuses: a blocked client gets `429` before its token is read.
 
@@ -479,7 +483,7 @@ Each write adds one audit entry `maintenance.create`, `maintenance.replace` or `
 
 ### Admin auth throttle
 
-The config, token, audit and status routes under `/admin/*`, the `/service/*` routes, and the manual-incident writes (`POST /manual-incidents`, `/manual-incidents/:id/updates`, `/manual-incidents/:id/resolve`, `DELETE /manual-incidents/:id`) share one budget per client:
+The config, token, audit, status and notify routes under `/admin/*`, the `/service/*` routes, and the manual-incident writes (`POST /manual-incidents`, `/manual-incidents/:id/updates`, `/manual-incidents/:id/resolve`, `DELETE /manual-incidents/:id`) share one budget per client:
 
 - 10 failed authentications (every `401` and `403` above, also `short` and a missing scope) per client in a fixed window of 60 s that starts at the client's first failure. A success does not count and does not reset the window.
 - After the 10th failure every request of that client to these routes answers `429` `{"error":"too many requests"}` with `Retry-After: <seconds>` (rounded up, 1 to 60) until the window ends, also with a valid token. The token is not checked, no body is read and nothing is written. Blocked requests do not extend the window. There is no `WWW-Authenticate` header; token and audit routes keep `Cache-Control: no-store`.
@@ -544,9 +548,31 @@ curl -sS -X PUT "$API/admin/status/settings" -H "Authorization: Bearer $ADMIN_TO
 curl -sS "$API/service/status/settings" -H "Authorization: Bearer $STATUS_TOKEN"
 ```
 
+## Notify channels
+
+The console edits database notify channels; notify reads them and reports what it applied. A file channel of notify wins over a database channel with the same id, which is then shadowed. The api stores no file channel and never reads a secret: a channel holds reference names only (`urlEnv`, `urlFile`, `secretEnv`, `secretFile`, `smtp.passwordEnv`, `smtp.passwordFile`). The channels have their own revision, apart from the checks and the status revisions.
+
+| Route                               | Token                | Answer                                                                                                                                    |
+| ----------------------------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /admin/notify/channels`        | `admin`              | `200` `AdminNotifyChannelsView` `{revision, channels, shadowed, service}`, `ETag`, `cache-control: no-store`; never `304`                 |
+| `POST /admin/notify/channels`       | `admin`              | body `NotifyChannelDefinition`, `If-Match` required; `201` view with `Location: /admin/notify/channels/<id>` and the new `ETag`           |
+| `PUT /admin/notify/channels/:id`    | `admin`              | body `NotifyChannelDefinition`, `If-Match` required; `200` view                                                                           |
+| `DELETE /admin/notify/channels/:id` | `admin`              | `If-Match` required; `204`, also for a shadowed channel                                                                                   |
+| `GET /admin/notify/failed`          | `admin`              | `200` `AdminNotifyFailedView` `{state, receivedAt, failed, failedTotal}` from the last report, `cache-control: no-store`                  |
+| `GET /service/notify/channels`      | exactly `["notify"]` | `200` `ServiceNotifyChannels` `{revision, channels}`: every database channel, shadowed ones included, in creation order; `304` on a match |
+| `PUT /service/notify/report`        | exactly `["notify"]` | body `NotifyServiceReport`; `204`                                                                                                         |
+- Other methods answer `405` with `Allow`, after auth.
+- Statuses, first match wins: `429`, `401`, `403`, `413` (1 MiB; 524 288 bytes on the report), `400` bad JSON, a malformed `If-Match` or a `PUT` body `id` that differs from the path, `428`, `412` `the settings changed: reload them and retry`, `422`, `409`, `404`.
+- `422`: a definition that the contract refuses (also a literal `url`, `password` or `secret`, type `file`, or more than 16 384 bytes as JSON), a 101st channel (`channels: must hold at most 100 channels`), or a total over 262 144 bytes of all definitions as JSON, with the candidate in place of its old version (`channels: must be at most 262144 bytes as JSON in total`).
+- `409`: a create whose id exists in the database or among the `fileChannels` ids of the last report, and a `PUT` of a shadowed channel (only delete is allowed). A file id beyond the 200 a report lists cannot be checked; such a channel is created and then shows under `shadowed`.
+- `404`: a `PUT` or `DELETE` of an id that is not a database channel, also one that exists only as a file channel.
+- `shadowed` holds the channels whose id is in the last report's `shadowedIds`, also when that report is stale; every database channel is in exactly one of `channels` and `shadowed`. Without a report `shadowed` is `[]` and `service.state` is `never`. File channels appear only in `service.report.fileChannels`.
+- Each write commits the channel, the new revision and one audit entry `notify-channel.create`, `notify-channel.replace` or `notify-channel.delete` (target `{kind: "notify-channel", id}`) in one transaction. The entry holds no reference name or value.
+- A report replaces the last one, whole, bumps no revision and writes no audit entry. Fresh, stale and never follow the status rules.
+
 ## Audit log
 
-Every admin write is stored as an `AuditEntry` `{id, at, actor: {tokenId, name}, action, target: {kind, id}, revision}`. `actor.name` is the token name at write time. `action` is one of `check.*`, `component.*`, `maintenance.*` (`create`, `replace`, `delete`), `manual-incident.*` (`create`, `update`, `resolve`, `delete`, `edit`, `draft-save`, `draft-discard`, `publish`, `note-add`, `note-delete`) `token.*` (`create`, `rotate`, `revoke`, `import`) and `status-settings.replace` (target `{kind: "status-settings", id: "status"}`, `revision` the new status revision). `target.id` is the check or component id unchanged (any length), the window id (older entries of file window writes hold the window index as text), the incident id as text, or the token id. `revision` is the checks file revision after a config write, else `null`. An entry never holds a body, title, message, header, heartbeat secret, URL, token value or digest. Rejected attempts and automatic work (results, pings, reloads, retention) are not audited. Entries are never deleted.
+Every admin write is stored as an `AuditEntry` `{id, at, actor: {tokenId, name}, action, target: {kind, id}, revision}`. `actor.name` is the token name at write time. `action` is one of `check.*`, `component.*`, `maintenance.*` (`create`, `replace`, `delete`), `manual-incident.*` (`create`, `update`, `resolve`, `delete`, `edit`, `draft-save`, `draft-discard`, `publish`, `note-add`, `note-delete`) `token.*` (`create`, `rotate`, `revoke`, `import`) `notify-channel.*` (`create`, `replace`, `delete`; target `{kind: "notify-channel", id}`, `revision` the new notify revision) and `status-settings.replace` (target `{kind: "status-settings", id: "status"}`, `revision` the new status revision). `target.id` is the check or component id unchanged (any length), the window id (older entries of file window writes hold the window index as text), the incident id as text, or the token id. `revision` is the checks file revision after a config write, else `null`. An entry never holds a body, title, message, header, heartbeat secret, URL, token value or digest. Rejected attempts and automatic work (results, pings, reloads, retention) are not audited. Entries are never deleted.
 
 ### GET /admin/audit
 

@@ -39,6 +39,7 @@ import { createMaintenanceStore } from "./maintenance-store.ts";
 import { createMaintenanceWriter, maintenanceList } from "./maintenance-write.ts";
 import { createManualIncidentStore } from "./manual-incidents.ts";
 import { createMetrics } from "./metrics.ts";
+import { createNotifyRoutes } from "./notify-channel-routes.ts";
 import { readRetentionDays, startRetention } from "./retention.ts";
 import { createRuntimeStore } from "./runtime-store.ts";
 import { createApiServer } from "./server.ts";
@@ -475,9 +476,19 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     lock: writeLock,
     now: deps.now,
   });
+  const runtimeStore = createRuntimeStore(db);
+  const notifyRoutes = createNotifyRoutes({
+    db,
+    store: runtimeStore,
+    lock: writeLock,
+    audit: auditLog,
+    throttle: authThrottle,
+    now: deps.now,
+    info,
+  });
   const statusRoutes = createStatusRoutes({
     db,
-    store: createRuntimeStore(db),
+    store: runtimeStore,
     lock: writeLock,
     audit: auditLog,
     componentIds: () => new Set(holder.get().components.map((c) => c.id)),
@@ -506,6 +517,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     authFailures,
     authThrottle,
     status: statusRoutes,
+    notify: notifyRoutes,
   });
 
   let isShuttingDown = false;
@@ -515,7 +527,7 @@ async function run(deps: StartDeps, onDb: (db: Database) => void): Promise<Runni
     heartbeatDigests: () => holder.heartbeatDigests(),
     components: () => holder.get().components,
     manualIncidents,
-    ...(isAdminEnabled ? { admin: adminHandler, runtime: statusRoutes } : {}),
+    ...(isAdminEnabled ? { admin: adminHandler, runtime: statusRoutes, notify: notifyRoutes } : {}),
     adminAuthFailures: authFailures,
     adminAuthThrottle: authThrottle,
     info,

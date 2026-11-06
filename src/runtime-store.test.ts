@@ -64,3 +64,44 @@ test("report state: never without a report, fresh at 180000 ms, stale at 180001 
   expect(reportState(stored, 181_000)).toBe("fresh");
   expect(reportState(stored, 181_001)).toBe("stale");
 });
+
+test("notify revisions: literal hashes of the notify generations", () => {
+  // Computed outside the code with `printf 'notify\n0' | sha256sum` and `printf 'notify\n1' | ...`.
+  expect(runtimeRevision("notify", 0)).toBe(
+    "sha256-e60ebcb65ae7f93322e9567f2cf52a1587d1a8ccc4debab9d05e28c8e456ae25",
+  );
+  expect(runtimeRevision("notify", 1)).toBe(
+    "sha256-d7e079324dde384a8c0f28bc4d196b05cd88a9f7414ceefaa5f3ca69c0ced106",
+  );
+});
+
+test("notify channels: creation order, replace keeps place and createdAt, delete", () => {
+  const db = openDb(":memory:");
+  try {
+    const store = createRuntimeStore(db);
+    expect(store.notifyChannels()).toEqual([]);
+    store.insertNotifyChannel({
+      id: "b",
+      definitionJson: '{"id":"b"}',
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    store.insertNotifyChannel({
+      id: "a",
+      definitionJson: '{"id":"a"}',
+      createdAt: 2,
+      updatedAt: 2,
+    });
+    store.replaceNotifyChannel("b", '{"id":"b","x":1}', 5);
+    expect(store.notifyChannels()).toEqual([
+      { id: "b", definitionJson: '{"id":"b","x":1}', createdAt: 1, updatedAt: 5 },
+      { id: "a", definitionJson: '{"id":"a"}', createdAt: 2, updatedAt: 2 },
+    ]);
+    expect(store.deleteNotifyChannel("b")).toBe(true);
+    expect(store.deleteNotifyChannel("b")).toBe(false);
+    expect(store.notifyChannels().map((c) => c.id)).toEqual(["a"]);
+    expect(store.generation("notify")).toBe(0);
+  } finally {
+    db.close();
+  }
+});

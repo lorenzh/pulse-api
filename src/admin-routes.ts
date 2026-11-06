@@ -32,6 +32,7 @@ import type {
 import { ConfigWriteError } from "./config-write.ts";
 import type { MaintenanceWriter, WindowEdit } from "./maintenance-write.ts";
 import type { ConfigWriteAction, ConfigWriteResult, Metrics } from "./metrics.ts";
+import { isServiceNotifyPath, type NotifyMatch, notifyPathOf } from "./notify-channel-routes.ts";
 import { type StatusPath, statusPathOf } from "./status-settings-routes.ts";
 import { handleTokenRoute, type TokenPath, tokenPathOf, tokenRouteOf } from "./token-routes.ts";
 import type { Permission } from "./token-scopes.ts";
@@ -61,6 +62,8 @@ export interface AdminRoutesDeps {
   authThrottle?: AdminAuthThrottle;
   /** Serves `/admin/status/settings`; without it that path is not an admin route. */
   status?: (req: IncomingMessage, res: ServerResponse, path: StatusPath) => Promise<void>;
+  /** Serves `/admin/notify/*`; without it those paths are not admin routes. */
+  notify?: (req: IncomingMessage, res: ServerResponse, match: NotifyMatch) => Promise<void>;
 }
 
 const ADMIN_PATH = /^\/admin\/(config|checks|components|maintenance)(?:\/([^/]+))?$/;
@@ -338,6 +341,15 @@ export function createAdminHandler(
     const statusPath = statusPathOf(url.pathname);
     if (statusPath === "admin-settings" && deps.status !== undefined) {
       await deps.status(req, res, statusPath);
+      return true;
+    }
+    const notifyMatch = notifyPathOf(url.pathname);
+    if (
+      notifyMatch !== null &&
+      !isServiceNotifyPath(notifyMatch.path) &&
+      deps.notify !== undefined
+    ) {
+      await deps.notify(req, res, notifyMatch);
       return true;
     }
     const auditPath = auditPathOf(url.pathname);

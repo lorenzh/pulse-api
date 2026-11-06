@@ -175,3 +175,82 @@ test("an unknown /service/ path is 404 and never a public read", async () => {
     assert.equal((await call("GET", path, secretOf("status"))).status, 404, path);
   }
 });
+
+const NOTIFY_REPORT = {
+  at: NOW,
+  startedAt: NOW,
+  appliedRevision: null,
+  fileChannels: [],
+  fileChannelsTotal: 0,
+  shadowedIds: [],
+  rejected: [],
+  failed: [],
+  failedTotal: 0,
+};
+
+test("every notify route has an allowed and a denied case for each token kind", async () => {
+  // An admin write that passes auth stops at the missing If-Match: 428.
+  const rows: [string | null, string, string, number][] = [
+    [null, "GET", "/admin/notify/channels", 401],
+    [null, "POST", "/admin/notify/channels", 401],
+    [null, "PUT", "/admin/notify/channels/ops", 401],
+    [null, "DELETE", "/admin/notify/channels/ops", 401],
+    [null, "GET", "/admin/notify/failed", 401],
+    [null, "GET", "/service/notify/channels", 401],
+    [null, "PUT", "/service/notify/report", 401],
+    ["unknown", "GET", "/service/notify/channels", 401],
+    ["read", "GET", "/admin/notify/channels", 403],
+    ["read", "POST", "/admin/notify/channels", 403],
+    ["read", "PUT", "/admin/notify/channels/ops", 403],
+    ["read", "DELETE", "/admin/notify/channels/ops", 403],
+    ["read", "GET", "/admin/notify/failed", 403],
+    ["read", "GET", "/service/notify/channels", 403],
+    ["read", "PUT", "/service/notify/report", 403],
+    ["status", "GET", "/admin/notify/channels", 403],
+    ["status", "POST", "/admin/notify/channels", 403],
+    ["status", "GET", "/admin/notify/failed", 403],
+    ["status", "GET", "/service/notify/channels", 403],
+    ["status", "PUT", "/service/notify/report", 403],
+    ["notify", "GET", "/admin/notify/channels", 403],
+    ["notify", "PUT", "/admin/notify/channels/ops", 403],
+    ["notify", "DELETE", "/admin/notify/channels/ops", 403],
+    ["notify", "GET", "/admin/notify/failed", 403],
+    ["admin", "GET", "/service/notify/channels", 403],
+    ["admin", "PUT", "/service/notify/report", 403],
+    ["probe", "GET", "/service/notify/channels", 403],
+    ["admin", "GET", "/admin/notify/channels", 200],
+    ["admin", "POST", "/admin/notify/channels", 428],
+    ["admin", "PUT", "/admin/notify/channels/ops", 428],
+    ["admin", "DELETE", "/admin/notify/channels/ops", 428],
+    ["admin", "GET", "/admin/notify/failed", 200],
+    ["notify", "GET", "/service/notify/channels", 200],
+    ["notify", "PUT", "/service/notify/report", 204],
+  ];
+  for (const [name, method, path, status] of rows) {
+    clock += 60_000;
+    const token = name === null ? null : secretOf(name);
+    const body = path === "/service/notify/report" ? NOTIFY_REPORT : { id: "ops" };
+    const r = await call(method, path, token, method === "GET" ? undefined : body);
+    assert.equal(r.status, status, `${name} ${method} ${path}`);
+    if (status === 403) assert.deepEqual(await r.json(), { error: "forbidden" });
+  }
+});
+
+test("notify: authentication runs before the size limit, and the limit holds on every method", async () => {
+  const big = JSON.stringify({ pad: "x".repeat(600_000) });
+  assert.equal((await call("PUT", "/service/notify/report", null, undefined, big)).status, 401);
+  clock += 60_000;
+  assert.equal((await call("PUT", "/service/notify/report", ADMIN, undefined, big)).status, 403);
+  const notify = secretOf("notify");
+  assert.equal((await call("PUT", "/service/notify/report", notify, undefined, big)).status, 413);
+  const huge = JSON.stringify({ pad: "x".repeat(1_100_000) });
+  for (const [method, path] of [
+    ["POST", "/admin/notify/channels"],
+    ["PUT", "/admin/notify/channels/ops"],
+    ["DELETE", "/admin/notify/channels/ops"],
+  ] as const) {
+    assert.equal((await call(method, path, ADMIN, undefined, huge)).status, 413, path);
+  }
+  assert.equal((await call("GET", "/service/notify/report", notify)).headers.get("allow"), "PUT");
+  assert.equal((await call("GET", "/service/notify/nope", notify)).status, 404);
+});

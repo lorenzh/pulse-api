@@ -4,8 +4,6 @@ import {
   ADMIN_ETAG_HEADER,
   ADMIN_MAX_BODY_BYTES,
   type AdminStatusSettingsView,
-  type ErrorResponse,
-  isAdminRevision,
   SERVICE_REPORT_MAX_BYTES,
   type StatusServiceReport,
   type StatusServiceState,
@@ -13,10 +11,21 @@ import {
   validateStatusServiceReport,
   validateStatusSettings,
 } from "@lorenzh/pulse-contract";
-import { BodyError, readBody, sendJson } from "@lorenzh/pulse-kit";
+import { sendJson } from "@lorenzh/pulse-kit";
 import type { AdminAuthThrottle } from "./admin-auth-throttle.ts";
 import type { AuditLog } from "./audit-log.ts";
 import { AUDIT_WRITE_FAILED, type WriteActor } from "./config-write.ts";
+import {
+  assertMethod,
+  authorizeRuntime,
+  etagOf,
+  ifMatchOf,
+  RuntimeRouteError,
+  readJson,
+  readText,
+  STALE_SETTINGS,
+  sendRuntimeError,
+} from "./runtime-http.ts";
 import {
   type ReportingService,
   type RuntimeStore,
@@ -54,8 +63,6 @@ const PERMISSION: Record<StatusPath, Permission> = {
   "service-report": "status-service",
 };
 
-export const STALE_SETTINGS = "the settings changed: reload them and retry";
-
 /** The status route of `path`, or null. */
 export function statusPathOf(path: string): StatusPath | null {
   return Object.hasOwn(PATHS, path) ? (PATHS[path] ?? null) : null;
@@ -79,65 +86,15 @@ export interface StatusRoutesDeps {
   info: (message: string, fields: Record<string, string>) => void;
 }
 
-class StatusRouteError extends Error {
-  override name = "StatusRouteError";
-  readonly status: number;
-  readonly headers: Record<string, string>;
-  constructor(status: number, message: string, headers: Record<string, string> = {}) {
-    super(message);
-    this.status = status;
-    this.headers = headers;
-  }
-}
-
-function etagOf(revision: string): string {
-  return `"${revision}"`;
-}
-
-async function readText(req: IncomingMessage, maxBytes: number): Promise<string> {
-  try {
-    return await readBody(req, maxBytes);
-  } catch (err) {
-    if (!(err instanceof BodyError)) throw err;
-    if (err.code === "too-large") throw new StatusRouteError(413, "request body too large");
-    throw new StatusRouteError(400, "request body could not be read");
-  }
-}
-
-async function readJson(req: IncomingMessage, maxBytes: number): Promise<unknown> {
-  const text = await readText(req, maxBytes);
-  try {
-    return JSON.parse(text);
-  } catch {
-    // The parser message quotes the body, so it is not kept.
-    throw new StatusRouteError(400, "body is not valid JSON");
-  }
-}
-
-/** The unquoted revision of `If-Match`: 428 when missing, 400 when not one quoted revision. */
-function ifMatchOf(header: string | undefined): string {
-  if (header === undefined) throw new StatusRouteError(428, "If-Match is required");
-  const value = /^"([^"]*)"$/.exec(header.trim())?.[1];
-  if (value === undefined || !isAdminRevision(value)) {
-    throw new StatusRouteError(400, 'If-Match must be one quoted revision: "sha256-<hex>"');
-  }
-  return value;
-}
-
 function assertComponents(settings: StatusSettings, ids: ReadonlySet<string>): void {
   (settings.componentOrder ?? []).forEach((id, i) => {
     if (!ids.has(id)) {
-      throw new StatusRouteError(
+      throw new RuntimeRouteError(
         422,
         `settings.componentOrder[${i}]: must reference a current component`,
       );
     }
   });
-}
-
-function sendError(res: ServerResponse, err: StatusRouteError): void {
-  const body: ErrorResponse = { error: err.message };
-  sendJson(res, err.status, body, err.headers);
 }
 
 /** Serve one status route; the caller has matched `path` with `statusPathOf`. */
@@ -147,22 +104,8 @@ export function createStatusRoutes(
   const { store } = deps;
   const revision = (): string => runtimeRevision("status", store.generation("status"));
 
-  const authorize = (req: IncomingMessage, path: StatusPath): AuthenticatedToken => {
-    const access = deps.throttle.authorize({
-      remoteAddress: req.socket.remoteAddress,
-      authorization: req.headers.authorization,
-      route: ROUTE[path],
-      permission: PERMISSION[path],
-    });
-    if (access.kind === "ok") return access.token;
-    if (access.kind === "throttled") {
-      throw new StatusRouteError(429, "too many requests", {
-        "retry-after": String(access.retryAfterSeconds),
-      });
-    }
-    if (access.status === 403) throw new StatusRouteError(403, "forbidden");
-    throw new StatusRouteError(401, "unauthorized", { "www-authenticate": "Bearer" });
-  };
+  const authorize = (req: IncomingMessage, path: StatusPath): AuthenticatedToken =>
+    authorizeRuntime(deps.throttle, req, ROUTE[path], PERMISSION[path]);
 
   const serviceState = (service: ReportingService): StatusServiceState => {
     const stored = store.report(service);
@@ -213,9 +156,9 @@ export function createStatusRoutes(
     const body = await readJson(req, ADMIN_MAX_BODY_BYTES);
     const ifMatch = ifMatchOf(req.headers["if-match"]);
     await deps.lock.run(() => {
-      if (revision() !== ifMatch) throw new StatusRouteError(412, STALE_SETTINGS);
+      if (revision() !== ifMatch) throw new RuntimeRouteError(412, STALE_SETTINGS);
       const v = validateStatusSettings(body);
-      if (!v.ok) throw new StatusRouteError(422, v.error);
+      if (!v.ok) throw new RuntimeRouteError(422, v.error);
       assertComponents(v.value, deps.componentIds());
       commit(v.value, { tokenId: caller.id, name: caller.name });
     });
@@ -225,7 +168,7 @@ export function createStatusRoutes(
   const report = async (req: IncomingMessage): Promise<void> => {
     const body = await readJson(req, SERVICE_REPORT_MAX_BYTES);
     const v = validateStatusServiceReport(body);
-    if (!v.ok) throw new StatusRouteError(422, v.error);
+    if (!v.ok) throw new RuntimeRouteError(422, v.error);
     const json = JSON.stringify(v.value);
     // A report bumps no generation and writes no audit row.
     await deps.lock.run(() =>
@@ -257,9 +200,7 @@ export function createStatusRoutes(
   ): Promise<void> => {
     const caller = authorize(req, path);
     const method = req.method ?? "GET";
-    if (!ALLOW[path].split(", ").includes(method)) {
-      throw new StatusRouteError(405, "method not allowed", { Allow: ALLOW[path] });
-    }
+    assertMethod(method, ALLOW[path]);
     if (method === "GET") {
       // Read only to hold the size limit on every method.
       await readText(req, ADMIN_MAX_BODY_BYTES);
@@ -282,8 +223,7 @@ export function createStatusRoutes(
     try {
       await dispatch(req, res, path);
     } catch (err) {
-      if (!(err instanceof StatusRouteError) || res.headersSent) throw err;
-      sendError(res, err);
+      sendRuntimeError(res, err);
     }
   };
 }
