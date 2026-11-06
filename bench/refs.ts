@@ -10,6 +10,39 @@ export interface RefOptions {
   a: string;
   b: string;
   othersRef?: string;
+  /** B-side overrides from `--b-ref`; only together with `othersRef`. */
+  bRefs?: Partial<Record<RepoName, string>>;
+}
+
+export class UsageError extends Error {
+  override name = "UsageError";
+}
+
+/**
+ * Parses the values of the repeatable `--b-ref <repo>=<ref>`. Refused: a repository other than the
+ * non-api ones, a repeated repository, an empty ref, and any `--b-ref` without `--others-ref`.
+ */
+export function parseBRefs(
+  values: readonly string[],
+  othersRef: string | undefined,
+): Partial<Record<RepoName, string>> {
+  const result: Partial<Record<RepoName, string>> = {};
+  if (values.length > 0 && othersRef === undefined) {
+    throw new UsageError("--b-ref needs --others-ref");
+  }
+  for (const value of values) {
+    const at = value.indexOf("=");
+    const repo = at < 0 ? value : value.slice(0, at);
+    const ref = at < 0 ? "" : value.slice(at + 1);
+    const name = REPOS.find((r) => r === repo);
+    if (name === undefined || name === "api") {
+      throw new UsageError(`--b-ref: not a non-api repository: ${repo}`);
+    }
+    if (ref === "") throw new UsageError(`--b-ref ${repo}: needs <repo>=<ref>`);
+    if (result[name] !== undefined) throw new UsageError(`--b-ref ${repo}: given twice`);
+    result[name] = ref;
+  }
+  return result;
 }
 
 export interface SideRefs {
@@ -59,7 +92,7 @@ export async function resolveRefs(
       b[name] = options.b;
     } else if (options.othersRef !== undefined) {
       a[name] = options.othersRef;
-      b[name] = options.othersRef;
+      b[name] = options.bRefs?.[name] ?? options.othersRef;
     } else {
       a[name] = await baselineRef(name, baseline, lsRemoteTags);
       b[name] = "main";
@@ -76,6 +109,63 @@ function complete(refs: Partial<Record<RepoName, string>>): Record<RepoName, str
     result[name] = ref;
   }
   return result;
+}
+
+/**
+ * Resolves every ref of both sides to a full commit SHA, once per repository and ref, so that A
+ * and B of one ref get the same SHA and a ref that moves later never changes a checkout.
+ */
+export async function resolveShas(
+  refs: SideRefs,
+  resolve: (name: RepoName, ref: string) => Promise<string>,
+): Promise<SideRefs> {
+  const cache = new Map<string, string>();
+  const one = async (name: RepoName, ref: string): Promise<string> => {
+    const key = `${name}\n${ref}`;
+    const known = cache.get(key);
+    if (known !== undefined) return known;
+    const sha = await resolve(name, ref);
+    if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`ref ${name} ${ref}: not a full SHA`);
+    cache.set(key, sha);
+    return sha;
+  };
+  const a: Partial<Record<RepoName, string>> = {};
+  const b: Partial<Record<RepoName, string>> = {};
+  for (const name of REPOS) {
+    a[name] = await one(name, refs.a[name]);
+    b[name] = await one(name, refs.b[name]);
+  }
+  return { a: complete(a), b: complete(b) };
+}
+
+/**
+ * The same-SHA rule of a controlled comparison: every repository but the api and the `--b-ref`
+ * ones runs one SHA on both sides. Returns the error text, or undefined.
+ */
+export function sameShaMismatch(
+  shas: SideRefs,
+  bRefs: Partial<Record<RepoName, string>>,
+): string | undefined {
+  for (const name of REPOS) {
+    if (name === "api" || bRefs[name] !== undefined) continue;
+    if (shas.a[name] !== shas.b[name]) return `ref mismatch: ${name} b`;
+  }
+  return undefined;
+}
+
+/** The check after a checkout: the worktree HEAD must be the resolved SHA. */
+export function checkoutMismatch(
+  name: RepoName,
+  side: "a" | "b",
+  resolved: string,
+  head: string,
+): string | undefined {
+  return head.trim() === resolved ? undefined : `ref mismatch: ${name} ${side}`;
+}
+
+/** One log line per repository: `ref <repo> a=<sha> b=<sha>`. */
+export function refLines(shas: SideRefs): string[] {
+  return REPOS.map((name) => `ref ${name} a=${shas.a[name]} b=${shas.b[name]}`);
 }
 
 /**

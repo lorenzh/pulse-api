@@ -10,9 +10,23 @@ import {
   runColdReads,
 } from "./cold.ts";
 import { EOD_TODAY_ROWS, type EodResult, runEodPhase, runEodReads } from "./eod.ts";
-import { checksFileJson, eodChecksFileJson, tokensFileJson } from "./fixtures.ts";
+import {
+  adminTokensFileJson,
+  checksFileJson,
+  eodChecksFileJson,
+  tokensFileJson,
+} from "./fixtures.ts";
 import { checkIds, IDLE_S, type OptionalRoute, runLoad } from "./load.ts";
 import { readContainerProcess, runChecked, runCommand } from "./measure.ts";
+import {
+  checkReport,
+  prepareRuntime,
+  type RuntimeDeps,
+  type RuntimeMode,
+  type RuntimeService,
+  writeTokenFile,
+} from "./runtime-fixture.ts";
+import { startTraffic, type Traffic, trafficLine } from "./runtime-traffic.ts";
 
 export const SERVICES = ["api", "probe", "status", "notify"] as const;
 export type ServiceName = (typeof SERVICES)[number];
@@ -37,6 +51,12 @@ export interface SideDirs {
   coldSeedDb: string;
   /** Measured routes this side's api lacks; always empty for side B. */
   missingRoutes: OptionalRoute[];
+}
+
+/** The runtime configuration options of a run (`--simulate-services`, `--service-tokens`). */
+export interface StackRuntime {
+  mode: RuntimeMode | null;
+  expectReports: readonly RuntimeService[];
 }
 
 export interface StackMetrics {
@@ -65,6 +85,8 @@ function stackEnv(dirs: SideDirs, project: string, runDir: string): Record<strin
     BENCH_PROBE_DIR: dirs.work.probe ?? "",
     BENCH_STATUS_DIR: dirs.work.status ?? "",
     BENCH_NOTIFY_DIR: dirs.work.notify ?? "",
+    BENCH_STATUS_TOKEN_FILE: "",
+    BENCH_NOTIFY_TOKEN_FILE: "",
   };
 }
 
@@ -98,11 +120,12 @@ async function prepareRunDir(
   prepareDb: (dbPath: string) => void = () => undefined,
 ): Promise<void> {
   const dbPath = join(runDir, "api-data", "pulse.db");
-  for (const dir of ["config", "api-data", "notify-data"]) {
+  for (const dir of ["config", "api-data", "notify-data", "service-tokens"]) {
     await mkdir(join(runDir, dir), { recursive: true });
   }
   await writeFile(join(runDir, "config", "checks.json"), checksJson);
   await writeFile(join(runDir, "config", "tokens.json"), tokensFileJson());
+  await writeFile(join(runDir, "config", "admin-tokens.json"), adminTokensFileJson());
   await copyFile(seedDb, dbPath);
   prepareDb(dbPath);
   // The services run as the unprivileged `bun` user of their images.
@@ -189,6 +212,7 @@ export async function runStack(
   runDir: string,
   log: (line: string) => void,
   failureLogFile: string,
+  runtime: StackRuntime,
 ): Promise<StackMetrics> {
   const project = `pulse-bench-${dirs.side}`;
   const compose = composeArgs(project, composeFile);
@@ -196,7 +220,21 @@ export async function runStack(
   await prepareRunDir(runDir, dirs.seedDb);
   try {
     const first = await startServices(compose, project, env, ["api"]);
-    const rest = await startServices(compose, project, env, ["probe", "status", "notify"]);
+    const runtimeDeps: RuntimeDeps = {
+      apiUrl: `http://127.0.0.1:${first.api?.port ?? 0}`,
+      side: dirs.side,
+      fetch: (url, init) => fetch(url, init),
+      log,
+    };
+    // Between the api start and the other services, so status and notify find their tokens.
+    const prepared = await prepareRuntime(runtimeDeps, runtime.mode, (name, secret) =>
+      writeTokenFile(join(runDir, "service-tokens"), name, secret),
+    );
+    const rest = await startServices(compose, project, { ...env, ...prepared.env }, [
+      "probe",
+      "status",
+      "notify",
+    ]);
     const started = { ...first, ...rest };
     const info = (service: ServiceName): { wallMs: number; cpuMs: number; port: number } => {
       const value = started[service];
@@ -209,14 +247,26 @@ export async function runStack(
     const idle = await sampleAll(project);
 
     const atWindowStart: Partial<Record<ServiceName, number>> = {};
+    let traffic: Traffic | undefined;
+    const tokens = runtime.mode === "simulate" ? prepared.tokens : null;
     const load = await runLoad({
       apiUrl: `http://127.0.0.1:${info("api").port}`,
       missingRoutes: dirs.missingRoutes,
       onWindowStart: async () => {
         const samples = await sampleAll(project);
         for (const service of SERVICES) atWindowStart[service] = samples[service].cpuSeconds;
+        if (tokens !== null) {
+          traffic = startTraffic({
+            ...runtimeDeps,
+            tokens,
+            now: Date.now,
+            wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+          });
+        }
       },
     });
+    if (traffic !== undefined) log(trafficLine(dirs.side, await traffic.finish()));
+    for (const service of runtime.expectReports) await checkReport(runtimeDeps, service);
     if (load.retriedGets + load.droppedPosts > 0) {
       log(
         `connections closed before a response: ${load.retriedGets} GETs retried, ${load.droppedPosts} POSTs dropped`,

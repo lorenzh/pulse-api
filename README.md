@@ -71,6 +71,8 @@ The console reads and saves the status page settings with `GET`/`PUT /admin/stat
 
 The console creates, replaces and deletes database notify channels through `/admin/notify/channels[/:id]` (`admin`, `If-Match` required) and reads failed deliveries with `GET /admin/notify/failed`. Notify reads the channels with `GET /service/notify/channels` and reports with `PUT /service/notify/report`, with a token whose only scope is `notify`. A channel holds secret reference names only, never values. At most 100 channels, 16 384 bytes per definition and 262 144 bytes in total. A file channel of notify with the same id shadows a database channel. The console resends a failed delivery with `POST /admin/notify/resends`; notify claims commands with `POST /service/notify/resends/claim` and posts outcomes to `/service/notify/resends/:id/result`. A repeated `requestId` gets the same command again. See [REST API](docs/rest-api.md#notify-channels) and [Resend](docs/rest-api.md#resend).
 
+The performance bench measures this traffic: `bun bench/run.ts --others-ref main --simulate-services` sends the status and notify requests from the harness, and `--service-tokens` gives the real services their tokens. See [bench/README.md](bench/README.md#runtime-configuration-traffic).
+
 ## Health and metrics
 
 `GET /locations` (no token) lists the probe locations as `reporting` or `silent`; `PULSE_LOCATION_SILENT_MS` sets the threshold (default derived from the check intervals) and the metric `pulse_api_location_last_result_timestamp_seconds{location}` mirrors it. `POST /results` is idempotent on (check, location, timestamp), so a probe may re-send. See [REST API](docs/rest-api.md#get-locations).
