@@ -361,6 +361,67 @@ test("invalid writes give 422 and leave storage, revision and audit unchanged", 
   assert.deepEqual(await serviceChannels(), before);
 });
 
+function email(from: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: "mail",
+    type: "email",
+    smtp: { host: "smtp.test", port: 587, ...extra },
+    from,
+    to: ["ops@example.test"],
+  };
+}
+
+async function assertRefusedWrite(body: Record<string, unknown>, error: RegExp): Promise<void> {
+  const etag = await createOk(webhook("ops"), await etagNow());
+  const audits = auditRows().length;
+  const before = await serviceChannels();
+  const res = await create(body, etag);
+  assert.equal(res.status, 422);
+  assert.match(((await res.json()) as { error: string }).error, error);
+  assert.equal(await etagNow(), etag);
+  assert.equal(auditRows().length, audits);
+  assert.deepEqual(await serviceChannels(), before);
+}
+
+test("an smtp clientName that is no host name gives 422 and changes nothing", async () => {
+  await assertRefusedWrite(
+    email("ops@example.test", { clientName: "pulse_console" }),
+    /channel\.smtp\.clientName: must be a host name/,
+  );
+});
+
+test("a from address with trailing text gives 422 and changes nothing", async () => {
+  await assertRefusedWrite(email("Ops <ops@example.test> trailing"), /channel\.from/);
+});
+
+function reportWithRef(ref: string): string {
+  return JSON.stringify(
+    report({
+      fileChannels: [{ source: "file", id: "f", type: "slack", refs: [ref] }],
+      fileChannelsTotal: 1,
+    }),
+  );
+}
+
+test("a report ref of 101 emoji (202 UTF-16 units) gives 422", async () => {
+  assert.equal((await putReport(reportWithRef("😀".repeat(101)))).status, 422);
+});
+
+test("a report ref of 100 emoji (200 UTF-16 units) gives 204", async () => {
+  assert.equal((await putReport(reportWithRef("😀".repeat(100)))).status, 204);
+});
+
+test("M4: a padded address is stored unchanged and both readers return it", async () => {
+  const padded = "Ops < ops@example.test >";
+  await createOk(email(padded), await etagNow());
+  const { view } = await adminView();
+  const stored = view.channels.find((c) => c.id === "mail");
+  assert.equal(stored?.type === "email" ? stored.from : undefined, padded);
+  const { channels } = await serviceChannels();
+  const served = channels.find((c) => c.id === "mail");
+  assert.equal(served?.type === "email" ? served.from : undefined, padded);
+});
+
 test("one definition of 16384 bytes is accepted, 16385 and four 200x200 lists are 422", async () => {
   const etag = await createOk(sized("max", 16_384), await etagNow());
   const over = await create(sized("over", 16_385), etag);
