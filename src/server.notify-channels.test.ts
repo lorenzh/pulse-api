@@ -361,6 +361,55 @@ test("invalid writes give 422 and leave storage, revision and audit unchanged", 
   assert.deepEqual(await serviceChannels(), before);
 });
 
+function email(from: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: "mail",
+    type: "email",
+    smtp: { host: "smtp.test", port: 587, ...extra },
+    from,
+    to: ["ops@example.test"],
+  };
+}
+
+test("email writes notify refuses give 422 and leave storage, revision and audit unchanged", async () => {
+  const etag = await createOk(webhook("ops"), await etagNow());
+  const audits = auditRows().length;
+  const before = await serviceChannels();
+  const badHost = await create(email("ops@example.test", { clientName: "pulse_console" }), etag);
+  assert.equal(badHost.status, 422);
+  assert.match(
+    ((await badHost.json()) as { error: string }).error,
+    /channel\.smtp\.clientName: must be a host name/,
+  );
+  assert.equal((await create(email("Ops <ops@example.test> trailing"), etag)).status, 422);
+  assert.equal(await etagNow(), etag);
+  assert.equal(auditRows().length, audits);
+  assert.deepEqual(await serviceChannels(), before);
+});
+
+test("report refs count UTF-16 units: 100 emoji 204, 101 emoji 422", async () => {
+  const withRef = (ref: string): string =>
+    JSON.stringify(
+      report({
+        fileChannels: [{ source: "file", id: "f", type: "slack", refs: [ref] }],
+        fileChannelsTotal: 1,
+      }),
+    );
+  assert.equal((await putReport(withRef("😀".repeat(100)))).status, 204);
+  assert.equal((await putReport(withRef("😀".repeat(101)))).status, 422);
+});
+
+test("M4: a padded address is stored unchanged and both readers return it", async () => {
+  const padded = "Ops < ops@example.test >";
+  await createOk(email(padded), await etagNow());
+  const { view } = await adminView();
+  const stored = view.channels.find((c) => c.id === "mail");
+  assert.equal(stored?.type === "email" ? stored.from : undefined, padded);
+  const { channels } = await serviceChannels();
+  const served = channels.find((c) => c.id === "mail");
+  assert.equal(served?.type === "email" ? served.from : undefined, padded);
+});
+
 test("one definition of 16384 bytes is accepted, 16385 and four 200x200 lists are 422", async () => {
   const etag = await createOk(sized("max", 16_384), await etagNow());
   const over = await create(sized("over", 16_385), etag);
