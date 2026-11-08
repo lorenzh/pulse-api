@@ -114,6 +114,8 @@ Look at `samples.json` in the uploaded artifact for the raw values of every roun
 
 The load generator keeps pooled keep-alive connections. The api closes an idle one after 5 s (Node's `keepAliveTimeout`); a request sent on it at that moment fails with `ECONNRESET` before any response. A GET is then sent once more; a POST is not, because side A can run an api from before the unique key on (check id, location, timestamp), which stores a repeated result twice. Both are counted in the log line `connections closed before a response`. More than 5 in one run fail it, also when they arrive while the last requests drain. If A and B of the same SHA differ, the metric is noisy: widen its floor.
 
+A command of the harness that exits non-zero throws `CommandExitError`. Its message shows the command, the exit code and the last 500 characters of stderr; the error object keeps the full stderr, so a line near the start (for example a Docker `Bind for ... failed: port is already allocated`) is not lost. The full stderr is never printed. The bench does not yet retry a bind failure: it fails as before.
+
 ## Changing a budget
 
 `bench/budgets.json` is `{ "<service>": { "<metric>": { "budget", "unit", "gating", "thresholdPct"?, "floor"? } } }`. Change it in a pull request that says why and gives the measured values (A medians). A budget is the measured A median plus about 30 % headroom, rounded up. The `eod_*` budgets are the exception: they come from B medians, because A is the code that the end-of-day change fixed and its numbers are what the budget must keep out. `bench/baseline.json` holds the SHA per repository that A falls back to; bump it the same way. A self-test checks that every metric the harness emits has a budget.
@@ -124,7 +126,7 @@ The load generator keeps pooled keep-alive connections. The api closes an idle o
 bun run bench:selftest
 ```
 
-The scripts in `bench/selftest/check-*.ts` use `node:assert` and cover the median, the failure rule, the table, the budgets schema, the ref resolution, `--b-ref` and the ref checks, the service token answers, fixture and report check, the simulated traffic schedule and counts, and the closed-connection handling of the load, the seed rows, settle rule and limit check of the cold-read phase, and the p95, midnight wait, limit check, checks file and day-change retry of the end-of-day phase. CI runs them, and checks `docker compose -f bench/compose.bench.yaml config --quiet`.
+The scripts in `bench/selftest/check-*.ts` use `node:assert` and cover the median, the failure rule, the table, the budgets schema, the ref resolution, `--b-ref` and the ref checks, the service token answers, fixture and report check, the simulated traffic schedule and counts, and the closed-connection handling of the load, the seed rows, settle rule and limit check of the cold-read phase, and the p95, midnight wait, limit check, checks file and day-change retry of the end-of-day phase. `check-command-error.ts` runs `sh` through `runChecked` and checks that the `CommandExitError` keeps the full stderr while its message keeps only the last 500 characters. CI runs them, and checks `docker compose -f bench/compose.bench.yaml config --quiet`.
 
 ## Initial budgets
 
