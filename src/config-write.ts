@@ -7,7 +7,12 @@ import type {
   AdminWriteResponse,
   Check,
 } from "@lorenzh/pulse-contract";
-import { isRecord } from "@lorenzh/pulse-kit";
+import {
+  AtomicWriteError,
+  type AtomicWriteSyncFs,
+  isRecord,
+  writeFileAtomicSync,
+} from "@lorenzh/pulse-kit";
 import type { AuditRecord, PendingAudit } from "./audit-log.ts";
 import type { CheckDefinition } from "./check-store.ts";
 import { type Config, ConfigError, parseConfig } from "./config.ts";
@@ -44,19 +49,12 @@ export class ConfigWriteError extends Error {
 /** The file operations of a write. Every step may throw an error with a Node `code`. */
 export interface WriteFs {
   readFile(path: string): Buffer;
-  /**
-   * Create `temp` exclusively with `data` and fsync its data; it takes the mode and owner of
-   * `like`. On a failure after the create it removes `temp` itself.
-   */
-  writeTemp(temp: string, data: Buffer, like: string): void;
-  /** Fsync the directory entries of `dir`. */
-  fsyncDir(dir: string): void;
-  rename(from: string, to: string): void;
-  remove(path: string): void;
   /** Throws (`ENOENT` and others) when `path` cannot be looked up. */
   lstat(path: string): void;
   /** Throws when `dir` is not writable. */
   assertWritable(dir: string): void;
+  /** The low-level operations of the kit atomic writer; the writer's directory syncs use them too. */
+  atomic: AtomicWriteSyncFs;
 }
 
 /** Who made a write; stored in its audit entry. */
@@ -117,13 +115,71 @@ function codeOf(err: unknown): string {
 /** Map a failed file step. The message names the cause by code, never the path or content. */
 function mapFsError(err: unknown): ConfigWriteError {
   if (err instanceof ConfigWriteError) return err;
-  const code = codeOf(err);
+  // Kit's own code drops some codes and its message names the stage; report the cause as before.
+  const cause = err instanceof AtomicWriteError ? err.cause : err;
+  const code = codeOf(cause);
   if (READONLY_CODES.has(code)) {
-    return new ConfigWriteError("readonly", `checks file is read-only (${code})`, { cause: err });
+    return new ConfigWriteError("readonly", `checks file is read-only (${code})`, { cause });
   }
-  return new ConfigWriteError("error", `checks file could not be written (${code})`, {
-    cause: err,
-  });
+  return new ConfigWriteError("error", `checks file could not be written (${code})`, { cause });
+}
+
+/** Fsync the directory entries of `dir`. */
+function syncDir(f: AtomicWriteSyncFs, dir: string): void {
+  const fd = f.open(dir, "r");
+  try {
+    f.fsync(fd);
+  } finally {
+    f.close(fd);
+  }
+}
+
+/** What one write learned while kit ran it. */
+interface WriteState {
+  /** Set before the pending insert: from then on only `abort` may remove the temp file. */
+  mayHaveRow: boolean;
+  /** The error of a fault hook; a simulated crash stops every further step. */
+  hookError: { error: unknown } | undefined;
+  tempFd: number | undefined;
+  tempCloseError: { error: unknown } | undefined;
+}
+
+/** Kit's operations with the API's temp-file rules on top. */
+function adapterOf(
+  f: AtomicWriteSyncFs,
+  state: WriteState,
+  fault: (point: string) => void,
+): AtomicWriteSyncFs {
+  return {
+    ...f,
+    open(p, flags, mode) {
+      if (flags !== "wx") return f.open(p, flags, mode);
+      // Created private: kit's fchmod sets the final mode only after all bytes are written.
+      const fd = f.open(p, "wx", 0o600);
+      state.tempFd = fd;
+      return fd;
+    },
+    close(fd) {
+      if (fd !== state.tempFd) return f.close(fd);
+      state.tempFd = undefined;
+      try {
+        f.close(fd);
+      } catch (err) {
+        // Kept so the close error wins over an earlier fill error, as with a close in `finally`.
+        state.tempCloseError = { error: err };
+        throw err;
+      }
+    },
+    rename(from, to) {
+      f.rename(from, to);
+      fault("rename");
+    },
+    unlink(p) {
+      // A pending row may name the temp file, or a crash was simulated: `abort` owns the removal.
+      if (state.mayHaveRow || state.hookError !== undefined) return;
+      f.unlink(p);
+    },
+  };
 }
 
 type CheckSource = AdminCheckView["source"];
@@ -342,7 +398,17 @@ function lstatCode(fs: WriteFs, path: string): string | undefined {
 export function createConfigWriter(deps: WriterDeps): ConfigWriter {
   const { path, fs, pending } = deps;
   const dir = dirname(path);
-  const fault = deps.fault ?? (() => undefined);
+  const hook = deps.fault ?? (() => undefined);
+  /** The state of the write in progress, so a hook that throws stops its cleanup too. */
+  let current: WriteState | undefined;
+  const fault = (point: string): void => {
+    try {
+      hook(point);
+    } catch (err) {
+      if (current !== undefined) current.hookError = { error: err };
+      throw err;
+    }
+  };
   const lock = deps.lock ?? createWriteLock();
 
   /** The state named in a 412 when the disk no longer holds the applied file. */
@@ -393,7 +459,7 @@ export function createConfigWriter(deps: WriterDeps): ConfigWriter {
     }
     fault(`${point}.delete`);
     try {
-      fs.remove(temp);
+      fs.atomic.unlink(temp);
     } catch (err) {
       deps.warn(`config temp file not removed (${codeOf(err)})`);
     }
@@ -414,7 +480,7 @@ export function createConfigWriter(deps: WriterDeps): ConfigWriter {
   const promoteAll = (candidates: { pendingId: number; tempPath: string }[]): void => {
     if (candidates.length === 0) return;
     try {
-      for (const d of new Set(candidates.map((c) => dirname(c.tempPath)))) fs.fsyncDir(d);
+      for (const d of new Set(candidates.map((c) => dirname(c.tempPath)))) syncDir(fs.atomic, d);
     } catch (err) {
       deps.warn(`audit pending entry unresolved (${codeOf(err)})`);
       return;
@@ -446,25 +512,19 @@ export function createConfigWriter(deps: WriterDeps): ConfigWriter {
     promoteAll(candidates);
   };
 
-  /** Steps 3 and 4: the temp file with its name on disk, then the durable pending row. */
-  const prepare = (temp: string, tempPath: string, data: Buffer, entry: PendingRecord): number => {
-    try {
-      fs.writeTemp(temp, data, path);
-    } catch (err) {
-      throw mapFsError(err);
-    }
+  /** Steps 3 to 5 between "temp written" and "rename": barrier 1, the pending row, the check. */
+  const beforeRename = (
+    temp: string,
+    tempPath: string,
+    entry: PendingRecord,
+    ifMatch: string,
+    state: WriteState,
+  ): number => {
     fault("writeTemp");
-    try {
-      fs.fsyncDir(dir);
-    } catch (err) {
-      try {
-        fs.remove(temp);
-      } catch {
-        // No pending row names this temp file yet; the original error is reported.
-      }
-      throw mapFsError(err);
-    }
+    syncDir(fs.atomic, dir);
     fault("fsyncDir.temp");
+    // An insert can commit and then throw.
+    state.mayHaveRow = true;
     let pendingId: number;
     try {
       pendingId = pending.insert(entry, tempPath);
@@ -473,11 +533,6 @@ export function createConfigWriter(deps: WriterDeps): ConfigWriter {
       throw new ConfigWriteError("error", AUDIT_WRITE_FAILED, { cause: err });
     }
     fault("pending.insert");
-    return pendingId;
-  };
-
-  /** Step 5: the second revision check and the rename. */
-  const replace = (temp: string, tempPath: string, ifMatch: string): void => {
     try {
       // An external writer racing after this check stays possible.
       assertCurrent(ifMatch);
@@ -485,28 +540,53 @@ export function createConfigWriter(deps: WriterDeps): ConfigWriter {
       abort(temp, tempPath, "abort");
       throw err;
     }
-    try {
-      fs.rename(temp, path);
-    } catch (err) {
+    return pendingId;
+  };
+
+  /** The error a failed kit write reports, after the API's own cleanup. */
+  const failed = (err: unknown, temp: string, tempPath: string, state: WriteState): unknown => {
+    if (state.hookError !== undefined) return state.hookError.error;
+    if (err instanceof AtomicWriteError && err.stage === "rename") {
       const code = lstatCode(fs, temp);
       fault("lstat");
       // Only a temp file that is still there proves the rename did not happen.
       if (code === undefined) abort(temp, tempPath, "abort");
-      throw mapFsError(err);
+    } else if (
+      err instanceof AtomicWriteError &&
+      err.stage === "write" &&
+      state.tempCloseError !== undefined
+    ) {
+      return mapFsError(state.tempCloseError.error);
     }
-    fault("rename");
+    return mapFsError(err);
   };
 
   const store = (data: Buffer, ifMatch: string, config: Config, entry: PendingRecord): void => {
-    const temp = `${path}.${deps.tempSuffix()}.tmp`;
+    const suffix = deps.tempSuffix();
+    const temp = `${path}.${suffix}.tmp`;
     // Absolute: a later start may run from another working directory.
     const tempPath = resolve(temp);
-    const pendingId = prepare(temp, tempPath, data, entry);
-    replace(temp, tempPath, ifMatch);
+    const state: WriteState = {
+      mayHaveRow: false,
+      hookError: undefined,
+      tempFd: undefined,
+      tempCloseError: undefined,
+    };
+    let pendingId = -1;
+    current = state;
     try {
-      fs.fsyncDir(dir);
+      writeFileAtomicSync(path, data, {
+        fs: adapterOf(fs.atomic, state, fault),
+        tempSuffix: () => suffix,
+        beforeRename: () => {
+          pendingId = beforeRename(temp, tempPath, entry, ifMatch, state);
+          return true;
+        },
+      });
     } catch (err) {
-      throw mapFsError(err);
+      throw failed(err, temp, tempPath, state);
+    } finally {
+      current = undefined;
     }
     fault("fsyncDir");
     const isPromoted = promote(pendingId);
