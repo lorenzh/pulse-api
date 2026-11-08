@@ -1,9 +1,6 @@
-import { onTestFinished, test } from "bun:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { ConfigError, loadConfig, parseConfig } from "./config.ts";
+import { ConfigError, parseConfig } from "./config.ts";
 
 const check = { id: "a", name: "A", url: "http://localhost:1/", intervalMs: 1000 };
 const win = {
@@ -57,15 +54,6 @@ test("config: rejects invalid windows", () => {
       JSON.stringify(m),
     );
   }
-});
-
-test("config: loadConfig reads a file", () => {
-  const dir = mkdtempSync(join(tmpdir(), "pulse-cfg-"));
-  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
-  const path = join(dir, "checks.json");
-  writeFileSync(path, JSON.stringify({ checks: [check], maintenance: [win] }));
-  assert.equal(loadConfig(path).maintenance.length, 1);
-  assert.throws(() => loadConfig(`${path}.missing`), ConfigError);
 });
 
 test("config: a window id loads, a window without one loads unchanged", () => {

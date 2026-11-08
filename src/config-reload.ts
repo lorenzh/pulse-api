@@ -150,13 +150,6 @@ export function readInitialConfig(
   }
 }
 
-/** Read and parse the file at startup. Throws ConfigError, which the start maps to a startup error. */
-export function loadInitialConfig(fs: ReloadFs, path: string): InitialConfig {
-  const read = readInitialConfig(fs, path);
-  if (!read.ok) throw read.error;
-  return read.initial;
-}
-
 export function createConfigReloader(deps: ReloaderDeps, initial: InitialConfig): ConfigReloader {
   const { path, fs } = deps;
   let revision = initial.revision;

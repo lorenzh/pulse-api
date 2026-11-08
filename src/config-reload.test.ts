@@ -221,3 +221,109 @@ test("the failure line holds name and safe code only, never the message", () => 
   }
   assert.deepEqual(h.results, ["error", "error", "error", "error"]);
 });
+
+const REJECT_URL =
+  "config reload rejected: /etc/pulse/checks.json: checks[0].url: must be an http: or https: URL";
+const REJECT_INTERVAL =
+  "config reload rejected: /etc/pulse/checks.json: checks[0].intervalMs must be an integer from 1 to 2147483647 (milliseconds)";
+
+function fileWith(url: string, intervalMs: number): Buffer {
+  return Buffer.from(JSON.stringify({ checks: [{ id: "x", name: "X", url, intervalMs }] }));
+}
+
+interface FakeFile {
+  bytes: Buffer;
+  stamp: FileStamp;
+  readError?: Error;
+}
+
+function setupFile(file: FakeFile): Harness {
+  const lines: string[] = [];
+  const results: ConfigReloadResult[] = [];
+  let reads = 0;
+  let applies = 0;
+  const reloader = createConfigReloader(
+    {
+      path: PATH,
+      fs: {
+        stat: () => file.stamp,
+        readFile: () => {
+          reads += 1;
+          if (file.readError) throw file.readError;
+          return file.bytes;
+        },
+      },
+      now: () => 0,
+      onApply: () => {
+        applies += 1;
+      },
+      log: (line) => lines.push(line),
+      metrics: { recordConfigReload: (r) => results.push(r) },
+    },
+    { config: parseConfigText(PATH, VALID.toString("utf8")), revision: INITIAL, stampKey: "old" },
+  );
+  return {
+    poll: () => reloader.poll(),
+    reloadNow: () => reloader.reloadNow(),
+    revision: () => reloader.revision(),
+    lines,
+    results,
+    reads: () => reads,
+    applies: () => applies,
+  };
+}
+
+test("poll and forced reloads share one warning line, also for new bytes with the same message", () => {
+  const file: FakeFile = { bytes: fileWith("file:///x", 60000), stamp: STAMP };
+  const h = setupFile(file);
+  h.poll();
+  h.reloadNow();
+  h.reloadNow();
+  assert.deepEqual(h.lines, [REJECT_URL]);
+  assert.deepEqual(h.results, ["invalid"]);
+  assert.equal(h.revision(), INITIAL);
+  assert.equal(h.applies(), 0);
+
+  file.bytes = fileWith("file:///y", 60000);
+  file.stamp = { mtimeMs: 3, size: 11, ino: 1 };
+  h.poll();
+  h.reloadNow();
+  assert.deepEqual(h.lines, [REJECT_URL]);
+  assert.deepEqual(h.results, ["invalid"]);
+});
+
+test("a forced reload logs another message, and the same message again after a valid apply", () => {
+  const file: FakeFile = { bytes: fileWith("file:///x", 60000), stamp: STAMP };
+  const h = setupFile(file);
+  h.poll();
+  assert.deepEqual(h.lines, [REJECT_URL]);
+
+  file.bytes = fileWith("http://localhost:1/", 0);
+  h.reloadNow();
+  assert.deepEqual(h.lines, [REJECT_URL, REJECT_INTERVAL]);
+  assert.deepEqual(h.results, ["invalid", "invalid"]);
+
+  file.bytes = VALID;
+  h.reloadNow();
+  assert.deepEqual(h.results, ["invalid", "invalid", "ok"]);
+
+  file.bytes = fileWith("file:///x", 60000);
+  h.reloadNow();
+  assert.deepEqual(h.lines, [REJECT_URL, REJECT_INTERVAL, REJECT_URL]);
+  assert.deepEqual(h.results, ["invalid", "invalid", "ok", "invalid"]);
+  assert.equal(h.applies(), 1);
+});
+
+test("an unreadable file is logged once across poll and forced reloads, and read every time", () => {
+  const readError = Object.assign(new Error("SENTINEL-READ-MESSAGE"), { code: "EACCES" });
+  const h = setupFile({ bytes: VALID, stamp: STAMP, readError });
+  h.poll();
+  h.reloadNow();
+  h.reloadNow();
+  assert.deepEqual(h.lines, [
+    `config reload rejected: /etc/pulse/checks.json: cannot read the file (EACCES)`,
+  ]);
+  assert.deepEqual(h.results, ["invalid"]);
+  assert.equal(h.reads(), 3);
+  for (const line of h.lines) assert.ok(!line.includes("SENTINEL-READ-MESSAGE"), line);
+});

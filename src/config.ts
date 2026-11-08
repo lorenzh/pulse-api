@@ -502,16 +502,6 @@ function parseJsonText(path: string, text: string): unknown {
   }
 }
 
-function readJson(path: string): unknown {
-  let text: string;
-  try {
-    text = readFileSync(path, "utf8");
-  } catch (err) {
-    throw new ConfigError(`cannot read checks file ${path}: ${(err as Error).message}`);
-  }
-  return parseJsonText(path, text);
-}
-
 /** Run a parser on parsed data; a validation error names the file: `<path>: <message>`. */
 function parseNamed<T>(path: string, data: unknown, parse: (data: unknown) => T): T {
   try {
@@ -524,22 +514,9 @@ function parseNamed<T>(path: string, data: unknown, parse: (data: unknown) => T)
   }
 }
 
-/** Run a parser on the checks file; a validation error names the file: `<path>: <message>`. */
-function parseFile<T>(path: string, parse: (data: unknown) => T): T {
-  return parseNamed(path, readJson(path), parse);
-}
-
-export function loadConfig(path: string): Config {
-  return parseFile(path, parseConfig);
-}
-
-/** Parse the text of the checks file `path` like `loadConfig`; throws ConfigError. */
+/** Parse the text of the checks file `path`; throws ConfigError. */
 export function parseConfigText(path: string, text: string): Config {
   return parseNamed(path, parseJsonText(path, text), parseConfig);
-}
-
-export function loadChecks(path: string): Check[] {
-  return parseFile(path, parseChecks);
 }
 
 function readTokensJson(path: string, label: string): unknown {
