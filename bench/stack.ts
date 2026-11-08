@@ -2,6 +2,7 @@
 import { existsSync } from "node:fs";
 import { chmod, copyFile, mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { withConfirmedReseed } from "./bind-retry.ts";
 import {
   addTodayRows,
   type ColdResult,
@@ -16,8 +17,10 @@ import {
   eodChecksFileJson,
   tokensFileJson,
 } from "./fixtures.ts";
+import { benchImage, portEnv, type TeardownCheck } from "./invocation.ts";
 import { checkIds, IDLE_S, type OptionalRoute, runLoad } from "./load.ts";
 import { readContainerProcess, runChecked, runCommand } from "./measure.ts";
+import type { ServicePorts } from "./ports.ts";
 import {
   checkReport,
   prepareRuntime,
@@ -59,6 +62,12 @@ export interface StackRuntime {
   expectReports: readonly RuntimeService[];
 }
 
+/** The Compose project of a stack and its host ports (`null` when only building). */
+export interface StackIdentity {
+  project: string;
+  ports: ServicePorts | null;
+}
+
 export interface StackMetrics {
   startupCpuMs: Record<ServiceName, number>;
   startupWallMs: Record<ServiceName, number>;
@@ -76,10 +85,10 @@ function composeArgs(project: string, composeFile: string): string[] {
   return ["compose", "-f", composeFile, "-p", project];
 }
 
-function stackEnv(dirs: SideDirs, project: string, runDir: string): Record<string, string> {
+function stackEnv(dirs: SideDirs, identity: StackIdentity, runDir: string): Record<string, string> {
   return {
-    BENCH_PROJECT: project,
-    BENCH_SIDE: dirs.side,
+    BENCH_PROJECT: identity.project,
+    ...(identity.ports === null ? {} : portEnv(identity.ports)),
     BENCH_RUN_DIR: runDir,
     BENCH_API_DIR: dirs.work.api ?? "",
     BENCH_PROBE_DIR: dirs.work.probe ?? "",
@@ -93,20 +102,20 @@ function stackEnv(dirs: SideDirs, project: string, runDir: string): Record<strin
 /** Build the images of one side once; later runs reuse them. */
 export async function buildImages(
   dirs: SideDirs,
+  identity: StackIdentity,
   composeFile: string,
   runDir: string,
 ): Promise<void> {
-  const project = `pulse-bench-${dirs.side}`;
-  await runChecked("docker", [...composeArgs(project, composeFile), "build"], {
-    env: stackEnv(dirs, project, runDir),
+  await runChecked("docker", [...composeArgs(identity.project, composeFile), "build"], {
+    env: stackEnv(dirs, identity, runDir),
   });
 }
 
-export async function imageSizeMB(dirs: SideDirs, service: ServiceName): Promise<number> {
+export async function imageSizeMB(identity: StackIdentity, service: ServiceName): Promise<number> {
   const { stdout } = await runChecked("docker", [
     "image",
     "inspect",
-    `pulse-bench-${dirs.side}-${service}`,
+    benchImage(identity.project, service),
     "--format",
     "{{.Size}}",
   ]);
@@ -208,15 +217,16 @@ function perService<T>(fn: (service: ServiceName) => T): Record<ServiceName, T> 
 
 export async function runStack(
   dirs: SideDirs,
+  identity: StackIdentity,
   composeFile: string,
   runDir: string,
   log: (line: string) => void,
   failureLogFile: string,
   runtime: StackRuntime,
 ): Promise<StackMetrics> {
-  const project = `pulse-bench-${dirs.side}`;
+  const project = identity.project;
   const compose = composeArgs(project, composeFile);
-  const env = stackEnv(dirs, project, runDir);
+  const env = stackEnv(dirs, identity, runDir);
   await prepareRunDir(runDir, dirs.seedDb);
   try {
     const first = await startServices(compose, project, env, ["api"]);
@@ -307,14 +317,15 @@ export async function runStack(
  */
 export async function runColdStack(
   dirs: SideDirs,
+  identity: StackIdentity,
   composeFile: string,
   runDir: string,
   log: (line: string) => void,
   failureLogFile: string,
 ): Promise<ColdResult> {
-  const project = `pulse-bench-${dirs.side}`;
+  const project = identity.project;
   const compose = composeArgs(project, composeFile);
-  const env = stackEnv(dirs, project, runDir);
+  const env = stackEnv(dirs, identity, runDir);
   await prepareRunDir(runDir, dirs.coldSeedDb);
   log(`cold: seed has ${countTodayRows(dirs.coldSeedDb, Date.now())} rows of today (UTC)`);
   try {
@@ -339,14 +350,16 @@ export async function runColdStack(
  */
 export async function runEodStack(
   dirs: SideDirs,
+  identity: StackIdentity,
   composeFile: string,
   runDir: string,
   log: (line: string) => void,
   failureLogFile: string,
+  confirmTeardown: () => Promise<TeardownCheck>,
 ): Promise<EodResult & { today_rows: number }> {
-  const project = `pulse-bench-${dirs.side}`;
+  const project = identity.project;
   const compose = composeArgs(project, composeFile);
-  const env = stackEnv(dirs, project, runDir);
+  const env = stackEnv(dirs, identity, runDir);
   const container = containerName(project, "api");
   const down = async (): Promise<void> => {
     const result = await runCommand(
@@ -357,32 +370,35 @@ export async function runEodStack(
     if (result.code !== 0) log(`compose down failed: ${result.stderr.slice(-200)}`);
   };
   return runEodPhase(
-    {
-      seed: async (now) => {
-        await rm(runDir, { recursive: true, force: true });
-        let todayRows = 0;
-        // Count before `prepareRunDir` sets the file modes for the api user.
-        await prepareRunDir(runDir, dirs.seedDb, eodChecksFileJson(), (db) => {
-          addTodayRows(db, checkIds(), EOD_TODAY_ROWS, now);
-          todayRows = countTodayRows(db, now);
-        });
-        return todayRows;
+    withConfirmedReseed(
+      {
+        seed: async (now) => {
+          await rm(runDir, { recursive: true, force: true });
+          let todayRows = 0;
+          // Count before `prepareRunDir` sets the file modes for the api user.
+          await prepareRunDir(runDir, dirs.seedDb, eodChecksFileJson(), (db) => {
+            addTodayRows(db, checkIds(), EOD_TODAY_ROWS, now);
+            todayRows = countTodayRows(db, now);
+          });
+          return todayRows;
+        },
+        measure: async () => {
+          const target = {
+            ...composeTarget({ compose, env, container }),
+            rssMiB: async () => (await readContainerProcess(container)).rssMiB,
+          };
+          try {
+            return await runEodReads(target, log, dirs.missingRoutes);
+          } catch (err) {
+            await dumpStack(compose, env, failureLogFile, log);
+            throw err;
+          } finally {
+            await down();
+          }
+        },
       },
-      measure: async () => {
-        const target = {
-          ...composeTarget({ compose, env, container }),
-          rssMiB: async () => (await readContainerProcess(container)).rssMiB,
-        };
-        try {
-          return await runEodReads(target, log, dirs.missingRoutes);
-        } catch (err) {
-          await dumpStack(compose, env, failureLogFile, log);
-          throw err;
-        } finally {
-          await down();
-        }
-      },
-    },
+      { confirmTeardown, side: dirs.side, project },
+    ),
     log,
   );
 }
