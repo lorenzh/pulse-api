@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AuditEntry } from "@lorenzh/pulse-contract";
+import type { AtomicWriteSyncFs } from "@lorenzh/pulse-kit";
 import { type AuditRecord, createPendingAudit, type PendingAudit } from "./audit-log.ts";
 import { parseConfig } from "./config.ts";
 import { nodeConfigFs } from "./config-fs.ts";
@@ -42,17 +43,74 @@ const followingReloader = (read: () => Buffer | undefined) => ({
 
 const errno = (code: string): Error => Object.assign(new Error(`fake ${code}`), { code });
 
-/** One directory in memory; every call is logged as `name(arg)`. */
+/** One directory in memory; every call is logged as `name(arg)`, fds by the path they opened. */
 class MemFs implements WriteFs {
   files = new Map<string, Buffer>();
   log: string[] = [];
   renameMode: "ok" | "throw" | "move-throw" = "ok";
-  /** Codes thrown by the next `fsyncDir` calls, one each. */
+  /** Codes thrown by the next directory `fsync` calls, one each. */
   fsyncFailures: string[] = [];
   lstatCode = new Map<string, string>();
+  private readonly fds = new Map<number, { path: string; isDir: boolean; data: Buffer }>();
+  private nextFd = 10;
+  readonly atomic: AtomicWriteSyncFs;
 
   constructor(file = FILE_A) {
     this.files.set(PATH, Buffer.from(file));
+    this.atomic = {
+      stat: (p) => {
+        this.log.push(`stat(${p})`);
+        if (!this.files.has(p)) throw errno("ENOENT");
+        return { mode: 0o100644, uid: 1000, gid: 1000 };
+      },
+      open: (p, flags, mode) => {
+        const octal = mode === undefined ? "" : ", " + mode.toString(8);
+        this.log.push(`open(${p}, ${flags}${octal})`);
+        if (flags === "wx" && this.files.has(p)) throw errno("EEXIST");
+        const fd = this.nextFd++;
+        this.fds.set(fd, { path: p, isDir: flags === "r", data: Buffer.alloc(0) });
+        if (flags === "wx") this.files.set(p, Buffer.alloc(0));
+        return fd;
+      },
+      write: (fd, data, offset) => {
+        const f = this.fd(fd);
+        this.log.push(`write(${f.path})`);
+        f.data = Buffer.concat([f.data, data.subarray(offset)]);
+        this.files.set(f.path, f.data);
+        return data.length - offset;
+      },
+      fchmod: (fd, mode) => {
+        this.log.push(`fchmod(${this.fd(fd).path}, ${mode.toString(8)})`);
+      },
+      fstat: (fd) => {
+        this.log.push(`fstat(${this.fd(fd).path})`);
+        return { uid: 1000, gid: 1000 };
+      },
+      fchown: (fd, uid, gid) => {
+        this.log.push(`fchown(${this.fd(fd).path}, ${uid}, ${gid})`);
+      },
+      fsync: (fd) => {
+        const f = this.fd(fd);
+        this.log.push(`fsync(${f.path})`);
+        if (!f.isDir) return;
+        const code = this.fsyncFailures.shift();
+        if (code !== undefined) throw errno(code);
+      },
+      close: (fd) => {
+        this.log.push(`close(${this.fd(fd).path})`);
+        this.fds.delete(fd);
+      },
+      rename: (from, to) => this.rename(from, to),
+      unlink: (p) => {
+        this.log.push(`unlink(${p})`);
+        this.files.delete(p);
+      },
+    };
+  }
+  private fd(fd: number): { path: string; isDir: boolean; data: Buffer } {
+    const f = this.fds.get(fd);
+    if (f === undefined) throw errno("EBADF");
+    return f;
   }
   readFile(path: string): Buffer {
     this.log.push(`readFile(${path})`);
@@ -60,16 +118,7 @@ class MemFs implements WriteFs {
     if (bytes === undefined) throw errno("ENOENT");
     return bytes;
   }
-  writeTemp(temp: string, data: Buffer): void {
-    this.log.push(`writeTemp(${temp})`);
-    this.files.set(temp, data);
-  }
-  fsyncDir(dir: string): void {
-    this.log.push(`fsyncDir(${dir})`);
-    const code = this.fsyncFailures.shift();
-    if (code !== undefined) throw errno(code);
-  }
-  rename(from: string, to: string): void {
+  private rename(from: string, to: string): void {
     this.log.push(`rename(${from}, ${to})`);
     if (this.renameMode === "throw") {
       this.renameMode = "ok";
@@ -83,10 +132,6 @@ class MemFs implements WriteFs {
       this.renameMode = "ok";
       throw errno("EIO");
     }
-  }
-  remove(path: string): void {
-    this.log.push(`remove(${path})`);
-    this.files.delete(path);
   }
   lstat(path: string): void {
     this.log.push(`lstat(${path})`);
@@ -122,10 +167,10 @@ class FakePending implements PendingAudit {
 
   constructor(fs: MemFs) {
     this.fs = fs;
-    const remove = fs.remove.bind(fs);
-    fs.remove = (path) => {
+    const unlink = fs.atomic.unlink;
+    fs.atomic.unlink = (path) => {
       this.rowsAtRemove.push(this.rows.length);
-      remove(path);
+      unlink(path);
     };
   }
   insert(entry: AuditRecord & { revision: string }, tempPath: string): number {
@@ -215,13 +260,23 @@ beforeEach(() => {
 test("success call order: temp name synced before the insert, promote after the second sync", async () => {
   const h = harness();
   expect(await write(h, "b")).toBe("200");
-  expect(from(h.fs.log, "writeTemp")).toEqual([
-    "writeTemp(/d/checks.json.t1.tmp)",
-    "fsyncDir(/d)",
+  expect(from(h.fs.log, "stat(")).toEqual([
+    "stat(/d/checks.json)",
+    "open(/d/checks.json.t1.tmp, wx, 600)",
+    "write(/d/checks.json.t1.tmp)",
+    "fchmod(/d/checks.json.t1.tmp, 644)",
+    "fstat(/d/checks.json.t1.tmp)",
+    "fsync(/d/checks.json.t1.tmp)",
+    "close(/d/checks.json.t1.tmp)",
+    "open(/d, r)",
+    "fsync(/d)",
+    "close(/d)",
     "pending.insert(durable)",
     "readFile(/d/checks.json)",
     "rename(/d/checks.json.t1.tmp, /d/checks.json)",
-    "fsyncDir(/d)",
+    "open(/d, r)",
+    "fsync(/d)",
+    "close(/d)",
     "pending.promote",
   ]);
   expect(h.pending.entries).toEqual([
@@ -240,15 +295,23 @@ test("failure call order: a rename that throws EIO aborts durably before the rem
   const h = harness();
   h.fs.renameMode = "throw";
   expect(await write(h, "b")).toBe("error: checks file could not be written (EIO)");
-  expect(from(h.fs.log, "writeTemp")).toEqual([
-    "writeTemp(/d/checks.json.t1.tmp)",
-    "fsyncDir(/d)",
+  expect(from(h.fs.log, "stat(")).toEqual([
+    "stat(/d/checks.json)",
+    "open(/d/checks.json.t1.tmp, wx, 600)",
+    "write(/d/checks.json.t1.tmp)",
+    "fchmod(/d/checks.json.t1.tmp, 644)",
+    "fstat(/d/checks.json.t1.tmp)",
+    "fsync(/d/checks.json.t1.tmp)",
+    "close(/d/checks.json.t1.tmp)",
+    "open(/d, r)",
+    "fsync(/d)",
+    "close(/d)",
     "pending.insert(durable)",
     "readFile(/d/checks.json)",
     "rename(/d/checks.json.t1.tmp, /d/checks.json)",
     "lstat(/d/checks.json.t1.tmp)",
     "pending.deleteByTemp(durable)",
-    "remove(/d/checks.json.t1.tmp)",
+    "unlink(/d/checks.json.t1.tmp)",
   ]);
   expect(h.pending.rowsAtRemove).toEqual([0]);
   expect(h.fs.text()).toBe(FILE_A);
@@ -278,10 +341,12 @@ test("resolver call order: candidates sync once before their promotes; a present
   rowForB(one);
   one.fs.log = [];
   await write(one, "c");
-  expect(one.fs.log.slice(0, 4)).toEqual([
+  expect(one.fs.log.slice(0, 6)).toEqual([
     "pending.list",
     "lstat(/d/checks.json.old.tmp)",
-    "fsyncDir(/d)",
+    "open(/d, r)",
+    "fsync(/d)",
+    "close(/d)",
     "pending.promote",
   ]);
 
@@ -294,7 +359,9 @@ test("resolver call order: candidates sync once before their promotes; a present
     "pending.list",
     "lstat(/d/checks.json.x.tmp)",
     "lstat(/d/checks.json.y.tmp)",
-    "fsyncDir(/d)",
+    "open(/d, r)",
+    "fsync(/d)",
+    "close(/d)",
     "pending.promote",
     "pending.promote",
   ]);
@@ -308,7 +375,7 @@ test("resolver call order: candidates sync once before their promotes; a present
     "pending.list",
     "lstat(/d/checks.json.z.tmp)",
     "pending.deleteByTemp(durable)",
-    "remove(/d/checks.json.z.tmp)",
+    "unlink(/d/checks.json.z.tmp)",
   ]);
   expect(present.pending.rows).toEqual([]);
   expect(present.pending.entries).toEqual([]);
@@ -390,7 +457,7 @@ test("a rename that moves and then throws EIO keeps the row; the next write prom
   h.fs.renameMode = "move-throw";
   expect(await write(h, "b", sha(FILE_A))).toBe("error: checks file could not be written (EIO)");
   expect(h.fs.log).not.toContain("pending.deleteByTemp(durable)");
-  expect(h.fs.log.some((l) => l.startsWith("remove("))).toBe(false);
+  expect(h.fs.log.some((l) => l.startsWith("unlink("))).toBe(false);
   expect(h.pending.rows).toHaveLength(1);
   expect(h.pending.entries).toEqual([]);
   const revB = sha(h.fs.text());
@@ -420,7 +487,7 @@ test("an abort delete that throws keeps the temp file; the next write drops both
   h.fs.renameMode = "throw";
   h.pending.deleteCode = "SQLITE_IOERR";
   expect(await write(h, "b")).toBe("error: checks file could not be written (EIO)");
-  expect(h.fs.log.some((l) => l.startsWith("remove("))).toBe(false);
+  expect(h.fs.log.some((l) => l.startsWith("unlink("))).toBe(false);
   expect(h.fs.temps()).toEqual(["/d/checks.json.t1.tmp"]);
   expect(h.pending.rows).toHaveLength(1);
   expect(h.warns).toEqual(["audit pending entry kept (SQLITE_IOERR)"]);
@@ -442,16 +509,16 @@ test("an lstat EACCES keeps the row, warns with the code only, and the write pro
 
 test("interleaving: write 2 with a stale If-Match syncs before it promotes, then answers 412", async () => {
   const h = harness();
-  // The step-6 sync is the second fsyncDir of write 1.
-  const realSync = h.fs.fsyncDir.bind(h.fs);
+  // The step-6 sync is the second directory sync of write 1.
+  const realSync = h.fs.atomic.fsync;
   let syncs = 0;
-  h.fs.fsyncDir = (d) => {
-    syncs += 1;
+  h.fs.atomic.fsync = (fd) => {
+    realSync(fd);
+    if (h.fs.log.at(-1) === "fsync(/d)") syncs += 1;
     if (syncs === 2) {
-      h.fs.log.push(`fsyncDir(${d})`);
+      syncs += 1;
       throw errno("EIO");
     }
-    realSync(d);
   };
   expect(await write(h, "b")).toBe("error: checks file could not be written (EIO)");
   expect(h.pending.rows).toHaveLength(1);
@@ -460,7 +527,9 @@ test("interleaving: write 2 with a stale If-Match syncs before it promotes, then
   expect(h.fs.log).toEqual([
     "pending.list",
     "lstat(/d/checks.json.t1.tmp)",
-    "fsyncDir(/d)",
+    "open(/d, r)",
+    "fsync(/d)",
+    "close(/d)",
     "pending.promote",
   ]);
 });

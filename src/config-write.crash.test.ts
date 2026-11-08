@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import type { AuditEntry } from "@lorenzh/pulse-contract";
+import type { AtomicWriteSyncFs } from "@lorenzh/pulse-kit";
 import type { AuditRecord, PendingAudit, PendingEntry } from "./audit-log.ts";
 import { parseConfig } from "./config.ts";
 import { createConfigHolder } from "./config-holder.ts";
@@ -43,28 +44,64 @@ class CrashFs implements WriteFs {
   live = new Map<string, Buffer>([[PATH, Buffer.from(FILE_A)]]);
   durable = new Map(this.live);
   changes: Change[] = [];
-  /** 1-based numbers of the fsyncDir calls that throw EIO without syncing. */
+  /** 1-based numbers of the directory syncs that throw EIO without syncing. */
   failingSyncs = new Set<number>();
   syncs = 0;
   renameMode: "ok" | "throw" | "move-throw" = "ok";
+  /** Open fds: a directory, or the create change of a temp file that buffers its bytes. */
+  private readonly fds = new Map<number, { dir: true } | { dir: false; change: Change }>();
+  private nextFd = 10;
+  readonly atomic: AtomicWriteSyncFs = {
+    stat: (p) => {
+      if (!this.live.has(p)) throw errno("ENOENT");
+      return { mode: 0o100644, uid: 1000, gid: 1000 };
+    },
+    open: (p, flags) => {
+      const fd = this.nextFd++;
+      if (flags === "r") {
+        this.fds.set(fd, { dir: true });
+        return fd;
+      }
+      if (this.live.has(p)) throw errno("EEXIST");
+      const change: Change = { op: "create", name: p, data: Buffer.alloc(0) };
+      this.live.set(p, change.data);
+      this.changes.push(change);
+      this.fds.set(fd, { dir: false, change });
+      return fd;
+    },
+    write: (fd, data, offset) => {
+      const f = this.fds.get(fd);
+      if (f === undefined || f.dir || f.change.op !== "create") throw errno("EBADF");
+      f.change.data = Buffer.concat([f.change.data, data.subarray(offset)]);
+      this.live.set(f.change.name, f.change.data);
+      return data.length - offset;
+    },
+    fchmod: () => undefined,
+    fstat: () => ({ uid: 1000, gid: 1000 }),
+    fchown: () => undefined,
+    fsync: (fd) => {
+      if (this.fds.get(fd)?.dir !== true) return;
+      this.syncs += 1;
+      if (this.failingSyncs.has(this.syncs)) throw errno("EIO");
+      this.durable = new Map(this.live);
+      this.changes = [];
+    },
+    close: (fd) => {
+      this.fds.delete(fd);
+    },
+    rename: (from, to) => this.rename(from, to),
+    unlink: (p) => {
+      if (!this.live.delete(p)) throw errno("ENOENT");
+      this.changes.push({ op: "unlink", name: p });
+    },
+  };
 
   readFile(path: string): Buffer {
     const bytes = this.live.get(path);
     if (bytes === undefined) throw errno("ENOENT");
     return bytes;
   }
-  writeTemp(temp: string, data: Buffer): void {
-    if (this.live.has(temp)) throw errno("EEXIST");
-    this.live.set(temp, data);
-    this.changes.push({ op: "create", name: temp, data });
-  }
-  fsyncDir(): void {
-    this.syncs += 1;
-    if (this.failingSyncs.has(this.syncs)) throw errno("EIO");
-    this.durable = new Map(this.live);
-    this.changes = [];
-  }
-  rename(from: string, to: string): void {
+  private rename(from: string, to: string): void {
     if (this.renameMode === "throw") {
       this.renameMode = "ok";
       throw errno("EIO");
@@ -78,10 +115,6 @@ class CrashFs implements WriteFs {
       this.renameMode = "ok";
       throw errno("EIO");
     }
-  }
-  remove(path: string): void {
-    if (!this.live.delete(path)) throw errno("ENOENT");
-    this.changes.push({ op: "unlink", name: path });
   }
   lstat(path: string): void {
     if (!this.live.has(path)) throw errno("ENOENT");
