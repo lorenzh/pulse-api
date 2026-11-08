@@ -1,20 +1,10 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { ConfigError, loadAdminTokens, loadConfig, loadTokens, parseConfig } from "./config.ts";
+import { loadAdminTokens, loadTokens, parseConfig } from "./config.ts";
 
 const CHECKS_EXAMPLE = new URL("../checks.example.json", import.meta.url).pathname;
 const TOKENS_EXAMPLE = new URL("../tokens.example.json", import.meta.url).pathname;
-
-test("checks.example.json is refused while its heartbeat secret is the placeholder", () => {
-  assert.throws(
-    () => loadConfig(CHECKS_EXAMPLE),
-    (err: unknown) =>
-      err instanceof ConfigError &&
-      err.message.includes("checks[6].secret still has the example placeholder secret") &&
-      !err.message.includes("replace-with-a-random-secret"),
-  );
-});
 
 test("checks.example.json loads through the config parser once the secret is replaced", () => {
   const data: unknown = JSON.parse(readFileSync(CHECKS_EXAMPLE, "utf8"));

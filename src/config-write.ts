@@ -20,10 +20,10 @@ import { createWriteLock, type WriteLock } from "./write-lock.ts";
 export type ConfigKind = "check" | "component" | "maintenance";
 export type ConfigAction = "create" | "replace" | "delete";
 
-/** The kinds the checks file writer edits; windows are written to the database only. */
-export type FileKind = Exclude<ConfigKind, "maintenance">;
+/** The kind the checks file writer edits; checks and windows are written to the database. */
+export type FileKind = "component";
 
-/** What the writer does to the checks file. `ref` is a check or component id. */
+/** What the writer does to the checks file. `ref` is a component id. */
 export type ConfigEdit =
   | { kind: FileKind; action: "create"; body: unknown }
   | { kind: FileKind; action: "replace"; ref: string; body: unknown }
@@ -229,33 +229,15 @@ function mustBeObject(kind: FileKind, body: unknown): Doc {
   return body;
 }
 
-/** Keep the stored secret on a heartbeat replace that sends none. */
-function keepSecret(old: unknown, body: Doc): Doc {
-  if (!isRecord(old) || old.type !== "heartbeat" || body.type !== "heartbeat") return body;
-  if (body.secret !== undefined || old.secret === undefined) return body;
-  return { ...body, secret: old.secret };
-}
-
 /** The list a kind lives in, and how its entries are addressed. */
-const LIST_KEY = { check: "checks", component: "components" } as const;
+const LIST_KEY = { component: "components" } as const;
 
-function listKey(kind: FileKind): "checks" | "components" {
+function listKey(kind: FileKind): "components" {
   return LIST_KEY[kind];
 }
 
 function locate(list: unknown[], ref: string): number {
   return list.findIndex((item) => idOf(item) === ref);
-}
-
-function referenceOf(doc: Doc, checkId: string): string | undefined {
-  const components = Array.isArray(doc.components) ? doc.components : [];
-  for (const c of components) {
-    const ids = isRecord(c) && Array.isArray(c.checkIds) ? c.checkIds : [];
-    if (ids.includes(checkId)) return `component "${String(idOf(c))}"`;
-  }
-  const windows = Array.isArray(doc.maintenance) ? doc.maintenance : [];
-  const at = windows.findIndex((w) => isRecord(w) && w.checkId === checkId);
-  return at >= 0 ? `maintenance[${at}]` : undefined;
 }
 
 interface Applied {
@@ -297,7 +279,7 @@ function replaceEntry(edit: ConfigEdit, doc: Doc): Applied {
     validated({ ...doc, [key]: [...list, given] });
     throw new ConfigWriteError("not-found", `unknown ${kind} "${edit.ref}"`);
   }
-  list[at] = kind === "check" ? keepSecret(list[at], given) : given;
+  list[at] = given;
   return { doc, index: at };
 }
 
@@ -311,13 +293,7 @@ function deleteEntry(
   const list = listOf(doc, listKey(kind));
   const at = locate(list, ref);
   if (at < 0) throw new ConfigWriteError("not-found", `unknown ${kind} "${ref}"`);
-  if (kind === "check") {
-    const holder = referenceOf(doc, String(ref));
-    if (holder !== undefined) {
-      throw new ConfigWriteError("conflict", `check "${String(ref)}" is still used by ${holder}`);
-    }
-  }
-  if (kind === "component" && hasOpenIncidentFor(String(ref))) {
+  if (hasOpenIncidentFor(String(ref))) {
     throw new ConfigWriteError(
       "conflict",
       `component "${String(ref)}" is named by an unresolved manual incident`,
@@ -344,23 +320,11 @@ function applyEdit(edit: ConfigEdit, doc: Doc, hasOpen: (id: string) => boolean)
 
 function entityOf(edit: ConfigEdit, config: Config, index: number): AdminWriteResponse | undefined {
   if (edit.action === "delete") return undefined;
-  switch (edit.kind) {
-    case "check": {
-      const check = config.checks[index];
-      return check === undefined ? undefined : checkView(check, "file");
-    }
-    case "component": {
-      const component: AdminComponent | undefined = config.components[index];
-      return component === undefined ? undefined : { ...component };
-    }
-    default: {
-      const never: never = edit.kind;
-      return never;
-    }
-  }
+  const component: AdminComponent | undefined = config.components[index];
+  return component === undefined ? undefined : { ...component };
 }
 
-/** The audit target id: a check or component id unchanged. */
+/** The audit target id: the component id unchanged. */
 function targetIdOf(edit: ConfigEdit, doc: Doc, index: number): string {
   if (edit.action === "delete") return String(edit.ref);
   return String(idOf(listOf(doc, listKey(edit.kind))[index]));

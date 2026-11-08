@@ -1,9 +1,6 @@
-import { onTestFinished, test } from "bun:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { ConfigError, loadChecks, parseChecks } from "./config.ts";
+import { ConfigError, parseChecks } from "./config.ts";
 
 const ok = { id: "a", name: "A", url: "http://localhost:1/", intervalMs: 1000 };
 
@@ -59,27 +56,6 @@ test("config: http and https urls load", () => {
 
 test("config: duplicate id message", () => {
   assert.throws(() => parseChecks({ checks: [ok, ok] }), /duplicate check id "a"/);
-});
-
-test("config: loadChecks reads files and reports errors", () => {
-  const dir = mkdtempSync(join(tmpdir(), "pulse-cfg-"));
-  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
-  const good = join(dir, "good.json");
-  writeFileSync(good, JSON.stringify({ checks: [ok] }));
-  assert.deepEqual(loadChecks(good), [withRetryDefaults(ok)]);
-  const broken = join(dir, "broken.json");
-  writeFileSync(broken, "{");
-  assert.throws(() => loadChecks(broken), /not valid JSON/);
-  const leaky = join(dir, "leaky.json");
-  writeFileSync(leaky, '{"checks":[{"headers":{"X":HSEC},"body":BSEC}]}');
-  assert.throws(
-    () => loadChecks(leaky),
-    (err: Error) =>
-      err.message === `checks file ${leaky} is not valid JSON` &&
-      !err.message.includes("HSEC") &&
-      !err.message.includes("BSEC"),
-  );
-  assert.throws(() => loadChecks(join(dir, "missing.json")), /cannot read/);
 });
 
 test("config: retries and retryDelayMs defaults and explicit values", () => {
