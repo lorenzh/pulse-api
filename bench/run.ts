@@ -2,7 +2,8 @@
 //   [--b-ref <repo>=<ref>]... [--simulate-services | --service-tokens]
 //   [--expect-report status|notify]... [--out <dir>]
 // Interleaved A/B comparison of CPU time and memory per service. See bench/README.md.
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { randomBytes, randomInt } from "node:crypto";
+import { appendFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { COLD_DENSITY } from "./cold.ts";
@@ -15,9 +16,16 @@ import {
   renderTable,
   type Samples,
 } from "./compare.ts";
-import { EOD_ROUTES } from "./eod.ts";
+import {
+  benchProject,
+  cleanupInvocation,
+  confirmTeardown,
+  newInvocationId,
+  workspaceDir,
+} from "./invocation.ts";
 import { OPTIONAL_ROUTES, routesMissingAt } from "./load.ts";
-import { runChecked } from "./measure.ts";
+import { runChecked, runCommand } from "./measure.ts";
+import { allocatePorts, candidateBlocks, listenLoopback, parseEphemeralRange } from "./ports.ts";
 import {
   type Baseline,
   checkoutMismatch,
@@ -33,27 +41,23 @@ import {
   UsageError,
 } from "./refs.ts";
 import { RUNTIME_SERVICES, type RuntimeService, runtimeMode } from "./runtime-fixture.ts";
+import { measureStack, type SideRoundDeps } from "./side-round.ts";
 import {
   buildImages,
   imageSizeMB,
   runColdStack,
   runEodStack,
   runStack,
-  SERVICES,
   type SideDirs,
+  type StackIdentity,
   type StackRuntime,
 } from "./stack.ts";
 
-const COLD_METRICS = [
-  "cold_get_checks_ms",
-  "cold_get_uptime_ms",
-  "cold_read_cpu_ms",
-  "cold_concurrent_ms",
-] as const;
-
 const BENCH_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(BENCH_DIR, "..");
-const WORK_ROOT = join(ROOT, ".bench");
+const INVOCATION_ID = newInvocationId(randomBytes);
+const WORK_ROOT = workspaceDir(ROOT, INVOCATION_ID);
+const PORT_RANGE_FILE = "/proc/sys/net/ipv4/ip_local_port_range";
 const COMPOSE_FILE = join(BENCH_DIR, "compose.bench.yaml");
 const BUILD_REPOS: readonly RepoName[] = ["contract", "kit"];
 
@@ -202,7 +206,8 @@ async function prepareSide(side: Side, refs: Record<RepoName, string>): Promise<
   if (missingRoutes.length > 0) log(`api A lacks ${missingRoutes.join(", ")}: not measured on A`);
   const dirs: SideDirs = { side, work, seedDb, coldSeedDb, missingRoutes };
   log(`build images (${side})`);
-  await buildImages(dirs, COMPOSE_FILE, join(WORK_ROOT, "run", side));
+  const identity: StackIdentity = { project: benchProject(INVOCATION_ID, side), ports: null };
+  await buildImages(dirs, identity, COMPOSE_FILE, join(WORK_ROOT, "run", side));
   return dirs;
 }
 
@@ -227,53 +232,47 @@ async function measureRepoScripts(dirs: SideDirs, samples: Samples): Promise<voi
   }
 }
 
-async function measureStack(
-  dirs: SideDirs,
-  samples: Samples,
-  failureLogFile: string,
-  missingOnA: Set<string>,
-  runtime: StackRuntime,
-): Promise<void> {
-  const runDir = join(WORK_ROOT, "run", dirs.side);
-  await runChecked("rm", ["-rf", runDir]);
-  const m = await runStack(dirs, COMPOSE_FILE, runDir, log, failureLogFile, runtime);
-  for (const service of SERVICES) {
-    add(samples, service, "startup_cpu_ms", m.startupCpuMs[service]);
-    add(samples, service, "startup_wall_ms", m.startupWallMs[service]);
-    add(samples, service, "idle_rss_mib", m.idleRssMiB[service]);
-    add(samples, service, "peak_rss_mib", m.peakRssMiB[service]);
-    add(samples, service, "load_cpu_s", m.loadCpuS[service]);
-    add(samples, service, "image_mb", await imageSizeMB(dirs, service));
+const runner = (command: string, args: readonly string[]) => runCommand(command, args);
+
+const removeDir = (path: string): Promise<void> => rm(path, { recursive: true, force: true });
+
+async function moveFailureLog(from: string, to: string): Promise<void> {
+  try {
+    await rename(from, to);
+  } catch (err) {
+    // No dump exists when the attempt failed before its stack started; never hide the phase error.
+    if (!(err instanceof Error && "code" in err && err.code === "ENOENT")) {
+      log(`could not rename ${from}: ${err instanceof Error ? err.name : "unknown error"}`);
+    }
   }
-  add(samples, "api", "p95_get_checks_ms", m.p95GetChecksMs);
-  add(samples, "api", "p95_post_results_ms", m.p95PostResultsMs);
-  for (const [metric, value] of [
-    ["p95_get_latency_ms", m.p95GetLatencyMs],
-    ["p95_get_check_latency_ms", m.p95GetCheckLatencyMs],
-  ] as const) {
-    // Null only for a route that side A's source lacks (see prepareSide).
-    if (value === null) missingOnA.add(`api.${metric}`);
-    else add(samples, "api", metric, value);
-  }
-  add(samples, "api", "rps", m.rps);
-  const coldDir = join(WORK_ROOT, "run-cold", dirs.side);
-  await runChecked("rm", ["-rf", coldDir]);
-  const cold = await runColdStack(dirs, COMPOSE_FILE, coldDir, log, failureLogFile);
-  for (const metric of COLD_METRICS) add(samples, "api", metric, cold[metric]);
-  const eodDir = join(WORK_ROOT, "run-eod", dirs.side);
-  await runChecked("rm", ["-rf", eodDir]);
-  const eod = await runEodStack(dirs, COMPOSE_FILE, eodDir, log, failureLogFile);
-  for (const { metric } of EOD_ROUTES) {
-    // Null only for a route that side A's source lacks (see prepareSide).
-    const value = eod[metric];
-    if (value === null) missingOnA.add(`api.${metric}`);
-    else add(samples, "api", metric, value);
-  }
-  add(samples, "api", "eod_read_cpu_ms", eod.eod_read_cpu_ms);
+}
+
+async function sideRoundDeps(out: string): Promise<SideRoundDeps> {
+  const blocks = candidateBlocks(parseEphemeralRange(await readFile(PORT_RANGE_FILE, "utf8")));
+  const random = (): number => randomInt(2 ** 32) / 2 ** 32;
+  return {
+    runStack,
+    runColdStack,
+    runEodStack,
+    imageSizeMB,
+    allocate: (exclude) => allocatePorts({ listen: listenLoopback, random }, blocks, exclude),
+    confirmTeardown: (project) =>
+      confirmTeardown({ run: runner, composeFile: COMPOSE_FILE, project }),
+    removeDir,
+    moveFailureLog,
+    log,
+    id: INVOCATION_ID,
+    workRoot: WORK_ROOT,
+    composeFile: COMPOSE_FILE,
+    out,
+  };
 }
 
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
+  log(`invocation ${INVOCATION_ID}`);
+  // Read once, before any clone: a missing or odd range stops the run (exit 2).
+  const deps = await sideRoundDeps(args.out);
   if (!process.env.GITHUB_ACTIONS) {
     log("local run: the numbers are comparable only on this machine");
   }
@@ -293,6 +292,26 @@ async function main(): Promise<number> {
   );
   log(`A: ${JSON.stringify(names.a)}`);
   log(`B: ${JSON.stringify(names.b)}`);
+  try {
+    return await measureAndReport(args, names, budgets, deps);
+  } finally {
+    await cleanupInvocation({
+      run: runner,
+      removeDir,
+      root: ROOT,
+      id: INVOCATION_ID,
+      composeFile: COMPOSE_FILE,
+      log,
+    });
+  }
+}
+
+async function measureAndReport(
+  args: Args,
+  names: Awaited<ReturnType<typeof resolveRefs>>,
+  budgets: ReturnType<typeof parseBudgets>,
+  deps: SideRoundDeps,
+): Promise<number> {
   // Resolved once, before round 1: a ref that moves later cannot change what a side runs.
   const refs = await resolveShas(names, resolveSha);
   for (const line of refLines(refs)) log(line);
@@ -309,8 +328,7 @@ async function main(): Promise<number> {
   for (let round = 1; round <= args.rounds; round++) {
     for (const side of SIDES) {
       log(`round ${round}/${args.rounds} side ${side}`);
-      const failureLog = join(args.out, `failure-round${round}-${side}.log`);
-      await measureStack(dirs[side], samples[side], failureLog, missingOnA, args.runtime);
+      await measureStack(deps, dirs[side], samples[side], round, missingOnA, args.runtime);
       await measureRepoScripts(dirs[side], samples[side]);
     }
   }

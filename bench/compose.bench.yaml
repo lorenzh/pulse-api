@@ -11,7 +11,7 @@ services:
   api:
     build:
       context: ${BENCH_API_DIR:-..}
-    image: pulse-bench-${BENCH_SIDE:-a}-api
+    image: ${BENCH_PROJECT:-pulse-bench}-api
     container_name: ${BENCH_PROJECT:-pulse-bench}-api
     healthcheck:
       disable: true
@@ -25,12 +25,12 @@ services:
       - ${BENCH_RUN_DIR:-.}/config/admin-tokens.json:/config/admin-tokens.json:ro
       - ${BENCH_RUN_DIR:-.}/api-data:/data
     ports:
-      - "127.0.0.1::3000"
+      - "127.0.0.1:${BENCH_API_PORT:-}:3000"
 
   probe:
     build:
       context: ${BENCH_PROBE_DIR:-../../pulse-probe}
-    image: pulse-bench-${BENCH_SIDE:-a}-probe
+    image: ${BENCH_PROJECT:-pulse-bench}-probe
     container_name: ${BENCH_PROJECT:-pulse-bench}-probe
     healthcheck:
       disable: true
@@ -41,7 +41,7 @@ services:
       PULSE_HEALTH_HOST: 0.0.0.0
       PULSE_HEALTH_PORT: "9100"
     ports:
-      - "127.0.0.1::9100"
+      - "127.0.0.1:${BENCH_PROBE_PORT:-}:9100"
     depends_on:
       - api
       - bench-target
@@ -49,7 +49,7 @@ services:
   status:
     build:
       context: ${BENCH_STATUS_DIR:-../../pulse-status}
-    image: pulse-bench-${BENCH_SIDE:-a}-status
+    image: ${BENCH_PROJECT:-pulse-bench}-status
     container_name: ${BENCH_PROJECT:-pulse-bench}-status
     healthcheck:
       disable: true
@@ -60,14 +60,14 @@ services:
     volumes:
       - ${BENCH_RUN_DIR:-.}/service-tokens:/service-tokens:ro
     ports:
-      - "127.0.0.1::8080"
+      - "127.0.0.1:${BENCH_STATUS_PORT:-}:8080"
     depends_on:
       - api
 
   notify:
     build:
       context: ${BENCH_NOTIFY_DIR:-../../pulse-notify}
-    image: pulse-bench-${BENCH_SIDE:-a}-notify
+    image: ${BENCH_PROJECT:-pulse-bench}-notify
     container_name: ${BENCH_PROJECT:-pulse-bench}-notify
     healthcheck:
       disable: true
@@ -85,7 +85,7 @@ services:
       - ./fixtures/notify.json:/config/notify.json:ro
       - ${BENCH_RUN_DIR:-.}/notify-data:/data
     ports:
-      - "127.0.0.1::9100"
+      - "127.0.0.1:${BENCH_NOTIFY_PORT:-}:9100"
     depends_on:
       - api
 

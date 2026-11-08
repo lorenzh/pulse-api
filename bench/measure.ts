@@ -71,7 +71,24 @@ export async function runCommand(
   return { code, stdout, stderr, cpuSeconds };
 }
 
-/** Like `runCommand`, but a non-zero exit code throws with the tail of stderr. */
+/** A command exited non-zero. `stderr` is complete; the message shows only its tail. */
+export class CommandExitError extends Error {
+  override readonly name = "CommandExitError";
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly code: number;
+  readonly stderr: string;
+
+  constructor(command: string, args: readonly string[], code: number, stderr: string) {
+    super(`${command} ${args.join(" ")} exited with ${code}: ${stderr.slice(-500)}`);
+    this.command = command;
+    this.args = [...args];
+    this.code = code;
+    this.stderr = stderr;
+  }
+}
+
+/** Like `runCommand`, but a non-zero exit code throws a `CommandExitError`. */
 export async function runChecked(
   command: string,
   args: readonly string[],
@@ -79,9 +96,7 @@ export async function runChecked(
 ): Promise<CommandResult> {
   const result = await runCommand(command, args, options);
   if (result.code !== 0) {
-    throw new Error(
-      `${command} ${args.join(" ")} exited with ${result.code}: ${result.stderr.slice(-500)}`,
-    );
+    throw new CommandExitError(command, args, result.code, result.stderr);
   }
   return result;
 }
