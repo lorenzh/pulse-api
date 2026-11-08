@@ -49,7 +49,7 @@ General rules:
 - The public reads (`/checks`, `/checks/:id/*`, `/uptime`, `/latency` and the others marked `GET` above) serve only `GET`. `HEAD` and every other method answer `405` with `Allow: GET`, before the id is looked up; the body is `{"error":"method not allowed"}`, empty for `HEAD`.
 - Per-id routes cannot address the check ids `.` and `..`: the path is normalized before routing, so `/checks/%2E/location-uptime` answers `404` `not found` and `/checks/../results` is the path `/results`.
 - A request body over 1,000,000 bytes gives `413` with `request body too large`.
-- An unexpected failure gives `500` with `internal error`. The cause is written to stderr.
+- An unexpected failure before the response started gives `500` with `internal error`. A later failure closes the started response without a second answer. Both are logged once as `request failed`, with the cause on stderr.
 - Timestamps are epoch milliseconds.
 - The public reads (auth `none` above) need no token. `/probe/checks`, `/results`, every `/admin/*` route and the manual-incident writes need one. Keep the API on a private network and publish only the heartbeat route: see [Network exposure](install.md#network-exposure).
 
@@ -65,7 +65,7 @@ Headers: `Authorization: Bearer <token>` (the word `Bearer` is case-insensitive,
 | `timestamp`    | integer                        | Epoch ms, set by the probe. At most `min(intervalMs of the check, 60000)` ms after the API clock (60000 for heartbeat checks and unknown ids) and at most 7 days (`MAX_RESULT_AGE_MS`) before it. |
 | `status`       | `"up"`, `"degraded"`, `"down"` | Required.                                                                                                                                                                                         |
 | `statusCode`   | integer or `null`              | Required. `null` when no response arrived, else 100 to 599.                                                                                                                                       |
-| `latencyMs`    | number                         | Integer 0..2147483647 (`MAX_LATENCY_MS`). A finite fraction `>= 0` is rounded to the nearest integer before validation, for older probes. Served results carry integers.                          |
+| `latencyMs`    | number                         | Integer 0..2147483647 (`MAX_TIMER_MS`). A finite fraction `>= 0` is rounded to the nearest integer before validation, for older probes. Served results carry integers.                            |
 | `reason`       | string or `null`               | Required. At most 1000 UTF-16 code units (`MAX_REASON_LENGTH`).                                                                                                                                   |
 | `location`     | string                         | Optional. Trimmed, at most 64 characters. Blank means the token's location.                                                                                                                       |
 | `attempts`     | integer                        | Optional, 1 to 100 (`MAX_ATTEMPTS`). A missing value is stored as 1.                                                                                                                              |
@@ -77,7 +77,7 @@ The checks run in this order:
 2. `401` `{"error":"unauthorized"}` with header `WWW-Authenticate: Bearer` for a missing, malformed or unknown token.
 3. `413` if the body is too large.
 4. `400` `body is not valid JSON`.
-5. `400` with the first failing field message. The body is first checked by the contract validator `validatePostResultRequest`, whose messages name the path, for example `result.status: must be one of "up", "degraded", "down"`. Then the api checks run: timestamp window, `latencyMs`, `reason` length, `attempts` and `location`. The messages are listed in [Troubleshooting](troubleshooting.md#400-on-post-results).
+5. `400` with the first failing field message. The body is first checked by the contract validator `validatePostResultRequest`, whose messages name the path, for example `result.status: must be one of "up", "degraded", "down"`. An oversized `reason` gives `result.reason: must be null or a string of at most 1000 characters`. Then the api checks run, in this order: timestamp window, `certDaysLeft` range, `attempts` cap and `location` length. The messages are listed in [Troubleshooting](troubleshooting.md#400-on-post-results).
 6. `403` `heartbeat checks accept only pings` if `checkId` names an active heartbeat check. Only a [ping](#getpost-heartbeatidsecret) changes such a check; nothing is stored.
 7. `403` `location does not match token` if the body has a `location` that differs from the token's location (after trim).
 8. `404` `unknown check "<id>"` (also for a check removed from the configuration).

@@ -304,7 +304,7 @@ The API writes JSON lines: `{"time":"<ISO 8601>","level":"info","msg":"...", ...
 - `retention failed: <message>` (warn): A cleanup failed. The next run is still scheduled.
 - `config load rejected at start: <message>; using the checks file applied at <ISO time>` (warn): The checks file was invalid or unreadable at start, and the stored snapshot is used. The message has no path and no values.
 - `check "<id>" removed from the configuration: incident resolved` (info): One line per incident resolved when its check leaves the configuration.
-- `request failed` (error): An unexpected failure in a request (`500`). The field `error` holds the stack.
+- `request failed` (error): Once per unexpected failure in a request. Before the response headers the client gets `500`; after them the started response is closed. The field `error` holds the stack.
 - `shutdown bound reached: closing open connections` (warn): The shutdown took longer than 5 s.
 - `stopped` (info): The shutdown is done.
 - `startup failed` (error): An unexpected failure at start. The process exits with code 1.
