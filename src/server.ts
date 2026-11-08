@@ -2,11 +2,10 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import {
   type Check,
-  MAX_REASON_LENGTH as CONTRACT_MAX_REASON_LENGTH,
   type Component,
   type ErrorResponse,
   MANUAL_INCIDENT_MAX_BODY_BYTES,
-  MAX_TIMER_MS,
+  type PostResultRequest,
   type Result,
   validatePostResultRequest,
   WIRE_VERSION,
@@ -59,9 +58,7 @@ const MAX_BODY = 1_000_000;
 const MAX_PING_BODY = 1024;
 const MAX_FUTURE_SKEW_MS = 60_000;
 const MAX_RESULT_AGE_MS = 7 * 86_400_000;
-const MAX_REASON_LENGTH = CONTRACT_MAX_REASON_LENGTH;
 const MAX_ATTEMPTS = 100;
-const MAX_LATENCY_MS = MAX_TIMER_MS;
 /** Covers every expiry up to year 9999 (the X.509 and RDAP maximum), even from a clock at the epoch. */
 const MAX_CERT_DAYS = 3_000_000;
 export const DEFAULT_LIMIT = 100;
@@ -114,22 +111,13 @@ export function maxFutureSkewMs(check: Check | undefined): number {
   return Math.min(check.intervalMs, MAX_FUTURE_SKEW_MS);
 }
 
-function checkTimestamp(v: unknown, now: number, limit: number): string | undefined {
-  if (typeof v !== "number" || !Number.isInteger(v))
-    return "timestamp must be an integer (epoch ms)";
+function checkTimestamp(v: number, now: number, limit: number): string | undefined {
   if (v > now + limit) return `timestamp is more than ${limit} ms in the future`;
   if (v < now - MAX_RESULT_AGE_MS) return "timestamp is older than 7 days";
   return undefined;
 }
 
-function checkMeasurements(b: Record<string, unknown>): string | undefined {
-  if (b.statusCode !== null && !isIntegerIn(b.statusCode, 100, 599))
-    return "statusCode must be null or an integer from 100 to 599";
-  if (!isIntegerIn(b.latencyMs, 0, MAX_LATENCY_MS))
-    return `latencyMs: must be an integer 0..${MAX_LATENCY_MS}`;
-  if (b.reason !== null && typeof b.reason !== "string") return "reason must be a string or null";
-  if (typeof b.reason === "string" && b.reason.length > MAX_REASON_LENGTH)
-    return `reason must be at most ${MAX_REASON_LENGTH} characters`;
+function checkBounds(b: PostResultRequest): string | undefined {
   if (
     b.certDaysLeft !== undefined &&
     b.certDaysLeft !== null &&
@@ -142,9 +130,8 @@ function checkMeasurements(b: Record<string, unknown>): string | undefined {
   return undefined;
 }
 
-function parseLocation(v: unknown): string {
+function parseLocation(v: string | undefined): string {
   if (v === undefined) return DEFAULT_LOCATION;
-  if (typeof v !== "string") throw new TypeError("location must be a string");
   const trimmed = v.trim();
   if (trimmed.length > MAX_LOCATION_LENGTH)
     throw new TypeError(`location must be at most ${MAX_LOCATION_LENGTH} characters`);
@@ -177,19 +164,11 @@ export function validateResult(
   const input = withRoundedLatency(body);
   const shape = validatePostResultRequest(input);
   if (!shape.ok) return shape.error;
-  if (typeof input !== "object" || input === null || Array.isArray(input)) {
-    return "body must be a JSON object";
-  }
-  const b = input as Record<string, unknown>;
-  if (typeof b.checkId !== "string" || b.checkId === "")
-    return "checkId must be a non-empty string";
+  const b = shape.value;
   const timestampError = checkTimestamp(b.timestamp, now, maxFutureSkewMs(findCheck(b.checkId)));
   if (timestampError !== undefined) return timestampError;
-  if (b.status !== "up" && b.status !== "degraded" && b.status !== "down") {
-    return 'status must be "up", "degraded" or "down"';
-  }
-  const measurementError = checkMeasurements(b);
-  if (measurementError !== undefined) return measurementError;
+  const boundsError = checkBounds(b);
+  if (boundsError !== undefined) return boundsError;
   let location: string;
   try {
     location = parseLocation(b.location);
@@ -198,15 +177,15 @@ export function validateResult(
   }
   const result: Result = {
     checkId: b.checkId,
-    timestamp: b.timestamp as number,
+    timestamp: b.timestamp,
     status: b.status,
-    statusCode: b.statusCode as number | null,
-    latencyMs: b.latencyMs as number,
-    reason: b.reason as string | null,
+    statusCode: b.statusCode,
+    latencyMs: b.latencyMs,
+    reason: b.reason,
     location,
-    attempts: (b.attempts as number | undefined) ?? 1,
+    attempts: b.attempts ?? 1,
   };
-  if (b.certDaysLeft !== undefined) result.certDaysLeft = b.certDaysLeft as number | null;
+  if (b.certDaysLeft !== undefined) result.certDaysLeft = b.certDaysLeft;
   return result;
 }
 
@@ -979,16 +958,15 @@ export function createApiServer(service: Service, options: ApiServerOptions): Se
     // Set before any write; writeHead keeps these next to the headers a response adds.
     for (const [name, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(name, value);
     handle(ops, now, req, res).catch((err: unknown) => {
+      const isExpected = err instanceof HttpError || err instanceof ManualRouteError;
+      if (!isExpected) logError("request failed", err);
+      // After headers a second answer cannot follow: close the started response.
       if (res.headersSent) {
         res.destroy();
         return;
       }
-      if (err instanceof HttpError || err instanceof ManualRouteError) {
-        sendError(res, err.status, err.message, err.headers);
-      } else {
-        logError("request failed", err);
-        sendError(res, 500, "internal error");
-      }
+      if (isExpected) sendError(res, err.status, err.message, err.headers);
+      else sendError(res, 500, "internal error");
     });
   });
 }
